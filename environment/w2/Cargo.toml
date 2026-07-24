@@ -1,0 +1,10 @@
+[package]
+name = "w2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+m3 = { path = "../m3" }
+p8 = { path = "../p8" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

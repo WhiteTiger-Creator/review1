@@ -1,27 +1,34 @@
-FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS goimg
+
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        less \
-        nano \
-        procps \
-        python3 \
-        python-is-python3 \
-        python3-pip \
-        python3-venv \
-        tmux \
+COPY --from=goimg /usr/local/go /usr/local/go
+ENV PATH="/usr/local/go/bin:/usr/local/cargo/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    asciinema=2.2.0-1 \
+    ca-certificates=20230311+deb12u1 \
+    python3=3.11.2-1+b1 \
+    python3-pip=23.0.1+dfsg-1 \
+    python3-venv=3.11.2-1+b1 \
+    tmux=3.3a-3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock \
-    && rm -f /tmp/requirements.lock
+RUN python3 -m pip install --break-system-packages --no-cache-dir \
+    pytest==8.4.1 \
+    pytest-json-ctrf==0.3.5
 
-COPY task_file/scan_input /app/task_file/scan_input
-COPY task_file/abi_transition_runbook.md /app/task_file/abi_transition_runbook.md
-COPY task_file/model.py /app/task_file/model.py
-RUN rm -rf /app/task_file/output && mkdir -p /app/task_file/output
+COPY . /app/environment
+
+WORKDIR /app/environment
+RUN chmod +x /app/environment/exec/*.sh \
+    && mkdir -p /app/output /app/bin \
+    && cargo build --release -p w2 \
+    && (cd /app/environment/q7 && go build -o /app/bin/xq7 ./cmd/xq7)
+
+WORKDIR /app
+ENV PATH="/usr/local/go/bin:/usr/local/cargo/bin:/app/bin:/app/environment/exec:${PATH}"
+ENV APP_ENV_ROOT=/app/environment
+ENV BEAM_OUT=/app/output/span_parity.json

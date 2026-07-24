@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "cases",
+    "tol_class",
+    "tol_limit",
+    "react_tol_limit",
+    "lin_tol_limit",
+    "fold_probe"
+  ],
+  "properties": {
+    "cases": { "type": "array" },
+    "tol_class": { "type": "string" },
+    "tol_limit": { "type": "number" },
+    "react_tol_limit": { "type": "number" },
+    "lin_tol_limit": { "type": "number" },
+    "fold_probe": { "type": "number" }
+  }
+}

@@ -1,3 +1,23 @@
-You are the release engineer coordinating an incompatible runtime-ABI transition across four monorepo dependency graphs. Prepare the approved build-wave manifests that move every package to the new ABI without breaking provider relationships, exceeding build/test or rollback capacity, or retiring compatibility bridges too early. These manifests will reserve build workers, validation lanes, bridge storage, and rollback space during the release freeze, so every wave must be operationally feasible and deterministic. Balance slower safe rebuilds against fast-rebuild burn-in and rollback exposure while respecting the package dependency order. Use the inventories in `/app/task_file/scan_input/` and the authoritative release runbook at `/app/task_file/abi_transition_runbook.md`; it defines the records, change actions, feasibility rules, cost order, tie-breaks, and exact JSON schema.
+Bridge-span screening in this checkout is producing bad mid-span deflection (mm) and support reaction (N) numbers for the offline case bundle.
 
-Write `/app/task_file/output/abi_plan.json`, `branching_plan.json`, `cohort_plan.json`, and `tie_plan.json` for `abi_case.txt`, `branching_case.txt`, `cohort_case.txt`, and `tie_case.txt`, respectively. Grading independently recomputes the exact optimal manifest for every graph. Keep the inventories unchanged. Only these four release manifests are required—do not submit optimizer source code or an executable.
+Run `bash /app/environment/exec/kit.sh` to rebuild the Rust driver plus Go helper and regenerate `/app/output/span_parity.json`.
+
+The verifier wipes that file and rebuilds from `/app/environment` before scoring.
+
+Static or hand-edited JSON is insufficient; the normal pipeline must regenerate the artifacts.
+
+Coarse-mesh results disagree with fine-mesh beyond `/app/environment/docs/tol_policy.md`.
+
+Doubling every point force should nearly double deflection and reactions inside the published bands without moving load stations, but several cases break that.
+
+A second identical kit pass drifts and leaves `fold_probe` dirty.
+
+More than one helper behind the bash entrypoint is involved.
+
+Schema and residual formulas are in `/app/environment/docs/report_contract.md`.
+
+Inputs live under `/app/environment/cases/`.
+
+The report must include `cases`, `tol_class`, `tol_limit`, `react_tol_limit`, `lin_tol_limit`, and `fold_probe`.
+
+Fix the sources that feed the driver. Element formulation is not prescribed.

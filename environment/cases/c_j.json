@@ -1,0 +1,12 @@
+{
+  "case_id": "c_j",
+  "length_m": 12.0,
+  "e_pa": 2.1e11,
+  "i_m4": 7.0e-5,
+  "n_coarse": 6,
+  "n_fine": 48,
+  "loads": [
+    {"id": "L1", "x_m": 0.8, "force_n": 45000.0},
+    {"id": "L2", "x_m": 11.2, "force_n": 12000.0}
+  ]
+}
