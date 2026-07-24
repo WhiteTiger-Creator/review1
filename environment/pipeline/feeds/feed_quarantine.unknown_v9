@@ -1,1 +1,0 @@
-{"trip_id":"Q-001","route_id":"R-BUS-1","start_date":"20260622","received_ts":"2026-06-22T01:50:00Z","ingest_ts":"2026-06-22T03:49:00Z","schedule_relationship":"SCHEDULED","stop_time_updates":[{"stop_sequence":1,"arrival_delay":0}]}

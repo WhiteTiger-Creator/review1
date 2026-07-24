@@ -1,24 +1,39 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+# Dropforge engine-reconstruction task (Node).
+#
+# Ships the basic rules card and the recorded games under /app. The
+# agent writes /app/engine.js to replay a drop script to the final well.
+# Everything runs offline: Node is the working language, and Python is present
+# only so the test suite can drive the program and compare records.
+#
+# Canonical Debian base, digest-pinned.
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates tmux asciinema python3 python3-pip make \
-    && rm -rf /var/lib/apt/lists/*
+# Node for the task, tmux + asciinema for the agent runtime, and a Python 3
+# for the test suite. Installed at build time (build has network) so the task
+# runs fully offline afterwards. Debian ships the interpreter as `nodejs`;
+# add a `node` on PATH so the documented command works.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        asciinema \
+        ca-certificates \
+        nodejs \
+        python3 \
+        python3-venv \
+        tmux \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/nodejs /usr/local/bin/node
 
-RUN python3 -m pip install --no-cache-dir --break-system-packages \
-    pytest==8.4.1 \
-    pytest-json-ctrf==0.3.5
+# Python only needs pytest to run the program and compare numbers; no
+# numerical libraries are installed, so the math cannot be shifted out of
+# Node. Pinned and baked in now; nothing is fetched later.
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir \
+        pytest==8.4.1 \
+        pytest-json-ctrf==0.3.5
+ENV PATH="/opt/venv/bin:${PATH}"
 
-ENV PATH=/usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-RUN ln -sf /usr/local/go/bin/go /usr/bin/go && ln -sf /usr/local/go/bin/gofmt /usr/bin/gofmt
-RUN printf 'export PATH=/usr/local/go/bin:/go/bin:$PATH\nexport GOPROXY=off\nexport GOSUMDB=off\nexport GOTOOLCHAIN=local\nexport GOCACHE=/opt/go-cache\n' > /etc/profile.d/go.sh
-RUN printf 'command -v go >/dev/null 2>&1 || export PATH=/usr/local/go/bin:/go/bin:$PATH\n' >> /etc/bash.bashrc
+# The basic rules card and the recorded games (script, final well, score).
+COPY rules.md /app/rules.md
+COPY games /app/games
 
-ENV GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GOCACHE=/opt/go-cache
-
-COPY pipeline /app
 WORKDIR /app
-
-RUN cd /app && go vet ./... && make build
-
-ENV TBENCH_TASK=gtfs-rt-trip-rectifier

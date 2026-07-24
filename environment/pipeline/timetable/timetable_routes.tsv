@@ -1,4 +1,0 @@
-route_id	route_class	cap	priority_tier
-R-BUS-1	STANDARD	3	3
-R-BUS-2	STANDARD	3	3
-R-RAPID-1	CRITICAL	2	1

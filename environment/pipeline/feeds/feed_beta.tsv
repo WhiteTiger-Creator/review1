@@ -1,7 +1,0 @@
-trip_id	route_id	start_date	received_ts	ingest_ts	schedule_relationship	stops_json
-T-101	R-BUS-1	20260622	2026-06-22T00:20:00Z	2026-06-22T03:40:00Z	SCHEDULED	[{"stop_sequence":1,"arrival_delay":0}]
-T-103	R-BUS-1	20260622	2026-06-22T00:25:00Z	2026-06-22T03:41:00Z	SCHEDULED	[{"stop_sequence":1,"arrival_delay":0}]
-T-202	R-RAPID-1	20260622	2026-06-22T00:40:00Z	2026-06-22T03:42:00Z	ADDED	[{"stop_sequence":1,"arrival_delay":0}]
-T-203	R-RAPID-1	20260622	2026-06-22T00:45:00Z	2026-06-22T03:43:00Z	CANCELED	[]
-T-401	R-BUS-2	20260622	2026-06-22T01:30:00Z	2026-06-22T03:44:00Z	SCHEDULED	[{"stop_sequence":"two","arrival_delay":0}]
-T-402	R-BUS-2	20260622	2026-06-22T01:35:00Z	2026-06-22T03:45:00Z	SCHEDULED	[{"stop_sequence":"three","arrival_delay":0}]
