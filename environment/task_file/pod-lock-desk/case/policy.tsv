@@ -1,0 +1,10 @@
+key	value
+case_id	pod-subspec-source-public
+platform	ios
+platform_version	14.0
+source_order	corp,cdn,trunk
+min_trust	70
+allow_prerelease	false
+max_binary_size	2600
+max_warnings	40
+cocoapods_version	1.16.1

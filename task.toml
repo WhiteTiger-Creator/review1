@@ -1,27 +1,30 @@
 version = "2.0"
 
 [metadata]
-author_name = "anonymous"
-author_email = "anonymous"
+author_name = "Anonymous"
+author_email = "anonymous@example.com"
 difficulty = "hard"
-category = "security"
+category = "build-and-dependency-management"
 subcategories = []
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["go", "python", "bash"]
-tags = ["security", "authorization", "privilege-escalation", "signed-manifests", "privileged-helpers", "audit-integrity"]
+codebase_size = "minimal"
+languages = []
+tags = ["cocoapods", "podfile", "dependency-resolution", "subspecs", "lockfile", "source-priority"]
 expert_time_estimate_min = 360
-junior_time_estimate_min = 720
+junior_time_estimate_min = 900
 
 [verifier]
-timeout_sec = 600.0
+timeout_sec = 900.0
 
 [agent]
-timeout_sec = 1500.0
+timeout_sec = 1800.0
 
 [environment]
+allow_internet = false
 build_timeout_sec = 600.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-allow_internet = false
+docker_flags = []
+gpus = 0
+gpu_types = []

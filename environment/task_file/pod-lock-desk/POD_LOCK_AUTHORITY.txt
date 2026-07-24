@@ -1,0 +1,127 @@
+POD SOURCE LOCK FORMAT SPECIFICATION
+
+The executable is `/opt/pod-lock-desk/pod-source-lock`. It takes no arguments. On each run it reads `/opt/pod-lock-desk/case`, deletes and recreates `/opt/pod-lock-desk/out`, and writes exactly:
+
+- `/opt/pod-lock-desk/out/Podfile.lock`
+- `/opt/pod-lock-desk/out/pods-plan.tsv`
+- `/opt/pod-lock-desk/out/subspec-graph.tsv`
+- `/opt/pod-lock-desk/out/source-audit.tsv`
+- `/opt/pod-lock-desk/out/seal.txt`
+
+This is an offline deterministic model inspired by CocoaPods Podfiles, podspecs, subspecs, sources, and lockfiles. Do not call pod, xcodebuild, ruby, git, curl, wget, or the network. All facts come from the TSV files.
+
+INPUT FILES
+
+All TSV files have a header. A cell value `-` means empty. Comma lists are unordered unless an output rule says otherwise. Semicolon lists preserve input order for traversal but output rows are sorted by their output rules. In output TSV files, every non-applicable or empty field must be the literal sentinel `-`; do not emit an empty string or `*` unless a row rule explicitly says to use `*`.
+
+`/opt/pod-lock-desk/case/policy.tsv` columns:
+- `key`, `value`
+- Required keys: `case_id`, `platform`, `platform_version`, `source_order`, `min_trust`, `allow_prerelease`, `max_binary_size`, `max_warnings`, `cocoapods_version`.
+- Boolean values are `true` or `false`.
+- `source_order` is a comma list. Earlier sources are preferred for otherwise tied candidates.
+
+`/opt/pod-lock-desk/case/targets.tsv` columns:
+- `target`, `inherit`, `platform`, `platform_version`, `pod`, `requirement`, `subspecs`, `configurations`, `linkage`, `source_pin`, `checksum_required`
+- `subspecs` is a comma list or `-`. If it is `-`, use the default subspecs declared for the selected root pod version.
+- `configurations` is a comma list. `linkage` is `framework` or `static`.
+- `source_pin` is a source name or `-`. When present, every candidate for that direct target request must come from that source.
+- `checksum_required` is `true` or `false`. When true, every selected subspec row for that direct target request must have `checksum_present=true`.
+
+`/opt/pod-lock-desk/case/specs.tsv` columns:
+- `source`, `root`, `version`, `subspec`, `default`, `platforms`, `dependencies`, `checksum`, `trust`, `size`, `status`, `license`, `vendored`, `swift`, `checksum_present`
+- `default` is `true` or `false`.
+- `platforms` is a comma list of platform comparators such as `ios>=12.0` or `tvos>=14.0`.
+- `dependencies` is a semicolon list of `Root/Subspecs|requirement|source_pin|checksum_required` items. `Subspecs` may be a comma list or `-`.
+- `status` is `release`, `prerelease`, or `deprecated`.
+- `vendored` and `swift` are booleans retained for output metadata; they are not gates.
+
+`/opt/pod-lock-desk/case/rules.tsv` columns:
+- `kind`, `root`, `subspec`, `value`, `detail`
+- `override`: `value` is an exact version. It applies to every request for `root`; `subspec` is ignored and should be `*`.
+- `license_allow`: `value` is a comma list of allowed licenses. `root=*` and `subspec=*` define the global allow list.
+- `source_block`: `value` is a blocked source name for the named `root`. Use `subspec=*` to block the source for every subspec of that root, or a concrete subspec name to block only requests that require that subspec.
+
+VERSION, PLATFORM, AND REQUEST RULES
+
+Supported version requirements are exact versions, `*`, `~> X.Y`, `~> X.Y.Z`, `>=A <B`, and `>=V`. Version comparison is numeric over three components; missing minor or patch components are zero. `~> X.Y` means `>=X.Y.0 <(X+1).0.0`; `~> X.Y.Z` means `>=X.Y.Z <X.(Y+1).0`.
+
+A spec row supports the policy platform only when its `platforms` list has at least one comparator with the same platform and a minimum version less than or equal to the target request platform version. The policy platform is the default if a target row's platform is `-`. For diagnostics, the request platform comparator is the request platform name, then the literal `>=` operator, then the request platform version after defaulting from policy when needed; for example an iOS target at platform version `15.0` has request comparator `ios>=15.0`.
+
+Each target row creates a direct request for one root pod. Requests have a target name, version requirement, requested subspec set, source pin, checksum requirement, configurations, and linkage. Overrides replace the current effective version requirement with the exact override version and must be audited each time they change a request. For example, if a direct request already says `3.0.0` but a transitive dependency later says `~> 3.1`, the transitive audit detail is `from=~> 3.1;to=3.0.0`.
+
+SELECTION AND CLOSURE RULES
+
+Process direct requests in `/opt/pod-lock-desk/case/targets.tsv` row order. Select one global `(source, root, version)` tuple for each root pod across the whole plan, not one tuple per target. A request with a `source_pin` only constrains candidates for that request; another unpinned request for the same root may later select a higher-ranked global tuple if it is eligible for that later request. A candidate tuple is eligible for a request only when:
+
+1. the source is listed in `source_order`
+2. the source satisfies the request `source_pin`, if any
+3. no `source_block` rule blocks the tuple source for the root and required subspecs
+4. the version satisfies the effective requirement
+5. every required subspec row exists for the tuple
+6. every required subspec row supports the request platform
+7. no required subspec row has `status=deprecated`
+8. no required subspec row has `status=prerelease` unless `allow_prerelease=true`
+9. every required subspec row has trust greater than or equal to `min_trust`
+10. every required subspec row's license is in the global `license_allow` list
+11. every required subspec row has `checksum_present=true` when the request checksum requirement is true
+
+If no eligible candidate can satisfy a requested root pod, final status is `unsatisfied` and `unsatisfiedReasons` includes `no_eligible:<root>`. A requested subspec that does not exist for the otherwise matching `(source, root, version)` tuple is a missing-subspec rejection and still makes that root no-eligible; do not leave the final status `ok` when every candidate for a requested root failed only because the requested subspec was absent.
+
+For each root, rank eligible tuples by:
+1. higher version
+2. source order from `source_order`
+3. lower total size of the currently required subspec rows for the tuple
+4. lexical `source:root:version`
+
+After selecting a tuple for a request, enable its requested subspecs. If the request subspecs are `-`, enable the tuple's default subspecs. Traverse dependencies from every enabled subspec row of the selected tuple. Dependency requests inherit the parent target, configurations, and linkage, but use the dependency's own requirement, source pin, checksum requirement, and subspec list. A dependency with subspecs `-` uses the dependency root's default subspecs. Transitive dependencies contribute their inherited target, configurations, and linkage to `/opt/pod-lock-desk/out/pods-plan.tsv`; these fields are not limited to direct target requests. Selected audit rows for transitive subspecs use the inherited target list as their detail, not the literal word `dependency`; for example a subspec reached only through an `App` dependency path emits selected detail `App`.
+
+Repeat resolution until no new root or subspec is enabled. If a later request changes the selected tuple for a root, the final graph and enabled subspec set must be rebuilt from the direct target requests using only the final selected tuples. Do not keep graph edges or enabled subspecs that point at an older tuple version. For example, if an early source-pinned request reaches `pod:UpgradePod/Core@1.0.0` but a later unpinned request globally selects `UpgradePod@1.1.0`, `/opt/pod-lock-desk/out/subspec-graph.tsv` must contain only `pod:UpgradePod/Core@1.1.0` edges for that final tuple.
+
+OUTPUT RULES
+
+If valid, status is `ok` and `unsatisfiedReasons` is `-`. If invalid, all five artifacts are still written from the best derived partial plan. The status is `unsatisfied` when any `no_eligible:<root>` reason exists, when total selected subspec size exceeds `max_binary_size`, or when the number of rejected audit rows exceeds `max_warnings`. If a whole-plan limit fails, include `no_valid_complete_plan` in `unsatisfiedReasons`.
+
+`/opt/pod-lock-desk/out/Podfile.lock` is UTF-8 text with these sections in this exact order:
+- `PODS:`
+- `DEPENDENCIES:`
+- `SPEC REPOS:`
+- `SPEC CHECKSUMS:`
+- `COCOAPODS: <cocoapods_version>`
+- `STATUS: <ok|unsatisfied>`
+- `UNSATISFIED: <comma-list-or->`
+
+Under `PODS:`, write selected `Root/Subspec (version)` lines sorted by `Root/Subspec`. If that enabled subspec has dependencies, add sorted indented dependency lines as `    - Root/Subspecs (requirement)`.
+Under `DEPENDENCIES:`, write direct target requests sorted by `target:pod` as `  - Pod/Subspecs (requirement) [target;configurations;linkage]`; use `Pod` when subspecs is `-`.
+Under `SPEC REPOS:`, write source names sorted by `source_order`; under each source, write selected root names from that source sorted lexically.
+Under `SPEC CHECKSUMS:`, write selected `Root/Subspec: checksum` rows sorted by `Root/Subspec`.
+
+`/opt/pod-lock-desk/out/pods-plan.tsv` header:
+`root	source	version	subspecs	size	targets	configurations	linkage	checksums`
+Rows are selected root pods sorted by `root`. `subspecs`, `targets`, `configurations`, `linkage`, and `checksums` are comma lists sorted lexically, or `-` when empty. `targets`, `configurations`, and `linkage` include values inherited through transitive dependency paths as well as direct target requests. `size` is the sum of selected enabled subspec row sizes for that root.
+
+`/opt/pod-lock-desk/out/subspec-graph.tsv` header:
+`from	to	requirement	reason`
+Rows are sorted by all four columns. Direct target edges use `from=target:<target>` and `reason=target`. Dependency edges use `from=pod:<Root/Subspec>@<version>` and `reason=dependency`. `to` is `pod:<Root/Subspecs>@<version>` where `Subspecs` is the comma list requested by the edge after default expansion.
+
+`/opt/pod-lock-desk/out/source-audit.tsv` header:
+`kind	root	source	version	subspec	status	reason	detail`
+Rows are sorted by all eight columns and deduplicated. Row fields by kind:
+- `override`: `root=<root>`, `source=-`, `version=<override-version>`, `subspec=*`, `status=selected`, `reason=override`, `detail=from=<effective-requirement-before-override>;to=<override-version>`
+- `selected`: `root=<root>`, `source=<selected-source>`, `version=<selected-version>`, `subspec=<selected-subspec>`, `status=selected`, `reason=selected`, `detail=<sorted-target-list>`. The target list includes direct targets and targets inherited through dependency paths. Use the literal `dependency` only for a selected subspec row that is reachable with no target attribution, which should not occur for normal target-rooted closure.
+- `rejected`: `root=<root>`, `source=<candidate-source>`, `version=<candidate-version>`, `status=rejected`, `reason=source|source_pin|source_block|range|missing_subspec|platform|status|trust|license|checksum`, and `detail` is defined by reason below
+- `limit`: `root=-`, `source=-`, `version=-`, `subspec=-`, `status=unsatisfied`, `reason=max_binary_size|max_warnings`, and `detail=<actual>/<limit>`
+
+Rejected row detail and subspec rules:
+- `source`: `subspec=-`, `detail=<candidate-source>`
+- `source_pin`: `subspec=-`, `detail=<requested-source-pin>`
+- root-wide `source_block` with rule `subspec=*`: `subspec=-`, `detail=<blocked-source>`
+- concrete-subspec `source_block`: `subspec=<comma-list-of-required-subspecs>`, `detail=<blocked-source>`
+- `range`: `subspec=-`, `detail=<effective-requirement>`
+- `missing_subspec`: `subspec=<comma-list-of-required-subspecs>`, `detail=<missing-subspec>`
+- `platform`: `subspec=<comma-list-of-required-subspecs>`, `detail=<request-platform-comparator>`, such as `ios>=15.0`. This is the requesting target's platform and version after policy defaulting, not the candidate spec row's declared minimum from `specs.tsv`; for example a candidate requiring `ios>=16.0` rejected for an iOS 15.0 target still emits `detail=ios>=15.0`.
+- `status`: `subspec=<comma-list-of-required-subspecs>`, `detail=<candidate-status>`
+- `trust`: `subspec=<comma-list-of-required-subspecs>`, `detail=<candidate-trust>`
+- `license`: `subspec=<comma-list-of-required-subspecs>`, `detail=<candidate-license>`
+- `checksum`: `subspec=<comma-list-of-required-subspecs>`, `detail=<subspec-name-whose-checksum_present-is-not-true>`. For a required `Core` subspec with `checksum_present=false`, the detail is `Core`, not `false`, `checksum_present=false`, or the checksum string.
+
+`/opt/pod-lock-desk/out/seal.txt` is one lowercase SHA-256 hex digest plus newline. It is the digest of the byte concatenation of `/opt/pod-lock-desk/out/Podfile.lock`, `/opt/pod-lock-desk/out/pods-plan.tsv`, `/opt/pod-lock-desk/out/subspec-graph.tsv`, and `/opt/pod-lock-desk/out/source-audit.tsv` in that order.
