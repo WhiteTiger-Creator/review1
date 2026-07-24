@@ -1,9 +1,0 @@
-AC_NETWORK 1
-BASE_MVA 100
-BUS slack SLACK 1.0 0 0 0 0 0 0 0 0 0
-BUS gen1 PV 1.0 0 0.3 0.0 -0.2 0.8 0.05 0.0 0 0
-BUS loadA PQ 1.0 0 0 0 0 0 0.2 0.1 0 0
-BRANCH b12 slack gen1 IN 0.01 -0.1 0.02 1.0 0
-BRANCH b23 gen1 loadA IN 0.02 -0.1 0.02 1.0 0
-BRANCH b31 loadA slack IN 0.02 -0.1 0.02 1.0 0
-END

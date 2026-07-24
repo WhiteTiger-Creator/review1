@@ -1,22 +1,17 @@
 version = "2.0"
 
 [metadata]
-author_name = "anonymous"
+author_name = "Anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "scientific-computing"
+category = "build-and-dependency-management"
 subcategories = []
+languages = ["json"]
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["go"]
-tags = [
-    "voltage-collapse-continuation",
-    "reactive-limit-bus-switching",
-    "saddle-node-margin-analysis",
-    "ac-loadability-qualification"
-]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 360
+tags = ["abi-transition", "dependency-graph", "release-planning", "compatibility-management", "exact-optimization"]
+expert_time_estimate_min = 300.0
+junior_time_estimate_min = 1200.0
+codebase_size = "minimal"
 
 [verifier]
 timeout_sec = 900.0
@@ -25,11 +20,11 @@ timeout_sec = 900.0
 timeout_sec = 1800.0
 
 [environment]
-build_timeout_sec = 600.0
-docker_flags = []
+allow_internet = false
+build_timeout_sec = 1200.0
 cpus = 1
-memory_mb = 2048
-storage_mb = 10240
+memory_mb = 4096
+storage_mb = 4096
+docker_flags = []
 gpus = 0
 gpu_types = []
-allow_internet = false
