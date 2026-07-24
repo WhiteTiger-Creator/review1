@@ -1,0 +1,8 @@
+<Project>
+  <ItemGroup>
+    <PackageVersion Include="Ledger.Core" Version="1.2.0" />
+    <PackageVersion Include="Ledger.Utils" Version="1.2.0" />
+    <PackageVersion Include="Ledger.Gateway" Version="1.2.0" />
+    <PackageVersion Include="Ledger.Metrics" Version="1.2.0" />
+  </ItemGroup>
+</Project>

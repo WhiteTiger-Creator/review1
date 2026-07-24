@@ -1,7 +1,14 @@
 .git
+.gitignore
+**/target/
+**/.pytest_cache/
 **/__pycache__/
 **/*.pyc
+**/.mypy_cache/
+**/.ruff_cache/
 **/node_modules/
-.env
+dist/
 solution/
 tests/
+*.log
+.DS_Store

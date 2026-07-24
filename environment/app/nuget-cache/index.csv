@@ -1,0 +1,11 @@
+digest,path,platform_tag
+sha256:corecorecorecorecorecorecorecorecorecorecorecorecorecorecoreco,nuget-cache/ledger_core-1.2.0-py3-none-nupkg.whl,nupkg
+sha256:utilsutilsutilsutilsutilsutilsutilsutilsutilsutilsutilsutilsutil,nuget-cache/ledger_utils-1.2.0-py3-none-nupkg.whl,nupkg
+sha256:gategategategategategategategategategategategategategategategate,nuget-cache/ledger_gateway-1.2.0-py3-none-nupkg.whl,nupkg
+sha256:metmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetm,nuget-cache/ledger_metrics-1.2.0-py3-none-nupkg.whl,nupkg
+sha256:legleglegleglegleglegleglegleglegleglegleglegleglegleglegleglegleg,nuget-cache/legacy_nuget-0.1.0-py3-none-any.whl,any
+sha256:tnttnttnttnttnttnttnttnttnttnttnttnttnttnttnttnttnttnttnttnttnttnt,nuget-cache/tainted-0.1.0-py3-none-any.whl,any
+sha256:blkblkblkblkblkblkblkblkblkblkblkblkblkblkblkblkblkblkblkblkblkb,nuget-cache/blocked-0.1.0-py3-none-any.whl,any
+sha256:qrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqrqr,nuget-cache/quarantine-0.1.0-py3-none-any.whl,any
+sha256:altaaltaaltaaltaaltaaltaaltaaltaaltaaltaaltaaltaaltaaltaaltaalta,nuget-cache/alt_a-1.0.0-py3-none-any.whl,any
+sha256:altbaltbaltbaltbaltbaltbaltbaltbaltbaltbaltbaltbaltbaltbaltbaltb,nuget-cache/alt_b-1.0.0-py3-none-any.whl,any

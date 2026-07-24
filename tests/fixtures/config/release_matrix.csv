@@ -1,0 +1,4 @@
+lane,retention_hops
+edge,32
+core,1
+gate,3

@@ -1,28 +1,25 @@
-# Offline Go privilege-audit driver (canonical golang bookworm)
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
-WORKDIR /app
+ENV OAT_PATH="/opt/venv/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ENV PATH="${OAT_PATH}"
+ENV BASH_ENV=/etc/profile.d/oat-path.sh
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3=3.11.2-1+b1 \
-        python3-venv=3.11.2-1+b1 \
-        ca-certificates=20230311+deb12u1 \
-        patch=2.7.6-7 \
-        tmux=3.3a-3 \
         asciinema=2.2.0-1 \
-    && rm -rf /var/lib/apt/lists/*
+        ca-certificates=20230311+deb12u1 \
+        python3-venv=3.11.2-1+b1 \
+        tmux=3.3a-3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && printf 'export PATH="%s"\n' "$OAT_PATH" > /etc/profile.d/oat-path.sh \
+    && printf 'export PATH="%s"\n' "$OAT_PATH" >> /etc/bash.bashrc
 
-RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir \
-      pytest==8.4.1 \
-      pytest-json-ctrf==0.3.5 \
-      pytest-randomly==3.16.0
-ENV PATH=/opt/verifier/bin:/usr/local/go/bin:${PATH}
+COPY requirements.lock /tmp/requirements.lock
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/python -m pip install --no-cache-dir --disable-pip-version-check \
+        --require-hashes --no-deps -r /tmp/requirements.lock \
+    && rm /tmp/requirements.lock
 
-COPY . /app/environment
-
-RUN mkdir -p /app/output /app/output/scratch /app/bin /app/environment/tools \
-    && cd /app/environment \
-    && CGO_ENABLED=0 go build -o /app/environment/tools/drvx ./cmd/drvx \
-    && cp /app/environment/tools/drvx /app/bin/drvx
+ENV PATH="/opt/venv/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+WORKDIR /app
+COPY app/ /app/
