@@ -1,9 +1,0 @@
-{
-  "targets/firmware_alpha.bin": "production",
-  "targets/firmware_beta.bin": "production",
-  "targets/firmware_gamma.bin": "production",
-  "targets/config_delta.json": "staging",
-  "targets/config_epsilon.json": "production",
-  "targets/patch_zeta.bin": "production",
-  "targets/bundle_eta.tar": "experimental"
-}

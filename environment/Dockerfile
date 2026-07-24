@@ -1,25 +1,22 @@
-FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS go-builder
 
-COPY requirements.lock /tmp/requirements.lock
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip tmux asciinema \
-    make libssl-dev \
-    && pip3 install --break-system-packages --require-hashes --no-deps -r /tmp/requirements.lock \
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tmux \
+        asciinema \
+        gcc \
+        libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=go-builder /usr/local/go /usr/local/go
+ENV PATH="/usr/local/go/bin:${PATH}"
+RUN ln -s /usr/local/go/bin/go /usr/bin/go \
+    && ln -s /usr/local/go/bin/gofmt /usr/bin/gofmt
+
+COPY requirements.lock /tmp/requirements.lock
+RUN python -m pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock
+
 WORKDIR /app
-
-COPY Makefile /app/
-COPY inc/ /app/inc/
-COPY src/ /app/src/
-COPY config/ /app/config/
-COPY docs/ /app/docs/
-COPY scripts/ /app/scripts/
-COPY benchmarks/ /app/benchmarks/
-COPY data/ /app/data/
-
-RUN make clean && make
-
-RUN mkdir -p /app/output
-
-RUN echo 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' >> /root/.bashrc
+COPY app/ /app/

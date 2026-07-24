@@ -1,27 +1,33 @@
+# Task configuration schema version
 version = "2.0"
 
+# Task metadata (author, difficulty, categorization)
 [metadata]
-author_name = "anonymous"
-author_email = "anonymous"
-category = "security"
-subcategories = []
+author_name = "prince"
+author_email = "anonymous@example.com"
 difficulty = "hard"
-codebase_size = "small"
+category = "security"
+subcategories = [ ]
 number_of_milestones = 0
-languages = ["c++", "bash"]
-tags = ["tuf", "signed-metadata", "supply-chain", "canonical-json"]
-expert_time_estimate_min = 90.0
-junior_time_estimate_min = 180.0
+codebase_size = "minimal"
+languages = [ "go" ]
+tags = [ "cryptography", "certificate-transparency", "rfc6962", "concurrency", "security" ]
+expert_time_estimate_min = 60
+junior_time_estimate_min = 120
 
+# Verifier: runs the test script to check task completion
+[verifier]
+timeout_sec = 450.0
+
+# Agent: limits how long the agent can run when attempting the task
+[agent]
+timeout_sec = 900.0
+
+# Sandbox environment limits
 [environment]
-allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 600.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+allow_internet = false
 
-[agent]
-timeout_sec = 1800
-
-[verifier]
-timeout_sec = 900
