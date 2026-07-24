@@ -1,31 +1,27 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c AS builder
+WORKDIR /build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libsqlite3-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY app/src/screening_gate.c /build/screening_gate.c
+COPY app/include/screening_gate.h /build/screening_gate.h
+RUN gcc -std=c17 -O2 -Wall -Wextra -Werror -I/build /build/screening_gate.c -o /build/screening-gate -lsqlite3 -lm
 
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 WORKDIR /app
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PATH=/opt/verifier/bin:/usr/local/go/bin:${PATH}
-ENV GOTOOLCHAIN=local
-ENV GOFLAGS=-mod=mod
-ENV CGO_ENABLED=0
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates=20230311+deb12u1 \
-        tmux=3.3a-3 \
-        asciinema=2.2.0-1 \
-        patch=2.7.6-7 \
-        python3=3.11.2-1+b1 \
-        python3-pip=23.0.1+dfsg-1 \
-        python3-venv=3.11.2-1+b1 \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5 \
-        pytest-randomly==3.16.0
-
-COPY . /app/environment
-
-RUN cd /app/environment && go build -o /tmp/k4warm ./cmd/k4 && rm -f /tmp/k4warm
-
-RUN chmod +x /app/environment/drive_k4.sh
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      asciinema \
+      ca-certificates \
+      jq \
+      openssl \
+      sqlite3 \
+      tmux \
+ && rm -rf /var/lib/apt/lists/*
+COPY requirements.lock /tmp/requirements.lock
+RUN pip install --no-cache-dir -r /tmp/requirements.lock
+COPY app/ /app/
+COPY --from=builder /build/screening-gate /app/bin/screening-core
+RUN chmod 0755 /app/bin/screening-gate /app/bin/screening-core \
+ && chmod 0600 /app/recovery/candidates/*-signing.material \
+ && mkdir -p /app/output

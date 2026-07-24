@@ -1,0 +1,6 @@
+{
+  "profile": "production-screening",
+  "threshold": 0.70,
+  "minimum_threshold": 0.60,
+  "maximum_threshold": 0.95
+}

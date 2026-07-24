@@ -1,0 +1,19 @@
+{
+  "incident_id": "INC-2026-0721-SCREENING",
+  "revoked_signer": "screening-release-2026",
+  "required_roles": [
+    "operations",
+    "security",
+    "compliance"
+  ],
+  "effective_date": "2026-07-21",
+  "minimum_release_sequence": 42,
+  "minimum_assurance_weight": 12,
+  "minimum_regions": 3,
+  "require_distinct_key_families": true,
+  "minimum_delegation_roots": 2,
+  "minimum_security_signers": 2,
+  "maximum_custody_risk": 10,
+  "maximum_delegation_hops": 3,
+  "require_distinct_custodians": true
+}

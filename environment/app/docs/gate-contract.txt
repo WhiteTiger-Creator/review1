@@ -1,0 +1,1 @@
+The release admission control accepts a recovered release only after its authorization panel, independent signatures, signer trust state, evidence digests, rollback chain, threshold policy, and frame decisions all validate.

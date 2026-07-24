@@ -1,0 +1,1 @@
+{"required":["signer_id","model_sha256","allowed_model_kind","minimum_threshold","maximum_threshold"]}

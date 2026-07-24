@@ -1,0 +1,748 @@
+{
+  "expected_assurance_weight": 18,
+  "expected_gate": {
+    "decisions": [
+      {
+        "action": "allow",
+        "frame_id": "frame-001",
+        "label": 0,
+        "score": 0.193099
+      },
+      {
+        "action": "quarantine",
+        "frame_id": "frame-002",
+        "label": 1,
+        "score": 0.888944
+      },
+      {
+        "action": "quarantine",
+        "frame_id": "frame-003",
+        "label": 1,
+        "score": 0.700567
+      },
+      {
+        "action": "allow",
+        "frame_id": "frame-004",
+        "label": 0,
+        "score": 0.24974
+      },
+      {
+        "action": "quarantine",
+        "frame_id": "frame-005",
+        "label": 1,
+        "score": 0.825202
+      },
+      {
+        "action": "allow",
+        "frame_id": "frame-006",
+        "label": 0,
+        "score": 0.384616
+      },
+      {
+        "action": "quarantine",
+        "frame_id": "frame-007",
+        "label": 1,
+        "score": 0.74725
+      }
+    ],
+    "evidence": {
+      "fn": 0,
+      "fp": 0,
+      "tn": 3,
+      "total": 7,
+      "tp": 4
+    },
+    "gate": {
+      "quarantined": 4,
+      "status": "admit"
+    },
+    "policy": {
+      "profile": "production-screening",
+      "threshold": 0.7
+    },
+    "trust": {
+      "model_sha256": "82f3c69ae97aeccdae03fb2454e071479e8b48c9a27a2f914778e37a60fb4721",
+      "public_key_sha256": "a0b860a5ffcc17db0555e4cbcf9d4ccdbc8e78200157cf9295522d4f1018a4b6",
+      "signature_verified": true,
+      "signer_id": "compliance-echo"
+    }
+  },
+  "expected_quorum_rows": [
+    [
+      "compliance",
+      "compliance-echo",
+      8,
+      "ap-south",
+      "family-echo",
+      3,
+      "a0b860a5ffcc17db0555e4cbcf9d4ccdbc8e78200157cf9295522d4f1018a4b6"
+    ],
+    [
+      "operations",
+      "ops-zulu",
+      30,
+      "eu-west",
+      "family-zulu",
+      6,
+      "389872bf13adeccf07201257709956b4b3ff34a5eb531206b1d120b1ea186621"
+    ],
+    [
+      "security",
+      "sec-bravo",
+      10,
+      "us-west",
+      "family-bravo",
+      4,
+      "229eb200546a4d31233ef1fa60ecd0809ee44bea75cd5f8d680c75ffb04b12bd"
+    ],
+    [
+      "security",
+      "sec-delta",
+      20,
+      "eu-central",
+      "family-delta",
+      5,
+      "77fe497a939154b2ec72b7e59d68f15307fd5aad5f5751557a85a00e6426320e"
+    ]
+  ],
+  "expected_regions": [
+    "ap-south",
+    "eu-central",
+    "eu-west",
+    "us-west"
+  ],
+  "expected_signer_ids": [
+    "compliance-echo",
+    "ops-zulu",
+    "sec-bravo",
+    "sec-delta"
+  ],
+  "expected_total_priority": 68,
+  "image_features": [
+    [
+      "frame-001",
+      0.15,
+      0.1,
+      0.7,
+      0
+    ],
+    [
+      "frame-002",
+      0.8,
+      0.75,
+      0.05,
+      1
+    ],
+    [
+      "frame-003",
+      0.55,
+      0.45,
+      0.1,
+      1
+    ],
+    [
+      "frame-004",
+      0.2,
+      0.15,
+      0.6,
+      0
+    ],
+    [
+      "frame-005",
+      0.7,
+      0.62,
+      0.08,
+      1
+    ],
+    [
+      "frame-006",
+      0.35,
+      0.2,
+      0.4,
+      0
+    ],
+    [
+      "frame-007",
+      0.6,
+      0.52,
+      0.12,
+      1
+    ]
+  ],
+  "initial_release_history": [
+    [
+      41,
+      "a2cba2b52cb94ed19ef2116ff4b51bc34763d9ab387fd55ae324e9ebd863095f",
+      "INC-2026-0701-SCREENING",
+      "screening-release-2026"
+    ]
+  ],
+  "initial_trusted_signers": [
+    [
+      "screening-release-2026",
+      "8d28da3e301dbe7902e0778cc6ea513a17b5a91e7c448723860cbaf2fa9c6e43",
+      "revoked"
+    ]
+  ],
+  "protected_file_sha256": {
+    "/app/bin/screening-gate": "556caa5dce65279cc9f1a6b1721e288ace73da1c92e83876965e6028b37544d7",
+    "/app/config/screening.json": "213b92ea150c494a5d41f222e456d2d368ba5fb85ba030a186124582e987c1b2",
+    "/app/model/metadata.json": "82f3c69ae97aeccdae03fb2454e071479e8b48c9a27a2f914778e37a60fb4721",
+    "/app/recovery/candidate-snapshot.tsv": "d7031203b81edb6739acfc699c55f4ddf503f6ee77a813b1fd8fed91178ddc7b",
+    "/app/recovery/candidates/compliance-denied-signing.material": "0d2c0694512911350a2d0b748a278dc383dfea8accaa7c44c366451a3688e852",
+    "/app/recovery/candidates/compliance-denied-verification.material": "58a991f37d5add8aa10806c6e998aaf8bc54f4f86d956db760706b9e3977a6c0",
+    "/app/recovery/candidates/compliance-echo-signing.material": "108d8e9852300e0cf534f538fc858f3358d2bf6879e0dec30e4dc6e3509f176f",
+    "/app/recovery/candidates/compliance-echo-verification.material": "a0b860a5ffcc17db0555e4cbcf9d4ccdbc8e78200157cf9295522d4f1018a4b6",
+    "/app/recovery/candidates/compliance-foxtrot-signing.material": "3e67f9c4d3a505f985c1d794bbe5648126cc3bb3535a851c69dbdfa393ee612c",
+    "/app/recovery/candidates/compliance-foxtrot-verification.material": "705d5854536c7b531188fdc4c86b20bebe2fa0e5e6c3ce60ddeb52bc572be803",
+    "/app/recovery/candidates/emergency-charlie-signing.material": "53a48b95753f68f5d5ee2919510c0fa1b2ced6ce48e446b4e6bad7fc0b9d46d8",
+    "/app/recovery/candidates/emergency-charlie-verification.material": "03d4e7c4f5043982d806a4317b7831d6deb023961242989dd739db0a1ec11767",
+    "/app/recovery/candidates/ops-alpha-signing.material": "3e36bb0e01a02b381dc1352d9d78ff2709f0d9731ebde23e0c978e4b06f6ef09",
+    "/app/recovery/candidates/ops-alpha-verification.material": "e683dacdd71be2df24b3565ef2f4695ee01bc815e2c4db0986b2ff4ba719d664",
+    "/app/recovery/candidates/ops-expired-signing.material": "58398bed842ecbeda0477e570b036b9842a7a9f28c5bdb05dad48df241b7e06b",
+    "/app/recovery/candidates/ops-expired-verification.material": "bea1cb22d7243208f67b9e3edf87db126981d2748f39f7c103ef013af418a21f",
+    "/app/recovery/candidates/ops-fingerprint-bad-signing.material": "01303b1fc7602a241cb788e7be7f22f86b9ce93cc2cf07ae16b18f2da148645d",
+    "/app/recovery/candidates/ops-fingerprint-bad-verification.material": "84ee233fabdfd8adec2ebbcb7372e13d2334d760352e0cd6ffa7e231af9d5e2c",
+    "/app/recovery/candidates/ops-legacy-signing.material": "0e6f6fb13ef57337cfcebfa36db924c33058384260c1d6975e18bfddb8938a1b",
+    "/app/recovery/candidates/ops-legacy-verification.material": "2eb6221d0a9acd6adfd5be8e841f62ee0b61f9b270d1c72833d0c40bd63e2035",
+    "/app/recovery/candidates/ops-shadow-signing.material": "b790dc6aeb962ff756acdddd3db2c6ce8c704e5b8ce0a6ef67687881276f6f3b",
+    "/app/recovery/candidates/ops-shadow-verification.material": "1f1cebb087aa2eabf1524bd4cccef207b999740f9fe1f634ad83ec614889d795",
+    "/app/recovery/candidates/ops-wrong-incident-signing.material": "21ea165c3bfa9c988b7eea9c0f86559b31a78dc6ea6563fd510dc3be3b54d5ba",
+    "/app/recovery/candidates/ops-wrong-incident-verification.material": "7accf8b1b9410c9bc1592fdb968a2c550ed1316d3f5c19abc34414e7fb0f7c2e",
+    "/app/recovery/candidates/ops-zulu-signing.material": "39384ff569e402ee7f942a6688ae2d8a8e5aca276b7de3438c066d75042122e8",
+    "/app/recovery/candidates/ops-zulu-verification.material": "389872bf13adeccf07201257709956b4b3ff34a5eb531206b1d120b1ea186621",
+    "/app/recovery/candidates/sec-bravo-signing.material": "37e5fb7dcbaa9c9cc43838a67527d8e8e9c37543b21ae9be8832ea9b08c6b950",
+    "/app/recovery/candidates/sec-bravo-verification.material": "229eb200546a4d31233ef1fa60ecd0809ee44bea75cd5f8d680c75ffb04b12bd",
+    "/app/recovery/candidates/sec-delta-signing.material": "8227fbbf23a7455ca370edd7717cbc6077808d82553edeafece568ae12bb9122",
+    "/app/recovery/candidates/sec-delta-verification.material": "77fe497a939154b2ec72b7e59d68f15307fd5aad5f5751557a85a00e6426320e",
+    "/app/recovery/candidates/sec-fingerprint-bad-signing.material": "ba948a2783e39b6211943baf929e4ccf5c043f7493397283bb46b3bed7853cb2",
+    "/app/recovery/candidates/sec-fingerprint-bad-verification.material": "be69b90eabb9dfe94c47ceb62edad2be26f67fea3235a21b7c09e98fa52d9787",
+    "/app/recovery/candidates/sec-not-yet-valid-signing.material": "180dc784e11792b801e204cb1100d19c5c5e2fee4656ca15f053b4f4d1484f37",
+    "/app/recovery/candidates/sec-not-yet-valid-verification.material": "451e662376e3e5036d809a16828498f758758bb258df3b9f4baadc95fe6faa83",
+    "/app/recovery/candidates/sec-shadow-signing.material": "d0c6ecfcd7592c4d919128454a47a75110efe566cb06321b2feae3564431aa38",
+    "/app/recovery/candidates/sec-shadow-verification.material": "814711740f6a1d53d1e3616dc8a48accff4c6743c9810a239048c6adee25b4aa",
+    "/app/recovery/candidates/sec-wrong-incident-signing.material": "6b34f34111bc17c7d54a0b67e9f2f7a5559457907e0f7b81785ebb9796b5bdb2",
+    "/app/recovery/candidates/sec-wrong-incident-verification.material": "b65cae2e50ccec030200c3bd7b68bfb338ed3435d6e7805c16bf45aa4ddc89f3",
+    "/app/recovery/compromise-ledger.jsonl": "b9a6be4191b84b0f29b85a071d33a133421eb283632a1561daf04853a9cd3df6",
+    "/app/recovery/recovery-request.json": "2ade6d4d3986e5f66ddca8b792dce2c616706498d2a11efcc3eb373cfdad5d44",
+    "/app/src/screening_gate.c": "9bb0832e17c503b37835524ad5431fe6b4780377abe6bc3ebea0b46d63d06853",
+    "/app/recovery/delegation-state.tsv": "db886de0aa720cabf405415c2eac415e854c317526e37f1f4de0086583493253"
+  },
+  "recovery_candidates": [
+    [
+      "compliance-denied",
+      "compliance",
+      "INC-2026-0721-SCREENING",
+      "58a991f37d5add8aa10806c6e998aaf8bc54f4f86d956db760706b9e3977a6c0",
+      "trusted",
+      1,
+      "2026-07-01",
+      "2026-12-31",
+      "af-south",
+      "family-denied",
+      10
+    ],
+    [
+      "compliance-echo",
+      "compliance",
+      "INC-2026-0721-SCREENING",
+      "a0b860a5ffcc17db0555e4cbcf9d4ccdbc8e78200157cf9295522d4f1018a4b6",
+      "trusted",
+      8,
+      "2026-07-01",
+      "2026-12-31",
+      "ap-south",
+      "family-echo",
+      3
+    ],
+    [
+      "compliance-foxtrot",
+      "compliance",
+      "INC-2026-0721-SCREENING",
+      "705d5854536c7b531188fdc4c86b20bebe2fa0e5e6c3ce60ddeb52bc572be803",
+      "trusted",
+      25,
+      "2026-07-01",
+      "2026-12-31",
+      "us-east",
+      "family-foxtrot",
+      5
+    ],
+    [
+      "emergency-charlie",
+      "emergency",
+      "INC-2026-0721-SCREENING",
+      "03d4e7c4f5043982d806a4317b7831d6deb023961242989dd739db0a1ec11767",
+      "trusted",
+      1,
+      "2026-07-01",
+      "2026-12-31",
+      "global",
+      "family-emergency",
+      7
+    ],
+    [
+      "ops-alpha",
+      "operations",
+      "INC-2026-0721-SCREENING",
+      "e683dacdd71be2df24b3565ef2f4695ee01bc815e2c4db0986b2ff4ba719d664",
+      "trusted",
+      20,
+      "2026-07-01",
+      "2026-12-31",
+      "us-east",
+      "family-alpha",
+      4
+    ],
+    [
+      "ops-expired",
+      "operations",
+      "INC-2026-0721-SCREENING",
+      "bea1cb22d7243208f67b9e3edf87db126981d2748f39f7c103ef013af418a21f",
+      "trusted",
+      2,
+      "2026-01-01",
+      "2026-07-20",
+      "eu-north",
+      "family-expired",
+      8
+    ],
+    [
+      "ops-fingerprint-bad",
+      "operations",
+      "INC-2026-0721-SCREENING",
+      "0000000000000000000000000000000000000000000000000000000000000000",
+      "trusted",
+      3,
+      "2026-07-01",
+      "2026-12-31",
+      "ap-east",
+      "family-badfp",
+      9
+    ],
+    [
+      "ops-legacy",
+      "operations",
+      "INC-2026-0721-SCREENING",
+      "2eb6221d0a9acd6adfd5be8e841f62ee0b61f9b270d1c72833d0c40bd63e2035",
+      "revoked",
+      5,
+      "2026-07-01",
+      "2026-12-31",
+      "us-central",
+      "family-legacy",
+      9
+    ],
+    [
+      "ops-shadow",
+      "operations",
+      "INC-2026-0721-SCREENING",
+      "1f1cebb087aa2eabf1524bd4cccef207b999740f9fe1f634ad83ec614889d795",
+      "trusted",
+      1,
+      "2026-07-01",
+      "2026-12-31",
+      "ap-southeast",
+      "family-shadow-ops",
+      10
+    ],
+    [
+      "ops-wrong-incident",
+      "operations",
+      "INC-2026-OTHER",
+      "7accf8b1b9410c9bc1592fdb968a2c550ed1316d3f5c19abc34414e7fb0f7c2e",
+      "trusted",
+      1,
+      "2026-07-01",
+      "2026-12-31",
+      "ap-south",
+      "family-wronginc",
+      9
+    ],
+    [
+      "ops-zulu",
+      "operations",
+      "INC-2026-0721-SCREENING",
+      "389872bf13adeccf07201257709956b4b3ff34a5eb531206b1d120b1ea186621",
+      "trusted",
+      30,
+      "2026-07-01",
+      "2026-12-31",
+      "eu-west",
+      "family-zulu",
+      6
+    ],
+    [
+      "sec-bravo",
+      "security",
+      "INC-2026-0721-SCREENING",
+      "229eb200546a4d31233ef1fa60ecd0809ee44bea75cd5f8d680c75ffb04b12bd",
+      "trusted",
+      10,
+      "2026-07-01",
+      "2026-12-31",
+      "us-west",
+      "family-bravo",
+      4
+    ],
+    [
+      "sec-delta",
+      "security",
+      "INC-2026-0721-SCREENING",
+      "77fe497a939154b2ec72b7e59d68f15307fd5aad5f5751557a85a00e6426320e",
+      "trusted",
+      20,
+      "2026-07-01",
+      "2026-12-31",
+      "eu-central",
+      "family-delta",
+      5
+    ],
+    [
+      "sec-fingerprint-bad",
+      "security",
+      "INC-2026-0721-SCREENING",
+      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "trusted",
+      3,
+      "2026-07-01",
+      "2026-12-31",
+      "ap-northeast",
+      "family-badfp2",
+      9
+    ],
+    [
+      "sec-not-yet-valid",
+      "security",
+      "INC-2026-0721-SCREENING",
+      "451e662376e3e5036d809a16828498f758758bb258df3b9f4baadc95fe6faa83",
+      "trusted",
+      2,
+      "2026-07-22",
+      "2026-12-31",
+      "sa-east",
+      "family-future",
+      9
+    ],
+    [
+      "sec-shadow",
+      "security",
+      "INC-2026-0721-SCREENING",
+      "814711740f6a1d53d1e3616dc8a48accff4c6743c9810a239048c6adee25b4aa",
+      "trusted",
+      1,
+      "2026-07-01",
+      "2026-12-31",
+      "me-central",
+      "family-shadow-sec",
+      10
+    ],
+    [
+      "sec-wrong-incident",
+      "security",
+      "INC-2026-OTHER",
+      "b65cae2e50ccec030200c3bd7b68bfb338ed3435d6e7805c16bf45aa4ddc89f3",
+      "trusted",
+      1,
+      "2026-07-01",
+      "2026-12-31",
+      "ca-central",
+      "family-wronginc2",
+      9
+    ]
+  ],
+  "expected_total_risk": 10,
+  "expected_delegation_roots": [
+    "root-north",
+    "root-south"
+  ],
+  "expected_delegation_rows": [
+    [
+      "compliance",
+      "compliance-echo",
+      "root-north",
+      2,
+      "root-north>bridge-a>compliance-echo",
+      "vault-echo",
+      2
+    ],
+    [
+      "operations",
+      "ops-zulu",
+      "root-south",
+      2,
+      "root-south>bridge-b>ops-zulu",
+      "vault-zulu",
+      3
+    ],
+    [
+      "security",
+      "sec-bravo",
+      "root-north",
+      1,
+      "root-north>sec-bravo",
+      "vault-bravo",
+      3
+    ],
+    [
+      "security",
+      "sec-delta",
+      "root-south",
+      1,
+      "root-south>sec-delta",
+      "vault-delta",
+      2
+    ]
+  ],
+  "trust_roots": [
+    [
+      "root-north",
+      "trusted"
+    ],
+    [
+      "root-old",
+      "revoked"
+    ],
+    [
+      "root-south",
+      "trusted"
+    ]
+  ],
+  "delegation_edges": [
+    [
+      "bridge-a",
+      "compliance-echo",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "bridge-b",
+      "ops-zulu",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-north",
+      "bridge-a",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-north",
+      "emergency-charlie",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-north",
+      "ops-alpha",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-north",
+      "ops-expired",
+      "INC-2026-0721-SCREENING",
+      "2026-01-01",
+      "2026-07-20",
+      "active"
+    ],
+    [
+      "root-north",
+      "sec-bravo",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-north",
+      "sec-shadow",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-07-20",
+      "active"
+    ],
+    [
+      "root-north",
+      "sec-wrong-incident",
+      "INC-2026-OTHER",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-old",
+      "ops-shadow",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-south",
+      "bridge-b",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-south",
+      "compliance-denied",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-south",
+      "compliance-foxtrot",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-south",
+      "ops-wrong-incident",
+      "INC-2026-OTHER",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-south",
+      "sec-delta",
+      "INC-2026-0721-SCREENING",
+      "2026-07-01",
+      "2026-12-31",
+      "active"
+    ],
+    [
+      "root-south",
+      "sec-not-yet-valid",
+      "INC-2026-0721-SCREENING",
+      "2026-07-22",
+      "2026-12-31",
+      "active"
+    ]
+  ],
+  "custody_controls": [
+    [
+      "compliance-denied",
+      "vault-denied",
+      1
+    ],
+    [
+      "compliance-echo",
+      "vault-echo",
+      2
+    ],
+    [
+      "compliance-foxtrot",
+      "vault-foxtrot",
+      1
+    ],
+    [
+      "emergency-charlie",
+      "vault-emergency",
+      2
+    ],
+    [
+      "ops-alpha",
+      "vault-alpha",
+      4
+    ],
+    [
+      "ops-expired",
+      "vault-expired",
+      2
+    ],
+    [
+      "ops-fingerprint-bad",
+      "vault-badfp",
+      2
+    ],
+    [
+      "ops-legacy",
+      "vault-legacy",
+      2
+    ],
+    [
+      "ops-shadow",
+      "vault-shadow",
+      1
+    ],
+    [
+      "ops-wrong-incident",
+      "vault-wrong",
+      2
+    ],
+    [
+      "ops-zulu",
+      "vault-zulu",
+      3
+    ],
+    [
+      "sec-bravo",
+      "vault-bravo",
+      3
+    ],
+    [
+      "sec-delta",
+      "vault-delta",
+      2
+    ],
+    [
+      "sec-fingerprint-bad",
+      "vault-badfp2",
+      2
+    ],
+    [
+      "sec-not-yet-valid",
+      "vault-future",
+      2
+    ],
+    [
+      "sec-shadow",
+      "vault-shadow",
+      1
+    ],
+    [
+      "sec-wrong-incident",
+      "vault-wrong2",
+      2
+    ]
+  ],
+  "pair_denials": [
+    [
+      "compliance-echo",
+      "sec-bravo",
+      "INC-2026-OTHER",
+      1
+    ],
+    [
+      "ops-alpha",
+      "sec-bravo",
+      "INC-2026-0721-SCREENING",
+      1
+    ],
+    [
+      "ops-zulu",
+      "sec-delta",
+      "INC-2026-0721-SCREENING",
+      0
+    ]
+  ]
+}
