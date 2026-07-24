@@ -1,0 +1,30 @@
+{
+  "features": [
+    "f0",
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f11"
+  ],
+  "canonical_basis": {
+    "definition": "each feature column is corpus-standardized to zero mean and unit variance",
+    "consumed_by": [
+      "logging_ranker.json",
+      "editorial relevance judgements"
+    ]
+  },
+  "extraction": {
+    "release_field": "extractor_build",
+    "release_table": "extractor_releases.csv",
+    "note": "emitted values carry the units and offsets of the extractor release that produced them"
+  },
+  "click_field": "clicked",
+  "rank_field": "serp_rank"
+}
