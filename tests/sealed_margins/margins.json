@@ -1,0 +1,51 @@
+{
+  "two_bus": {
+    "critical_lambda": 9.400494329914293,
+    "network_sha256": "c1f4274bd27fe9929e797654060e308c503850157c5e1661cb8615fbe830365b",
+    "ramp_sha256": "8838fe175d56e427310cfc623cd1bc8d87b76557ded928bc5c3b4fb84fc2ad91",
+    "event_count": 0,
+    "voltage_violation_count": 1
+  },
+  "pv_upper": {
+    "critical_lambda": 7.117985813761552,
+    "network_sha256": "58892a561473a8714b89e453885e61e0041e5da7362edc4ee796d86daab45263",
+    "ramp_sha256": "b26b6a49c1b3428544669e89e52c3de0320e7d6b346fbec4b9097caac5887d0a",
+    "event_count": 1,
+    "voltage_violation_count": 2
+  },
+  "pv_lower": {
+    "critical_lambda": 23.192856362367806,
+    "network_sha256": "252917ea0d64b24109ad24c233c274cd61b34c576778ce449919b23bea71a949",
+    "ramp_sha256": "271d50f3befbda157c18092b0e3ff817bafd0d7ed85cb57bdca5ef238c8768eb",
+    "event_count": 1,
+    "voltage_violation_count": 0
+  },
+  "simul": {
+    "critical_lambda": 9.538797114430569,
+    "network_sha256": "23cb625b5494674e4abbb1d64ee00cd5f745b488b357c8ef0d96d5ceff8b917d",
+    "ramp_sha256": "d893b6b6f52874e9eb519943901622206d0dd6264faa542a8e1a5831f707cd4e",
+    "event_count": 2,
+    "voltage_violation_count": 3
+  },
+  "meshed": {
+    "critical_lambda": 3.8374621773339133,
+    "network_sha256": "a35a6a32f2a3e8aa6aba377bc4a4ca93a2d2d9915a313fe3ff6f4c4c053851a8",
+    "ramp_sha256": "f3c822808dbe99311d82f68806cc12f1232f0dff7df00b40eac013bb8ddd3d7e",
+    "event_count": 1,
+    "voltage_violation_count": 3
+  },
+  "near_sing": {
+    "critical_lambda": 3.802055503126437,
+    "network_sha256": "122045ac6f68b03b8428aee643625af78480ab7226a29266a7b804ee25a7cff1",
+    "ramp_sha256": "6785bddbabe06b3d05852cb943f8f5fc76187ad7ff81961b1cca235cc27456f8",
+    "event_count": 0,
+    "voltage_violation_count": 0
+  },
+  "xfmr": {
+    "critical_lambda": 13.464428524451382,
+    "network_sha256": "17d9f63cad657481e460ff06061c419a6fa39492e7bcf31568ff4867ef4b716a",
+    "ramp_sha256": "9d9fd3f4fe14861bb593ecf5da75b22c852e25e24d931b3ec97e649234cd1ebf",
+    "event_count": 0,
+    "voltage_violation_count": 1
+  }
+}

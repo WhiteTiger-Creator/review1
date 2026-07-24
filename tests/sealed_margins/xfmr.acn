@@ -1,0 +1,9 @@
+AC_NETWORK 1
+BASE_MVA 100
+BUS slack SLACK 1.05 0 0 0 0 0 0 0 0 0
+BUS mid PQ 1.0 0 0 0 0 0 0.1 0.04 0.03 0.05
+BUS load PQ 1.0 0 0 0 0 0 0.4 0.15 0 0
+BRANCH t1 slack mid IN 0.01 0.08 0.02 0.95 10.0
+BRANCH l1 mid load IN 0.02 0.12 0.02 1.0 0
+BRANCH l2 load slack IN 0.02 0.1 0.02 1.0 0
+END

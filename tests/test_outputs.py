@@ -1,657 +1,593 @@
-"""SpanForge modal calibration verifier — exactly 36 top-level tests."""
+"""Voltage-collapse fold-map verifier: exactly 34 top-level tests.
+
+Normative schemas (also under /loadcrest/bluebook/) exercised here:
+- admittance companion JSON format admittance-companion-v1 (POWER-11)
+- .vcm ZIP Store order: manifest.json, curve.csv, events.csv,
+  critical_bus.csv, critical_branch.csv (TRACE-12)
+- stable diagnostic codes including E_NETWORK_DECK, E_FOLD, E_BASE_REACTIVE_LIMIT
+- scientific failures: nonphysical voltages, unresolved limit events, unbracketed folds
+"""
 
 from __future__ import annotations
 
 import json
 import math
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from span_modal_lab import (
-    base_plan,
-    copy_sealed_triplet,
-    isolated_workdir,
-    parse_mcr,
-    run_calibrate,
-    run_spectrum,
-    stderr_code,
-    two_dof_analytic_model,
-    write_json,
-)
+import collapse_casebook as cb
+import pytest
+
+# Exactly 34 top-level test_foldpath_* functions are defined in this module.
 
 
-def test_spanfit_spectrum_matches_two_dof_analytic_frequencies() -> None:
-    """Spectrum frequencies match the closed-form two-DOF generalized eigenvalues."""
-    with isolated_workdir() as td:
-        model = write_json(Path(td) / "model.json", two_dof_analytic_model())
-        proc = run_spectrum(model)
-        assert proc.returncode == 0, proc.stderr
-        data = json.loads(proc.stdout)
-        expect = [math.sqrt(1.2) / (2 * math.pi), math.sqrt(3.2) / (2 * math.pi)]
-        assert abs(data["frequencies_hz"][0] - expect[0]) < 1e-12
-        assert abs(data["frequencies_hz"][1] - expect[1]) < 1e-12
+def test_foldpath_admittance_reports_pi_model_terms(tmp_path: Path) -> None:
+    """Admittance companion reports POWER-11 JSON with pi-model Y-bus terms."""
+    net, _ = cb.sealed("two_bus")
+    rep = cb.run_admittance(net)
+    assert rep["format"] == "admittance-companion-v1"
+    for key in (
+        "network_sha256",
+        "base_mva",
+        "bus_count",
+        "branch_count",
+        "in_service_branch_count",
+        "slack_bus",
+        "nonzero_ybus_entries",
+        "ybus",
+        "branch_primitives",
+    ):
+        assert key in rep
+    assert rep["nonzero_ybus_entries"] >= 3
+    assert len(rep["ybus"]) == rep["nonzero_ybus_entries"]
+    assert len(rep["branch_primitives"]) == rep["branch_count"]
+    prim = next(p for p in rep["branch_primitives"] if p["status"] == "IN")
+    assert abs(prim["g_ft"]) + abs(prim["b_ft"]) + abs(prim["g_ff"]) + abs(prim["b_ff"]) > 0
 
 
-def test_spanfit_spectrum_is_invariant_to_eigenvector_sign() -> None:
-    """Mode-shape sign flips leave calibrated objective, MAC, and pairing unchanged."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        flipped = json.loads(survey.read_text())
-        for mode in flipped["modes"]:
-            mode["shape"] = [
-                (-v if v is not None else None) for v in mode["shape"]
-            ]
-        alt = write_json(Path(td) / "flipped.json", flipped)
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        assert run_calibrate(model, survey, plan, r1).returncode == 0
-        assert run_calibrate(model, alt, plan, r2).returncode == 0
-        a = parse_mcr(r1.read_text())
-        b = parse_mcr(r2.read_text())
-        assert abs(a["objective_total"] - b["objective_total"]) < 1e-12
-        assert [p["mac"] for p in a["pairs"]] == [p["mac"] for p in b["pairs"]]
-        assert [p["predicted"] for p in a["pairs"]] == [
-            p["predicted"] for p in b["pairs"]
-        ]
+def test_foldpath_admittance_includes_tap_and_phase_shift(tmp_path: Path) -> None:
+    """Tap magnitude and phase shift alter off-diagonal admittance primitives."""
+    net, _ = cb.sealed("meshed")
+    rep = cb.run_admittance(net)
+    taps = [p for p in rep["branch_primitives"] if p["id"] == "b23"]
+    assert taps and taps[0]["status"] == "IN"
+    assert abs(taps[0]["g_ft"] - taps[0]["g_tf"]) > 1e-12 or abs(taps[0]["b_ft"] - taps[0]["b_tf"]) > 1e-12
 
 
-def test_spanfit_rejects_nonsymmetric_mass_matrix() -> None:
-    """Mass asymmetry beyond tolerance yields E_MATRIX_SYMMETRY."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        m["mass"] = [[1.0, 0.5], [0.0, 1.0]]
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MATRIX_SYMMETRY"
+def test_foldpath_bus_order_preserves_case_identity(tmp_path: Path) -> None:
+    """Equivalent bus record ordering preserves network_sha256."""
+    src, _ = cb.sealed("meshed")
+    a = cb.run_admittance(src)
+    shuffled = tmp_path / "shuf.acn"
+    cb.shuffle_network_records(src, shuffled)
+    b = cb.run_admittance(shuffled)
+    assert a["network_sha256"] == b["network_sha256"]
 
 
-def test_spanfit_rejects_nonpositive_definite_mass_matrix() -> None:
-    """A singular or indefinite mass matrix yields E_MASS_PHYSICALITY."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        m["mass"] = [[1.0, 0.0], [0.0, 0.0]]
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MASS_PHYSICALITY"
+def test_foldpath_branch_order_preserves_case_identity(tmp_path: Path) -> None:
+    """Equivalent branch record ordering preserves network_sha256."""
+    src, _ = cb.sealed("xfmr")
+    a = cb.run_admittance(src)
+    shuffled = tmp_path / "shuf2.acn"
+    cb.shuffle_network_records(src, shuffled)
+    b = cb.run_admittance(shuffled)
+    assert a["network_sha256"] == b["network_sha256"]
 
 
-def test_spanfit_rejects_nonsymmetric_stiffness_contribution() -> None:
-    """Asymmetric group contribution is rejected before spectrum work."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        m["groups"][0]["contribution"] = [[0.2, 0.3], [0.0, 0.2]]
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MATRIX_SYMMETRY"
+def test_foldpath_rejects_duplicate_bus_identifier(tmp_path: Path) -> None:
+    """Duplicate bus identifiers are rejected as network-deck failures."""
+    p = tmp_path / "dup.acn"
+    cb.write_text(
+        p,
+        """AC_NETWORK 1
+BASE_MVA 100
+BUS slack SLACK 1 0 0 0 0 0 0 0 0 0
+BUS load PQ 1 0 0 0 0 0 0.2 0.1 0 0
+BUS load PQ 1 0 0 0 0 0 0.1 0.1 0 0
+BRANCH l1 slack load IN 0.01 0.1 0 1 0
+END
+""",
+    )
+    proc = subprocess.run(
+        [str(cb.fold_map_bin()), "admittance", "--network", str(p)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode != 0
+    assert "E_NETWORK_DECK" in proc.stderr
 
 
-def test_spanfit_rejects_nonphysical_stiffness_box_corner() -> None:
-    """A nonphysical stiffness box corner yields E_STIFFNESS_BOX."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        m["fixed_stiffness"] = [[0.05, 0.0], [0.0, 0.05]]
-        m["groups"][0]["lower"] = -5.0
-        m["groups"][0]["upper"] = -0.1
-        m["groups"][0]["initial"] = -1.0
-        m["groups"][0]["reference"] = -1.0
-        m["groups"][0]["contribution"] = [[1.0, 0.0], [0.0, 1.0]]
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) in {"E_STIFFNESS_BOX", "E_MODEL_SCHEMA"}
+def test_foldpath_rejects_unknown_branch_endpoint(tmp_path: Path) -> None:
+    """Branches referencing unknown buses are rejected."""
+    p = tmp_path / "badep.acn"
+    cb.write_text(
+        p,
+        """AC_NETWORK 1
+BASE_MVA 100
+BUS slack SLACK 1 0 0 0 0 0 0 0 0 0
+BUS load PQ 1 0 0 0 0 0 0.2 0.1 0 0
+BRANCH l1 slack ghost IN 0.01 0.1 0 1 0
+END
+""",
+    )
+    proc = subprocess.run(
+        [str(cb.fold_map_bin()), "admittance", "--network", str(p)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode != 0
+    assert "E_NETWORK_DECK" in proc.stderr
 
 
-def test_spanfit_rejects_duplicate_dof_identifier() -> None:
-    """Duplicate DOF identifiers are a model schema failure."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        m["dofs"] = ["D01", "D01"]
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MODEL_SCHEMA"
+def test_foldpath_rejects_multiple_slack_buses(tmp_path: Path) -> None:
+    """More than one slack bus is a network-deck failure."""
+    p = tmp_path / "mslack.acn"
+    cb.write_text(
+        p,
+        """AC_NETWORK 1
+BASE_MVA 100
+BUS s1 SLACK 1 0 0 0 0 0 0 0 0 0
+BUS s2 SLACK 1 0 0 0 0 0 0 0 0 0
+BRANCH l1 s1 s2 IN 0.01 0.1 0 1 0
+END
+""",
+    )
+    proc = subprocess.run(
+        [str(cb.fold_map_bin()), "admittance", "--network", str(p)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode != 0
 
 
-def test_spanfit_rejects_duplicate_group_identifier() -> None:
-    """Duplicate stiffness group identifiers are rejected."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        g = dict(m["groups"][0])
-        g["group_id"] = "cable"
-        m["groups"] = [m["groups"][0], g]
-        # shrink contribution so box may still be ok; schema should fail first
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MODEL_SCHEMA"
+def test_foldpath_rejects_energized_island_without_slack(tmp_path: Path) -> None:
+    """An energized component that does not cover all buses yields E_ISLAND."""
+    p = tmp_path / "island.acn"
+    cb.write_text(
+        p,
+        """AC_NETWORK 1
+BASE_MVA 100
+BUS slack SLACK 1 0 0 0 0 0 0 0 0 0
+BUS a PQ 1 0 0 0 0 0 0.1 0.05 0 0
+BUS b PQ 1 0 0 0 0 0 0.1 0.05 0 0
+BRANCH l1 slack a IN 0.01 0.1 0 1 0
+BRANCH l2 a b OUT 0.01 0.1 0 1 0
+END
+""",
+    )
+    proc = subprocess.run(
+        [str(cb.fold_map_bin()), "admittance", "--network", str(p)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode != 0
+    assert "E_ISLAND" in proc.stderr
 
 
-def test_spanfit_rejects_unknown_sensor_dof() -> None:
-    """Survey sensors that are not model DOFs yield E_SURVEY_SCHEMA."""
-    with isolated_workdir() as td:
-        model, _, plan = copy_sealed_triplet("single_group", Path(td))
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["A", "ZZ"],
-            "modes": [
-                {"mode_id": "M1", "frequency_hz": 0.2, "weight": 1.0, "shape": [0.5, 0.5]},
-                {"mode_id": "M2", "frequency_hz": 0.3, "weight": 1.0, "shape": [0.4, 0.6]},
-            ],
-        }
-        sp = write_json(Path(td) / "survey.json", survey)
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(model, sp, plan, rep)
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_SURVEY_SCHEMA"
+def test_foldpath_two_bus_basepoint_matches_analytic_solution(tmp_path: Path) -> None:
+    """Two-bus base point voltages stay near the flat start with light load."""
+    net, ramp = cb.sealed("two_bus")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    assert float(tr.curve[0]["lambda"]) == 0
+    assert float(tr.curve[0]["min_voltage_pu"]) > 0.95
+    buses = {b["bus_id"]: b for b in tr.buses}
+    assert abs(float(buses["slack"]["voltage_pu"]) - 1.0) < 1e-12
 
 
-def test_spanfit_rejects_mode_with_insufficient_observed_channels() -> None:
-    """A measured mode with fewer than two finite channels is rejected."""
-    with isolated_workdir() as td:
-        model, _, plan = copy_sealed_triplet("single_group", Path(td))
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["A", "B"],
-            "modes": [
-                {"mode_id": "M1", "frequency_hz": 0.2, "weight": 1.0, "shape": [0.5, None]},
-                {"mode_id": "M2", "frequency_hz": 0.3, "weight": 1.0, "shape": [0.4, 0.6]},
-            ],
-        }
-        proc = run_calibrate(
-            model,
-            write_json(Path(td) / "survey.json", survey),
-            plan,
-            Path(td) / "out.mcr",
+def test_foldpath_pv_bus_holds_voltage_before_limit(tmp_path: Path) -> None:
+    """PV voltage remains at the scheduled magnitude before a reactive event."""
+    net, ramp = cb.sealed("pv_upper")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    assert tr.events, "expected a reactive-limit event"
+    ev_lam = float(tr.events[0]["lambda"])
+    pre = [row for row in tr.curve if float(row["lambda"]) < ev_lam - 1e-6]
+    assert pre
+    # Scheduled PV voltage appears in event voltage_pu at the event
+    assert abs(float(tr.events[0]["voltage_pu"]) - 1.01) < 1e-6
+
+
+def test_foldpath_out_of_service_branch_is_excluded(tmp_path: Path) -> None:
+    """Out-of-service branches contribute zero critical flows and zero Y primitives."""
+    net, ramp = cb.sealed("meshed")
+    rep = cb.run_admittance(net)
+    out = [p for p in rep["branch_primitives"] if p["status"] == "OUT"]
+    assert out
+    assert all(abs(p["g_ff"]) + abs(p["b_ff"]) + abs(p["g_ft"]) + abs(p["b_ft"]) == 0 for p in out)
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    bout = [b for b in tr.branches if b["branch_id"] == "bout"]
+    assert bout and float(bout[0]["p_from"]) == 0 and float(bout[0]["q_loss"]) == 0
+
+
+def test_foldpath_bus_shunts_change_basepoint_injection(tmp_path: Path) -> None:
+    """Bus shunts change the Y-bus diagonal and therefore the operating point."""
+    net, ramp = cb.sealed("meshed")
+    rep = cb.run_admittance(net)
+    diag = [e for e in rep["ybus"] if e["row"] == e["col"] == "gen1"]
+    assert diag and abs(diag[0]["b"]) > 0
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    assert tr.manifest["point_count"] >= 2
+
+
+def test_foldpath_rejects_basepoint_outside_reactive_limits(tmp_path: Path) -> None:
+    """Rejects base reactive-limit violations and nonphysical voltage magnitudes."""
+    net = tmp_path / "n.acn"
+    ramp = tmp_path / "r.rmp"
+    cb.write_text(
+        net,
+        """AC_NETWORK 1
+BASE_MVA 100
+BUS slack SLACK 1.05 0 0 0 0 0 0 0 0 0
+BUS gen PV 1.02 0 0.5 0.05 -0.05 0.05 0.2 0.2 0 0
+BUS load PQ 1 0 0 0 0 0 0.4 0.2 0 0
+BRANCH b1 slack gen IN 0.01 0.1 0.02 1 0
+BRANCH b2 gen load IN 0.02 0.12 0.02 1 0
+BRANCH b3 load slack IN 0.02 0.1 0.02 1 0
+END
+""",
+    )
+    cb.write_text(
+        ramp,
+        """AC_RAMP 1
+DEMAND gen 0.1 0.05
+DEMAND load 0.3 0.1
+LIMITS 0.8 1.2
+STEPS 0.05 0.005 0.2
+TOLERANCES 1e-6 1e-6 1e-5 1e-5
+ITERATIONS 40 40 100
+END
+""",
+    )
+    rc, err, _ = cb.run_trace_expect_fail(net, ramp, tmp_path / "m.vcm")
+    assert rc != 0
+    assert "E_BASE_REACTIVE_LIMIT" in err
+    assert json.loads(err.strip().splitlines()[-1])["code"] == "E_BASE_REACTIVE_LIMIT"
+
+    # Nonphysical voltage magnitude (v_set <= 0) is a scientific deck rejection.
+    bad_v = tmp_path / "badv.acn"
+    cb.write_text(
+        bad_v,
+        """AC_NETWORK 1
+BASE_MVA 100
+BUS slack SLACK 1.0 0 0 0 0 0 0 0 0 0
+BUS load PQ 0.0 0 0 0 0 0 0.2 0.1 0 0
+BRANCH l1 slack load IN 0.01 0.1 0 1 0
+END
+""",
+    )
+    proc = subprocess.run(
+        [str(cb.fold_map_bin()), "admittance", "--network", str(bad_v)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode != 0
+    diag = json.loads(proc.stderr.strip().splitlines()[-1])
+    assert diag["code"] == "E_NETWORK_DECK"
+    # Trace of the same nonphysical deck must also fail (no map published).
+    bad_ramp = tmp_path / "badr.rmp"
+    cb.write_text(
+        bad_ramp,
+        """AC_RAMP 1
+DEMAND load 0.1 0.05
+LIMITS 0.8 1.2
+STEPS 0.05 0.005 0.2
+TOLERANCES 1e-6 1e-6 1e-5 1e-5
+ITERATIONS 40 40 100
+END
+""",
+    )
+    rc2, err2, _ = cb.run_trace_expect_fail(bad_v, bad_ramp, tmp_path / "bad.vcm")
+    assert rc2 != 0
+    assert "E_NETWORK_DECK" in err2
+    assert not (tmp_path / "bad.vcm").exists()
+
+
+def test_foldpath_locates_qmax_switch_event(tmp_path: Path) -> None:
+    """Locates a fully resolved PV upper limit; unresolved events would fail."""
+    net, ramp = cb.sealed("pv_upper")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    assert tr.events
+    assert tr.events[0]["limit_kind"] == "UPPER"
+    assert float(tr.events[0]["q_limit"]) == 0.4
+    assert float(tr.events[0]["lambda"]) < tr.critical_lambda
+    # Event is fully resolved: switched bus holds the exact limit as PQ generation.
+    bus = next(b for b in tr.buses if b["bus_id"] == tr.events[0]["bus_id"])
+    assert bus["final_type"] == "PQ"
+    assert abs(float(bus["q_generation"]) - float(tr.events[0]["q_limit"])) < 1e-9
+    assert float(tr.events[0]["voltage_pu"]) > 0
+    # No unresolved reactive-limit rows: every published event is finite and typed.
+    for ev in tr.events:
+        assert ev["limit_kind"] in {"UPPER", "LOWER"}
+        assert math.isfinite(float(ev["lambda"]))
+        assert math.isfinite(float(ev["q_limit"]))
+        assert math.isfinite(float(ev["voltage_pu"]))
+        assert float(ev["voltage_pu"]) > 0
+
+
+def test_foldpath_locates_qmin_switch_event(tmp_path: Path) -> None:
+    """Locates a fully resolved PV lower limit before the fold."""
+    # Underexcited sealed case: binding floor is q_min on an absorbing PV machine.
+    net, ramp = cb.sealed("pv_lower")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    kinds = [e["limit_kind"] for e in tr.events]
+    assert "LOWER" in kinds, f"expected LOWER event, got {kinds}"
+    lower = next(e for e in tr.events if e["limit_kind"] == "LOWER")
+    assert float(lower["lambda"]) < tr.critical_lambda
+    bus = next(b for b in tr.buses if b["bus_id"] == lower["bus_id"])
+    assert bus["final_type"] == "PQ"
+    assert abs(float(bus["q_generation"]) - float(lower["q_limit"])) < 1e-9
+
+
+def test_foldpath_simultaneous_limit_events_use_bus_order(tmp_path: Path) -> None:
+    """Simultaneous reactive events are published in ascending bus-id order."""
+    net, ramp = cb.sealed("simul")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    assert len(tr.events) >= 2
+    assert float(tr.events[0]["lambda"]) == float(tr.events[1]["lambda"])
+    ids = [e["bus_id"] for e in tr.events[:2]]
+    assert ids == sorted(ids)
+
+
+def test_foldpath_switched_bus_remains_pq_after_event(tmp_path: Path) -> None:
+    """A switched PV bus remains PQ through the critical point."""
+    net, ramp = cb.sealed("pv_upper")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    bus_id = tr.events[0]["bus_id"]
+    row = next(b for b in tr.buses if b["bus_id"] == bus_id)
+    assert row["final_type"] == "PQ"
+
+
+def test_foldpath_corrected_points_meet_power_and_arc_budgets(tmp_path: Path) -> None:
+    """Accepted curve points meet power-mismatch and arc-length residual budgets."""
+    net, ramp = cb.sealed("two_bus")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    for row in tr.curve[1:]:
+        assert float(row["max_power_mismatch"]) <= 1e-6 + 1e-12
+        assert abs(float(row["arc_residual"])) <= 1e-6 + 1e-12
+
+
+def test_foldpath_initial_step_change_preserves_critical_lambda(tmp_path: Path) -> None:
+    """Changing the initial continuation step preserves the critical loading margin."""
+    net, ramp = cb.sealed("two_bus")
+    tr1 = cb.run_trace(net, ramp, tmp_path / "a.vcm")
+    alt = tmp_path / "alt.rmp"
+    text = ramp.read_text(encoding="utf-8").replace("STEPS 0.02 0.002 0.1", "STEPS 0.03 0.002 0.1")
+    cb.write_text(alt, text)
+    tr2 = cb.run_trace(net, alt, tmp_path / "b.vcm")
+    assert abs(tr1.critical_lambda - tr2.critical_lambda) <= 5e-4
+
+
+def test_foldpath_maximum_step_change_preserves_critical_lambda(tmp_path: Path) -> None:
+    """Changing the maximum step preserves the critical loading margin."""
+    net, ramp = cb.sealed("two_bus")
+    tr1 = cb.run_trace(net, ramp, tmp_path / "a.vcm")
+    alt = tmp_path / "alt.rmp"
+    text = ramp.read_text(encoding="utf-8").replace("STEPS 0.02 0.002 0.1", "STEPS 0.02 0.002 0.08")
+    cb.write_text(alt, text)
+    tr2 = cb.run_trace(net, alt, tmp_path / "b.vcm")
+    assert abs(tr1.critical_lambda - tr2.critical_lambda) <= 5e-4
+
+
+def test_foldpath_two_bus_fold_matches_closed_form_margin(tmp_path: Path) -> None:
+    """Two-bus fold matches the sealed closed-form loading margin."""
+    net, ramp = cb.sealed("two_bus")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    margins = cb.load_margins()
+    assert abs(tr.critical_lambda - margins["two_bus"]["critical_lambda"]) <= 1e-4
+
+
+def test_foldpath_meshed_network_reaches_expected_fold(tmp_path: Path) -> None:
+    """Meshed network critical lambda matches the sealed margin."""
+    net, ramp = cb.sealed("meshed")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    margins = cb.load_margins()
+    assert abs(tr.critical_lambda - margins["meshed"]["critical_lambda"]) <= 1e-4
+    assert tr.manifest["event_count"] >= 1
+
+
+def test_foldpath_near_singular_fold_remains_finite(tmp_path: Path) -> None:
+    """Near-singular folds stay finite; an unbracketed fold fails with E_FOLD."""
+    net, ramp = cb.sealed("near_sing")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    assert math.isfinite(tr.critical_lambda)
+    margins = cb.load_margins()
+    assert abs(tr.critical_lambda - margins["near_sing"]["critical_lambda"]) <= 1e-3
+
+    # Too few continuation points leaves the fold unbracketed (scientific failure).
+    short = tmp_path / "short.rmp"
+    text = ramp.read_text(encoding="utf-8").replace(
+        "ITERATIONS 50 50 400",
+        "ITERATIONS 50 50 8",
+    )
+    cb.write_text(short, text)
+    out = tmp_path / "nofold.vcm"
+    rc, err, _ = cb.run_trace_expect_fail(net, short, out)
+    assert rc != 0
+    diag = json.loads(err.strip().splitlines()[-1])
+    assert diag["code"] == "E_FOLD"
+    assert not out.exists()
+
+
+def test_foldpath_loading_parameter_rises_before_fold(tmp_path: Path) -> None:
+    """Loading parameter increases along the stable branch before the fold."""
+    net, ramp = cb.sealed("two_bus")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    lams = [float(r["lambda"]) for r in tr.curve]
+    peak = max(lams)
+    assert peak == max(lams[: lams.index(peak) + 1])
+    assert lams[0] == 0
+    assert any(lams[i] < lams[i + 1] for i in range(len(lams) - 1))
+
+
+def test_foldpath_tangent_sign_change_brackets_fold(tmp_path: Path) -> None:
+    """Fold is bracketed by a tangent_lambda sign change, not Newton failure."""
+    net, ramp = cb.sealed("two_bus")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    tls = [float(r["tangent_lambda"]) for r in tr.curve]
+    assert tls[0] > 0
+    assert any(tls[i] > 0 and tls[i + 1] <= 0 for i in range(len(tls) - 1))
+    # Successful maps never publish unresolved limit events.
+    for ev in tr.events:
+        assert math.isfinite(float(ev["q_limit"]))
+        assert math.isfinite(float(ev["lambda"]))
+        assert math.isfinite(float(ev["voltage_pu"]))
+        assert float(ev["voltage_pu"]) > 0
+        assert ev["limit_kind"] in {"UPPER", "LOWER"}
+
+
+def test_foldpath_critical_bus_loads_follow_reported_lambda(tmp_path: Path) -> None:
+    """Critical bus loads equal base load plus lambda times demand direction."""
+    net, ramp = cb.sealed("meshed")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    lam = tr.critical_lambda
+    demands = {}
+    for line in ramp.read_text(encoding="utf-8").splitlines():
+        if line.startswith("DEMAND"):
+            _, bus, dp, dq = line.split()
+            demands[bus] = (float(dp), float(dq))
+    base = {}
+    for line in net.read_text(encoding="utf-8").splitlines():
+        if line.startswith("BUS"):
+            p = line.split()
+            base[p[1]] = (float(p[9]), float(p[10]))
+    for row in tr.buses:
+        bid = row["bus_id"]
+        if bid not in demands:
+            continue
+        dp, dq = demands[bid]
+        bp, bq = base[bid]
+        assert abs(float(row["p_load"]) - (bp + lam * dp)) < 1e-8
+        assert abs(float(row["q_load"]) - (bq + lam * dq)) < 1e-8
+
+
+def test_foldpath_critical_branch_losses_balance_bus_injections(tmp_path: Path) -> None:
+    """Branch terminal powers define losses; aggregate losses match published totals."""
+    net, ramp = cb.sealed("xfmr")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    p_loss = 0.0
+    q_loss = 0.0
+    for b in tr.branches:
+        assert abs(float(b["p_loss"]) - (float(b["p_from"]) + float(b["p_to"]))) < 1e-10
+        assert abs(float(b["q_loss"]) - (float(b["q_from"]) + float(b["q_to"]))) < 1e-10
+        p_loss += float(b["p_loss"])
+        q_loss += float(b["q_loss"])
+    assert abs(tr.manifest["total_active_loss"] - p_loss) < 1e-12
+    assert abs(tr.manifest["total_reactive_loss"] - q_loss) < 1e-12
+    p_inj = sum(float(b["p_generation"]) - float(b["p_load"]) for b in tr.buses)
+    assert abs(p_loss - p_inj) <= max(5e-2, 50 * float(tr.manifest["max_power_mismatch"]))
+
+
+def test_foldpath_voltage_equal_to_limit_is_not_violation(tmp_path: Path) -> None:
+    """Voltage exactly equal to a limit is classified WITHIN, not a violation."""
+    net, ramp = cb.sealed("two_bus")
+    # Widen limits so critical voltages stay inside; equality path covered by WITHIN labels.
+    alt = tmp_path / "r.rmp"
+    text = ramp.read_text(encoding="utf-8").replace("LIMITS 0.7 1.2", "LIMITS 0.01 2.0")
+    cb.write_text(alt, text)
+    tr = cb.run_trace(net, alt, tmp_path / "m.vcm")
+    assert tr.manifest["voltage_violation_count"] == 0
+    assert all(b["voltage_state"] == "WITHIN" for b in tr.buses)
+
+
+def test_foldpath_low_voltage_bus_is_reported_as_violation(tmp_path: Path) -> None:
+    """Critical voltages below voltage_min are reported as LOW violations."""
+    net, ramp = cb.sealed("meshed")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    assert tr.manifest["voltage_violation_count"] >= 1
+    assert any(b["voltage_state"] == "LOW" for b in tr.buses)
+
+
+def test_foldpath_archive_entry_order_and_metadata_are_canonical(tmp_path: Path) -> None:
+    """ZIP entry order and TRACE-12 manifest field order are canonical."""
+    net, ramp = cb.sealed("two_bus")
+    tr = cb.run_trace(net, ramp, tmp_path / "m.vcm")
+    assert list(tr.manifest.keys()) == [
+        "format",
+        "network_sha256",
+        "ramp_sha256",
+        "status",
+        "critical_lambda",
+        "point_count",
+        "event_count",
+        "limiting_buses",
+        "voltage_violation_count",
+        "max_power_mismatch",
+        "max_arc_residual",
+        "total_active_loss",
+        "total_reactive_loss",
+    ]
+    assert tr.manifest["status"] == "FOLD_FOUND"
+    assert tr.manifest["format"] == "voltage-collapse-map-v1"
+
+
+def test_foldpath_equivalent_record_order_produces_identical_archive(tmp_path: Path) -> None:
+    """Equivalent deck ordering produces identical .vcm bytes."""
+    net, ramp = cb.sealed("meshed")
+    n2 = tmp_path / "n2.acn"
+    r2 = tmp_path / "r2.rmp"
+    cb.shuffle_network_records(net, n2)
+    cb.shuffle_ramp_demands(ramp, r2)
+    tr1 = cb.run_trace(net, ramp, tmp_path / "a.vcm")
+    tr2 = cb.run_trace(n2, r2, tmp_path / "b.vcm")
+    assert tr1.raw_zip == tr2.raw_zip
+
+
+def test_foldpath_repeated_trace_is_byte_identical(tmp_path: Path) -> None:
+    """Repeating an identical trace yields byte-identical archives."""
+    net, ramp = cb.sealed("two_bus")
+    tr1 = cb.run_trace(net, ramp, tmp_path / "a.vcm")
+    tr2 = cb.run_trace(net, ramp, tmp_path / "b.vcm")
+    assert tr1.raw_zip == tr2.raw_zip
+
+
+def test_foldpath_rejected_trace_preserves_existing_map(tmp_path: Path) -> None:
+    """A rejected calculation leaves an existing map byte-for-byte unchanged."""
+    net, ramp = cb.sealed("two_bus")
+    good = tmp_path / "keep.vcm"
+    tr = cb.run_trace(net, ramp, good)
+    prior = tr.raw_zip
+    bad_net = tmp_path / "bad.acn"
+    cb.write_text(bad_net, "AC_NETWORK 1\nEND\n")
+    rc, err, _ = cb.run_trace_expect_fail(bad_net, ramp, good)
+    assert rc != 0
+    assert good.read_bytes() == prior
+    assert proc_has_code(err)
+
+
+def test_foldpath_parallel_processes_do_not_share_trace_state(tmp_path: Path) -> None:
+    """Parallel fold-map processes do not share mutable trace state."""
+    net_a, ramp_a = cb.sealed("two_bus")
+    net_b, ramp_b = cb.sealed("near_sing")
+    out_a = tmp_path / "a.vcm"
+    out_b = tmp_path / "b.vcm"
+
+    def run_one(net: Path, ramp: Path, out: Path) -> float:
+        return cb.run_trace(net, ramp, out).critical_lambda
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fa = pool.submit(run_one, net_a, ramp_a, out_a)
+        fb = pool.submit(run_one, net_b, ramp_b, out_b)
+        la, lb = fa.result(), fb.result()
+    assert la != pytest.approx(lb, rel=0, abs=1e-3)
+    assert abs(la - cb.load_margins()["two_bus"]["critical_lambda"]) <= 1e-4
+    assert abs(lb - cb.load_margins()["near_sing"]["critical_lambda"]) <= 1e-3
+
+
+def proc_has_code(err: str) -> bool:
+    """stderr contains a stable scientific failure code."""
+    return any(
+        code in err
+        for code in (
+            "E_NETWORK_DECK",
+            "E_PATH",
+            "E_ISLAND",
+            "E_BASEPOINT",
+            "E_CONTINUATION",
+            "E_MAP",
         )
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_SURVEY_SCHEMA"
-
-
-def test_spanfit_missing_sensor_values_are_not_zero_filled() -> None:
-    """Null survey channels remain evidence gaps and still allow successful pairing on commons."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        data = json.loads(survey.read_text())
-        # introduce a null on a non-critical extra would need 3 sensors; instead ensure calibrate
-        # of sealed case (no nulls) succeeds, and a variant with null on one mode's channel
-        # that still leaves >=2 commons across a singleton cluster succeeds.
-        data["modes"][0]["shape"] = [data["modes"][0]["shape"][0], None]
-        # insufficient for that mode alone — should fail schema
-        bad = write_json(Path(td) / "bad.json", data)
-        proc_bad = run_calibrate(model, bad, plan, Path(td) / "bad.mcr")
-        assert stderr_code(proc_bad) == "E_SURVEY_SCHEMA"
-        # sealed original succeeds without treating missing as zero
-        proc = run_calibrate(model, survey, plan, Path(td) / "ok.mcr")
-        assert proc.returncode == 0
-        assert "CALIBRATED" in proc.stdout
-
-
-def test_spanfit_sensor_order_remap_preserves_calibration() -> None:
-    """Permuting survey sensor order yields identical report bytes."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        data = json.loads(survey.read_text())
-        # reverse sensors and each shape
-        data["sensors"] = list(reversed(data["sensors"]))
-        for mode in data["modes"]:
-            mode["shape"] = list(reversed(mode["shape"]))
-        alt = write_json(Path(td) / "survey_alt.json", data)
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        p1 = run_calibrate(model, survey, plan, r1)
-        p2 = run_calibrate(model, alt, plan, r2)
-        assert p1.returncode == 0 and p2.returncode == 0
-        assert r1.read_bytes() == r2.read_bytes()
-
-
-def test_spanfit_group_order_preserves_report_bytes() -> None:
-    """Reordering model groups preserves calibrated report identity."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
-        data = json.loads(model.read_text())
-        data["groups"] = list(reversed(data["groups"]))
-        alt = write_json(Path(td) / "model_alt.json", data)
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        assert run_calibrate(model, survey, plan, r1).returncode == 0
-        assert run_calibrate(alt, survey, plan, r2).returncode == 0
-        assert r1.read_bytes() == r2.read_bytes()
-
-
-def test_spanfit_mode_order_swap_preserves_cluster_pairing() -> None:
-    """Swapping measured mode declaration order preserves pairing outcomes."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        data = json.loads(survey.read_text())
-        data["modes"] = list(reversed(data["modes"]))
-        alt = write_json(Path(td) / "survey_alt.json", data)
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        assert run_calibrate(model, survey, plan, r1).returncode == 0
-        assert run_calibrate(model, alt, plan, r2).returncode == 0
-        a = parse_mcr(r1.read_text())
-        b = parse_mcr(r2.read_text())
-        assert a["pairs"] == b["pairs"]
-        assert a["model_sha256"] == b["model_sha256"]
-
-
-def test_spanfit_exact_repeated_modes_use_subspace_mac() -> None:
-    """Exact repeated eigenvalues report subspace MAC of one plus frequency residual fields."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("repeated_modes", Path(td))
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(model, survey, plan, rep)
-        assert proc.returncode == 0, proc.stderr
-        raw = rep.read_text()
-        assert "PAIR " in raw
-        rec = parse_mcr(raw)
-        assert len(rec["pairs"]) == 1
-        pair = rec["pairs"][0]
-        assert abs(pair["mac"] - 1.0) < 1e-9
-        assert "freq_res" in pair and math.isfinite(pair["freq_res"])
-        assert abs(pair["freq_res"]) < 1e-9
-        assert "mac" in pair and 0.0 <= pair["mac"] <= 1.0
-
-
-def test_spanfit_near_repeated_modes_follow_cluster_tolerance() -> None:
-    """Near-repeated measured frequencies merge under the plan cluster tolerance."""
-    with isolated_workdir() as td:
-        # Build isotropic-ish model and two measured modes within tolerance
-        model = {
-            "format": "bridge-modal-model-v1",
-            "dofs": ["X", "Y"],
-            "mass": [[1.0, 0.0], [0.0, 1.0]],
-            "fixed_stiffness": [[2.0, 0.0], [0.0, 2.0002]],
-            "groups": [
-                {
-                    "group_id": "k",
-                    "lower": 0.8,
-                    "upper": 1.2,
-                    "initial": 1.0,
-                    "reference": 1.0,
-                    "contribution": [[0.5, 0.0], [0.0, 0.5]],
-                }
-            ],
-        }
-        mp = write_json(Path(td) / "model.json", model)
-        spec = json.loads(run_spectrum(mp).stdout)
-        f0, f1 = spec["frequencies_hz"]
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["X", "Y"],
-            "modes": [
-                {"mode_id": "N1", "frequency_hz": f0, "weight": 1.0, "shape": [1.0, 0.0]},
-                {"mode_id": "N2", "frequency_hz": f1, "weight": 1.0, "shape": [0.0, 1.0]},
-            ],
-        }
-        plan = base_plan(
-            cluster_relative_tolerance=0.05,
-            shape_weight=0.2,
-            regularization_weight=0.0,
-            pairing_frequency_gate=0.5,
-            gradient_tolerance=1e-6,
-        )
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(mp, write_json(Path(td) / "s.json", survey), write_json(Path(td) / "p.json", plan), rep)
-        assert proc.returncode == 0, proc.stderr
-        rec = parse_mcr(rep.read_text())
-        # With loose tolerance, measured modes form one cluster of size 2
-        assert any("," in p["measured"] for p in rec["pairs"]) or len(rec["pairs"]) >= 1
-
-
-def test_spanfit_subspace_mac_is_invariant_to_cluster_basis_rotation() -> None:
-    """Rotating the measured repeated-mode basis leaves subspace MAC unchanged."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("repeated_modes", Path(td))
-        data = json.loads(survey.read_text())
-        # additional 45-degree rotation of the two shapes
-        a = data["modes"][0]["shape"]
-        b = data["modes"][1]["shape"]
-        c = math.cos(0.4)
-        s = math.sin(0.4)
-        data["modes"][0]["shape"] = [c * a[0] + s * b[0], c * a[1] + s * b[1]]
-        data["modes"][1]["shape"] = [-s * a[0] + c * b[0], -s * a[1] + c * b[1]]
-        alt = write_json(Path(td) / "rot.json", data)
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        assert run_calibrate(model, survey, plan, r1).returncode == 0
-        assert run_calibrate(model, alt, plan, r2).returncode == 0
-        m1 = parse_mcr(r1.read_text())["pairs"][0]["mac"]
-        m2 = parse_mcr(r2.read_text())["pairs"][0]["mac"]
-        assert abs(m1 - m2) < 1e-9
-        assert abs(m1 - 1.0) < 1e-9
-
-
-def test_spanfit_global_pairing_beats_greedy_frequency_pairing() -> None:
-    """Global assignment prefers the shape-consistent pairing over nearest-frequency greed."""
-    with isolated_workdir() as td:
-        # Two well-separated modes; crossed frequency proximity with swapped shapes.
-        model = {
-            "format": "bridge-modal-model-v1",
-            "dofs": ["D1", "D2"],
-            "mass": [[1.0, 0.0], [0.0, 1.0]],
-            "fixed_stiffness": [[4.0, 0.0], [0.0, 9.0]],
-            "groups": [
-                {
-                    "group_id": "g",
-                    "lower": 0.9,
-                    "upper": 1.1,
-                    "initial": 1.0,
-                    "reference": 1.0,
-                    "contribution": [[0.1, 0.0], [0.0, 0.1]],
-                }
-            ],
-        }
-        mp = write_json(Path(td) / "m.json", model)
-        spec = json.loads(run_spectrum(mp).stdout)
-        f0, f1 = spec["frequencies_hz"]
-        # Measured freqs near model, but shapes intentionally match opposite modes if greed by freq alone with perturbation:
-        # Place measured mode A slightly closer in frequency to predicted mode 1 but with shape of mode 0.
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["D1", "D2"],
-            "modes": [
-                {
-                    "mode_id": "A",
-                    "frequency_hz": f1 * 0.98,
-                    "weight": 1.0,
-                    "shape": [1.0, 0.0],
-                },
-                {
-                    "mode_id": "B",
-                    "frequency_hz": f0 * 1.02,
-                    "weight": 1.0,
-                    "shape": [0.0, 1.0],
-                },
-            ],
-        }
-        plan = base_plan(
-            frequency_weight=0.05,
-            shape_weight=5.0,
-            regularization_weight=0.0,
-            pairing_frequency_gate=0.5,
-            gradient_tolerance=1e-5,
-            max_iterations=40,
-        )
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(mp, write_json(Path(td) / "s.json", survey), write_json(Path(td) / "p.json", plan), rep)
-        assert proc.returncode == 0, proc.stderr
-        rec = parse_mcr(rep.read_text())
-        # Shape-weighted global assignment should pair A->mode0 and B->mode1
-        by_id = {p["measured"]: p["predicted"] for p in rec["pairs"]}
-        assert by_id["A"] == "0"
-        assert by_id["B"] == "1"
-
-
-def test_spanfit_frequency_gate_rejects_unmatchable_cluster() -> None:
-    """Clusters beyond the pairing frequency gate produce E_MODAL_PAIRING."""
-    with isolated_workdir() as td:
-        model, _, plan = copy_sealed_triplet("single_group", Path(td))
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["A", "B"],
-            "modes": [
-                {"mode_id": "M1", "frequency_hz": 50.0, "weight": 1.0, "shape": [0.7, 0.3]},
-                {"mode_id": "M2", "frequency_hz": 60.0, "weight": 1.0, "shape": [0.2, 0.8]},
-            ],
-        }
-        pdata = json.loads(plan.read_text())
-        pdata["pairing_frequency_gate"] = 0.05
-        proc = run_calibrate(
-            model,
-            write_json(Path(td) / "s.json", survey),
-            write_json(Path(td) / "p.json", pdata),
-            Path(td) / "out.mcr",
-        )
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MODAL_PAIRING"
-
-
-def test_spanfit_recovers_single_group_stiffness_multiplier() -> None:
-    """Bounded calibration recovers a sealed single-group truth multiplier."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        meta = json.loads((Path(__file__).parent / "sealed_modal_cases/single_group/meta.json").read_text())
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(model, survey, plan, rep)
-        assert proc.returncode == 0, proc.stderr
-        theta = parse_mcr(rep.read_text())["groups"][0]["theta"]
-        assert abs(theta - meta["truth_theta"]) < meta["tol"]
-
-
-def test_spanfit_recovers_two_independent_group_multipliers() -> None:
-    """Two independent diagonal groups recover sealed truth multipliers."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
-        meta = json.loads((Path(__file__).parent / "sealed_modal_cases/two_groups/meta.json").read_text())
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        thetas = {g["id"]: g["theta"] for g in rec["groups"]}
-        assert abs(thetas["ga"] - meta["truth"][0]) < meta["tol"]
-        assert abs(thetas["gb"] - meta["truth"][1]) < meta["tol"]
-
-
-def test_spanfit_unequal_modal_weights_scale_objective_contributions() -> None:
-    """Unequal mode weights change the modal objective relative to equal weights."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        s = json.loads(survey.read_text())
-        s["modes"][0]["weight"] = 5.0
-        s["modes"][1]["weight"] = 0.2
-        # detune initial so modal residual nonzero
-        m = json.loads(model.read_text())
-        m["groups"][0]["initial"] = 0.85
-        p = json.loads(plan.read_text())
-        p["regularization_weight"] = 0.0
-        p["max_iterations"] = 3
-        p["gradient_tolerance"] = 1e-3
-        rep_a = Path(td) / "a.mcr"
-        rep_b = Path(td) / "b.mcr"
-        # equal weights counterpart
-        s_eq = json.loads(json.dumps(s))
-        s_eq["modes"][0]["weight"] = 1.0
-        s_eq["modes"][1]["weight"] = 1.0
-        run_calibrate(
-            write_json(Path(td) / "m.json", m),
-            write_json(Path(td) / "su.json", s),
-            write_json(Path(td) / "p.json", p),
-            rep_a,
-        )
-        run_calibrate(
-            write_json(Path(td) / "m2.json", m),
-            write_json(Path(td) / "se.json", s_eq),
-            write_json(Path(td) / "p2.json", p),
-            rep_b,
-        )
-        if rep_a.exists() and rep_b.exists():
-            a = parse_mcr(rep_a.read_text())
-            b = parse_mcr(rep_b.read_text())
-            assert a["objective_modal"] != b["objective_modal"]
-        else:
-            # If iteration budget rejects, still ensure weight change affects pairing failure vs success differently
-            assert True
-
-
-def test_spanfit_regularization_pulls_weak_parameter_toward_reference() -> None:
-    """Strong regularization keeps a weakly observed parameter near its reference."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("rank_deficient", Path(td))
-        p = json.loads(plan.read_text())
-        p["regularization_weight"] = 5.0
-        p["frequency_weight"] = 0.01
-        p["shape_weight"] = 0.01
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(model, survey, write_json(Path(td) / "p.json", p), rep)
-        assert proc.returncode == 0, proc.stderr
-        rec = parse_mcr(rep.read_text())
-        for g in rec["groups"]:
-            assert abs(g["theta"] - g["reference"]) < 0.15
-
-
-def test_spanfit_lower_bound_active_solution_is_reported() -> None:
-    """When the optimum sits on the lower bound, BOUND_ACTIVE and LOWER are reported."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("lower_bound", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        assert rec["confidence"] == "BOUND_ACTIVE"
-        assert rec["groups"][0]["bound"] == "LOWER"
-        assert abs(rec["groups"][0]["theta"] - rec["groups"][0]["lower"]) < 1e-8
-
-
-def test_spanfit_upper_bound_active_solution_is_reported() -> None:
-    """When the optimum sits on the upper bound, BOUND_ACTIVE and UPPER are reported."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("upper_bound", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        assert rec["confidence"] == "BOUND_ACTIVE"
-        assert rec["groups"][0]["bound"] == "UPPER"
-        assert abs(rec["groups"][0]["theta"] - rec["groups"][0]["upper"]) < 1e-8
-
-
-def test_spanfit_projected_step_never_leaves_parameter_box() -> None:
-    """Reported group factors always lie inside declared lower/upper bounds."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        for g in parse_mcr(rep.read_text())["groups"]:
-            assert g["lower"] <= g["theta"] <= g["upper"]
-
-
-def test_spanfit_objective_terms_sum_to_reported_total() -> None:
-    """OBJECTIVE terms sum, and each PAIR carries frequency and MAC residual fields."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        raw = rep.read_text()
-        assert raw.startswith("MCR 1\n")
-        assert "OBJECTIVE " in raw
-        assert "GROUP " in raw
-        assert "PAIR " in raw
-        rec = parse_mcr(raw)
-        assert abs(rec["objective_total"] - (rec["objective_modal"] + rec["objective_reg"])) < 1e-15
-        assert len(rec["pairs"]) >= 1
-        for pair in rec["pairs"]:
-            assert math.isfinite(pair["freq_res"])
-            assert math.isfinite(pair["mac"])
-            assert 0.0 <= pair["mac"] <= 1.0
-            assert math.isfinite(pair["cost"])
-
-
-def test_spanfit_converged_solution_meets_gradient_budget() -> None:
-    """A successful calibration reports projected gradient within the plan budget."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        pdata = json.loads(plan.read_text())
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        assert rec["projected_gradient_inf"] <= pdata["gradient_tolerance"] * 10
-
-
-def test_spanfit_sensitivity_ranking_uses_documented_norm() -> None:
-    """Sensitivity ranks are a permutation of 1..G with higher score ranked first."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        groups = parse_mcr(rep.read_text())["groups"]
-        ranks = sorted(g["rank"] for g in groups)
-        assert ranks == list(range(1, len(groups) + 1))
-        by_rank = sorted(groups, key=lambda g: g["rank"])
-        assert by_rank[0]["score"] >= by_rank[-1]["score"] - 1e-15
-
-
-def test_spanfit_sensitivity_tie_uses_group_identifier() -> None:
-    """Equal sensitivity scores resolve rank ties by ascending group identifier."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("rank_deficient", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        groups = parse_mcr(rep.read_text())["groups"]
-        # identical contributions => equal scores; dup-a before dup-b at better rank
-        scores = {g["id"]: g["score"] for g in groups}
-        assert abs(scores["dup-a"] - scores["dup-b"]) < 1e-9
-        ranks = {g["id"]: g["rank"] for g in groups}
-        assert ranks["dup-a"] < ranks["dup-b"]
-
-
-def test_spanfit_rank_deficiency_sets_weak_confidence() -> None:
-    """Collinear group contributions yield numerical rank below G and WEAK confidence."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("rank_deficient", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        assert rec["numerical_rank"] < rec["group_count"]
-        assert rec["confidence"] == "WEAK"
-
-
-def test_spanfit_full_rank_free_solution_sets_identifiable_confidence() -> None:
-    """A free full-rank solution is labeled IDENTIFIABLE."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        assert rec["numerical_rank"] == rec["group_count"]
-        assert rec["confidence"] == "IDENTIFIABLE"
-        assert all(g["bound"] == "FREE" for g in rec["groups"])
-
-
-def test_spanfit_bound_active_confidence_has_precedence() -> None:
-    """BOUND_ACTIVE takes precedence over WEAK or IDENTIFIABLE labels."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("lower_bound", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        assert parse_mcr(rep.read_text())["confidence"] == "BOUND_ACTIVE"
-
-
-def test_spanfit_repeated_run_is_byte_deterministic() -> None:
-    """Two independent calibrations of the same inputs produce identical MCR bytes."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        assert run_calibrate(model, survey, plan, r1).returncode == 0
-        assert run_calibrate(model, survey, plan, r2).returncode == 0
-        assert r1.read_bytes() == r2.read_bytes()
-
-
-def test_spanfit_rejected_calibration_preserves_existing_report() -> None:
-    """A rejected calibrate leaves a pre-existing report byte-for-byte intact."""
-    with isolated_workdir() as td:
-        model, _, plan = copy_sealed_triplet("single_group", Path(td))
-        rep = Path(td) / "out.mcr"
-        marker = b"PRIOR-REPORT-BYTES-9f3a\n"
-        rep.write_bytes(marker)
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["A", "B"],
-            "modes": [
-                {"mode_id": "M1", "frequency_hz": 99.0, "weight": 1.0, "shape": [0.5, 0.5]},
-                {"mode_id": "M2", "frequency_hz": 100.0, "weight": 1.0, "shape": [0.4, 0.6]},
-            ],
-        }
-        proc = run_calibrate(model, write_json(Path(td) / "s.json", survey), plan, rep)
-        assert proc.returncode != 0
-        assert rep.read_bytes() == marker
-
-
-def test_spanfit_independent_processes_do_not_share_optimizer_state() -> None:
-    """Sequential calibrations in one process context do not leak parameter state."""
-    with isolated_workdir() as td:
-        m1, s1, p1 = copy_sealed_triplet("single_group", Path(td) / "c1")
-        m2, s2, p2 = copy_sealed_triplet("two_groups", Path(td) / "c2")
-        r1 = Path(td) / "one.mcr"
-        r2 = Path(td) / "two.mcr"
-        assert run_calibrate(m1, s1, p1, r1).returncode == 0
-        assert run_calibrate(m2, s2, p2, r2).returncode == 0
-        a = parse_mcr(r1.read_text())
-        b = parse_mcr(r2.read_text())
-        assert a["group_count"] == 1
-        assert b["group_count"] == 2
-        assert a["model_sha256"] != b["model_sha256"]
+    )

@@ -7,13 +7,13 @@ difficulty = "hard"
 category = "scientific-computing"
 subcategories = []
 number_of_milestones = 0
-codebase_size = "large"
-languages = ["rust"]
+codebase_size = "small"
+languages = ["go"]
 tags = [
-    "bridge-modal-calibration",
-    "eigenmode-pairing-analysis",
-    "bounded-stiffness-inversion",
-    "mac-objective-qualification"
+    "voltage-collapse-continuation",
+    "reactive-limit-bus-switching",
+    "saddle-node-margin-analysis",
+    "ac-loadability-qualification"
 ]
 expert_time_estimate_min = 180
 junior_time_estimate_min = 360
