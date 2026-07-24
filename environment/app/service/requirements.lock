@@ -1,6 +1,0 @@
-# Fixed Flask deployment target dependency pin.
-# This service is deployment infrastructure only (see app.py); it is not
-# installed into the verifier image because the candidate never calls it
-# over HTTP. Pin recorded here for reproducibility if the service is run
-# standalone during authoring or local review.
-flask==3.1.0

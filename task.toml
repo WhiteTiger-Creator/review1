@@ -1,38 +1,27 @@
 version = "2.0"
 
 [metadata]
-author_name = "Shivay"
-author_email = "coder_xelron_050725_61@xelron.in"
-category = "build-and-dependency-management"
-subcategories = ["db_interaction"]
-difficulty = "hard"
-codebase_size = "large"
+author_name = "anonymous"
+author_email = "anonymous"
+category = "security"
+subcategories = []
+difficulty = "medium"
+codebase_size = "small"
 number_of_milestones = 0
-languages = ["rust"]
-tags = [
-  "cargo",
-  "offline-lock",
-  "dependency-closure",
-  "release-lock",
-  "checksum",
-  "sqlite",
-]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 480
-
-[agent]
-timeout_sec = 1800.0
+languages = ["go"]
+tags = ["security", "go", "ghsa", "authentication-bypass", "scep"]
+expert_time_estimate_min = 240
+junior_time_estimate_min = 600
 
 [verifier]
-timeout_sec = 900.0
+timeout_sec = 900
+
+[agent]
+timeout_sec = 900
 
 [environment]
+build_timeout_sec = 1200
+cpus = 1
+memory_mb = 2048
+storage_mb = 4096
 allow_internet = false
-build_timeout_sec = 900.0
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
-workdir = "/app"
-docker_flags = []
-gpus = 0
-gpu_types = []

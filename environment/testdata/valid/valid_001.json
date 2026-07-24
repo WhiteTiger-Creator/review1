@@ -1,0 +1,11 @@
+{
+  "transaction_id": "txn-1001",
+  "message_type": "19",
+  "provisioner": "default",
+  "challenge": "s3cr3t-default",
+  "subject_common_name": "device-0001",
+  "sans": [
+    "device-0001.corp.example"
+  ],
+  "requested_validity_days": 60
+}
