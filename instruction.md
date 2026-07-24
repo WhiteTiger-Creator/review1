@@ -1,18 +1,5 @@
-# Jacobian sensitivity numeric parity
+Release approval for the suspension-bridge model is on hold because its predicted modes no longer align with the latest ambient-vibration survey. Use `/opt/spanforge/bin/modal-reconciler` to reconcile the finite-element stiffness baseline with measured frequencies and sensor shapes by updating only the bounded stiffness groups while preserving a physically admissible symmetric generalized eigenproblem.
 
-A minimized implicit-step sensitivity lab under `/app/environment` drives `/app/bin/q7` through checkpointed `start` / `seal` / `resume` segments that emit per-tile linearization rows for stiff coupled models. Rebuilt runs must satisfy `/app/environment/docs/n4_rules.md` on element deltas against the extended-precision reference, fine finite-difference probe slopes at each `dt_fine` entry, large-step spectral stability at `dt_large`, sealed-segment checkpoint continuity, second-generation lineage replay, and reproducibility digests. Tolerances and formulas live in that contract (`ELEM_TOL = 1e-10`, `FINE_BAND = 1e-8`, `STAB_CAP = 2.0`, `LARGE_DT = 0.28`, `BIND_K = 1e-6`, `BIND_SCALE = 1e-10`).
+Scientific contracts under `/opt/spanforge/modal-code/` (`model-assembly.md`, `survey-correlation.md`, `calibration-verdict.md`) define schemas `bridge-modal-model-v1`, `bridge-modal-survey-v1`, and `bridge-calibration-plan-v1`; mass-normalized generalized eigenanalysis; cluster pairing with subspace MAC; bounded modal objective optimization; MCR rows `OBJECTIVE`, `GROUP`, and `PAIR` (frequency and MAC residuals); and stderr JSON codes such as `E_MODEL_SCHEMA`, `E_MATRIX_SYMMETRY`, `E_MASS_PHYSICALITY`, `E_STIFFNESS_BOX`, `E_SURVEY_SCHEMA`, and `E_MODAL_PAIRING`. Missing sensors are evidence gaps, not zeros; mode-shape sign flips carry no meaning; repeated or reordered modes use observable subspaces. Invalid matrices, unsupported surveys, or non-physical stiffness boxes must fail before an existing report is touched.
 
-Bring the numerical pipeline into compliance with that contract so rebuilt `/app/bin/q7` regenerates authoritative traces. Fix C source under `/app/environment` as needed for contract compliance; wrapper-only or CLI-only changes are not sufficient. Rebuild with `make -C /app/environment all`, then run the documented segmented workflow:
-
-```bash
-/app/bin/q7 --mode start --state-dir /app/output/q7_state \
-  --model /app/environment/fixtures/stiff_coupled.json \
-  --trace-out /app/output/sensitivity_trace.json --profile nominal
-/app/bin/q7 --mode seal --state-dir /app/output/q7_state \
-  --trace-out /app/output/sensitivity_trace.json
-/app/bin/q7 --mode resume --state-dir /app/output/q7_state \
-  --model /app/environment/fixtures/stiff_coupled.json \
-  --trace-out /app/output/sensitivity_trace.json --profile scaled
-```
-
-Successful compliance regenerates `/app/output/sensitivity_trace.json` whose rows identify each tile by id, carry reported and reference numeric values with the active profile name, include emit-lane tags from the cast path, and finish with a sixteen-character reproducibility digest. The public trace keys tile_id, reported, reference, profile, emit_lane, and repro_digest are defined in n4_rules.md. Static JSON writes, wrapper-only changes, and placeholder digests are insufficient; the verifier deletes the output and reruns the segmented driver on every accepted fixture.
+The published MCR record must explain calibrated factors, active bounds, paired clusters, frequency and MAC residuals, objective terms, sensitivity ordering, numerical rank, and confidence. A bound-limited or weakly identifiable solution may still be reported when it meets the documented optimum and residual criteria. Equivalent model and survey orderings must produce identical bytes, while failed calibration preserves the previous record.

@@ -1,0 +1,15 @@
+[package]
+name = "modal-reconciler"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "modal-reconciler"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "=1.0.217", features = ["derive"] }
+serde_json = "=1.0.138"
+sha2 = "=0.10.8"
+hex = "=0.4.3"

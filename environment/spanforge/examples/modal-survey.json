@@ -1,0 +1,65 @@
+{
+  "format": "bridge-modal-survey-v1",
+  "sensors": [
+    "D03",
+    "D01",
+    "D06",
+    "D02",
+    "D05",
+    "D04"
+  ],
+  "modes": [
+    {
+      "mode_id": "M01",
+      "frequency_hz": 0.55,
+      "weight": 1.0,
+      "shape": [
+        0.4,
+        0.8,
+        null,
+        0.6,
+        0.2,
+        0.3
+      ]
+    },
+    {
+      "mode_id": "M02",
+      "frequency_hz": 0.92,
+      "weight": 1.2,
+      "shape": [
+        0.5,
+        -0.7,
+        0.3,
+        0.4,
+        null,
+        0.2
+      ]
+    },
+    {
+      "mode_id": "M03",
+      "frequency_hz": 0.925,
+      "weight": 1.1,
+      "shape": [
+        -0.4,
+        0.6,
+        0.5,
+        null,
+        0.3,
+        0.4
+      ]
+    },
+    {
+      "mode_id": "M04",
+      "frequency_hz": 1.4,
+      "weight": 0.9,
+      "shape": [
+        0.3,
+        0.2,
+        0.7,
+        -0.5,
+        0.4,
+        null
+      ]
+    }
+  ]
+}

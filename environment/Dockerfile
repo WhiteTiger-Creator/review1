@@ -1,28 +1,43 @@
-# Canonical Ubuntu 24.04 final-stage digest (docs/CANONICAL_BASE_IMAGES.md /
-# config/platform_policy.toml). Used as the C/build-essential runtime base;
-# no language-specific t-bench image is required for this task.
-FROM public.ecr.aws/docker/library/ubuntu:24.04@sha256:0d39fcc8335d6d74d5502f6df2d30119ff4790ebbb60b364818d5112d9e3e932
+FROM public.ecr.aws/docker/library/rust:1.85-slim-bookworm@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TERM=xterm
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-ENV TMUX_TMPDIR=/var/tmp/tmux
+ENV PATH="/usr/local/cargo/bin:/usr/local/rustup/bin:${PATH}"
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
 
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential make python3 python3-venv asciinema ca-certificates ncurses-term tmux \
-&& mkdir -p /var/tmp/tmux \
-    && chmod 1777 /var/tmp/tmux \
+# Layer 1: operating packages
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        asciinema \
+        ca-certificates \
+        patch \
+        python3 \
+        python3-pip \
+        python3-venv \
+        tmux \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY runtime/tmux.conf /etc/tmux.conf
-COPY runtime/install_verifier_deps.sh /usr/local/bin/install_verifier_deps.sh
-COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m venv /opt/verifier-venv \
-    && chmod +x /usr/local/bin/install_verifier_deps.sh \
-    && /usr/local/bin/install_verifier_deps.sh /opt/verifier-venv/bin/pip /tmp/requirements.lock
+WORKDIR /opt
 
-COPY . /app/environment/
+# Layer 2: verifier wheelhouse and lock (installed only by tests/test.sh)
+COPY requirements.lock /opt/verifier-requirements.lock
+COPY verifier-wheels /verifier-wheels
 
-RUN make -C /app/environment clean all
+# Layer 3: Rust manifest, lockfile, Cargo source replacement, and vendored dependencies
+COPY spanforge/Cargo.toml spanforge/Cargo.lock /opt/spanforge/
+COPY spanforge/.cargo /opt/spanforge/.cargo
+COPY spanforge/vendor /opt/spanforge/vendor
+
+# Layer 4: Rust source, modal-code documents, wrapper, build script, and examples
+COPY spanforge/src /opt/spanforge/src
+COPY spanforge/modal-code /opt/spanforge/modal-code
+COPY spanforge/examples /opt/spanforge/examples
+COPY spanforge/build-modal-reconciler.sh /opt/spanforge/build-modal-reconciler.sh
+COPY spanforge/bin /opt/spanforge/bin
+RUN chmod +x /opt/spanforge/build-modal-reconciler.sh /opt/spanforge/bin/modal-reconciler \
+    && mkdir -p /opt/spanforge/libexec
+
+# Layer 5: application build
+RUN /opt/spanforge/build-modal-reconciler.sh
+
+WORKDIR /workspace
