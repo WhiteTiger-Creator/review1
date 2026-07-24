@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aurora-profiles-v3.schema.json",
+  "type": "object",
+  "required": ["format", "profiles", "jobs"],
+  "additionalProperties": false,
+  "properties": {
+    "format": { "const": "aurora-profiles-v3" },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/profile" }
+    },
+    "jobs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/job" }
+    }
+  },
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "extends": { "type": "string" }
+      }
+    },
+    "job": {
+      "type": "object",
+      "required": ["asset_id", "profile", "artifact_name"],
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": { "type": "string" },
+        "profile": { "type": "string" },
+        "artifact_name": { "type": "string" }
+      }
+    }
+  }
+}

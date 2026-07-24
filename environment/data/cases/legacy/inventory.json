@@ -1,0 +1,27 @@
+{
+  "format": "aurora-inventory-v2",
+  "source_root": "/data/assets",
+  "assets": [
+    {
+      "id": "interview-sdr",
+      "relative_path": "clips/interview-sdr.mp4",
+      "content_digest": "sha256:2ce7f2d5e14a7e47c2fdd636d9f018ecaacaef22252cb71c38f0a264c390fb90",
+      "video": {
+        "width": 1920,
+        "height": 1080,
+        "fps": "24/1",
+        "pix_fmt": "yuv420p",
+        "color_transfer": "bt709",
+        "has_alpha": false,
+        "rotation": 0
+      },
+      "audio_tracks": [
+        {
+          "index": 0,
+          "language": "en",
+          "channels": 2
+        }
+      ]
+    }
+  ]
+}

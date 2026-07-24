@@ -1,0 +1,12 @@
+[
+  {"phase": 10, "sequence": 1, "name": "transpose", "args": "1"},
+  {"phase": 30, "sequence": 1, "name": "setpts", "args": "PTS-STARTPTS"},
+  {"phase": 40, "sequence": 1, "name": "crop", "args": "in_w:in_h:0:0"},
+  {"phase": 40, "sequence": 2, "name": "scale", "args": "1080:1080"},
+  {"phase": 50, "sequence": 1, "name": "zscale", "args": "transfer=linear:npl=100"},
+  {"phase": 50, "sequence": 2, "name": "tonemap", "args": "tonemap=hable:desat=0"},
+  {"phase": 50, "sequence": 3, "name": "zscale", "args": "transfer=bt709:matrix=bt709:primaries=bt709"},
+  {"phase": 60, "sequence": 1, "name": "fps", "args": "25/1"},
+  {"phase": 70, "sequence": 1, "name": "subtitles", "args": "filename=en"},
+  {"phase": 90, "sequence": 1, "name": "format", "args": "yuv420p"}
+]

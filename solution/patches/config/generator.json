@@ -1,0 +1,25 @@
+{
+  "generator_id": "aurora-build",
+  "generator_version": "3.0.0",
+  "default_ffmpeg": "ffmpeg",
+  "build_plan_format": "aurora-build-plan-v3",
+  "dependency_lock_format": "aurora-dependency-lock-v1",
+  "artifacts": {
+    "build_plan": "build-plan.json",
+    "dependency_lock": "dependency-lock.json",
+    "makefile": "ffmpeg.mk"
+  },
+  "filter_phases": {
+    "orientation": 10,
+    "trim": 20,
+    "setpts": 30,
+    "crop_scale": 40,
+    "tone_map": 50,
+    "fps": 60,
+    "subtitles": 70,
+    "setsar": 80,
+    "format": 90
+  },
+  "set_like_array_paths": ["capabilities.encoders", "capabilities.filters", "capabilities.muxers", "subtitles.languages"],
+  "preserve_order_array_paths": ["filters", "jobs"]
+}

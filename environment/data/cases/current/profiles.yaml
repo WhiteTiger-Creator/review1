@@ -1,0 +1,43 @@
+format: aurora-profiles-v3
+profiles:
+  web-base:
+    output:
+      delivery_profile: web-sdr
+      container: mp4
+    video:
+      target_width: 1920
+      target_height: 1080
+      tone_map: false
+    audio:
+      normalization: null
+    subtitles:
+      mode: sidecar
+      languages: [en]
+  social-square:
+    extends: web-base
+    video:
+      target_width: 1080
+      target_height: 1080
+      tone_map: true
+    subtitles:
+      mode: burn_in
+      burn_in_language: en
+  archive-alpha:
+    output:
+      delivery_profile: archive
+      container: mov
+    video:
+      target_width: 1920
+      target_height: 1080
+    subtitles:
+      mode: none
+jobs:
+  - asset_id: launch-master
+    profile: social-square
+    artifact_name: launch-social-square
+  - asset_id: interview-sdr
+    profile: web-base
+    artifact_name: interview-web
+  - asset_id: alpha-dollar
+    profile: archive-alpha
+    artifact_name: alpha-archive

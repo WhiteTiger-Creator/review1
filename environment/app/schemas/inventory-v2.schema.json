@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aurora-inventory-v2.schema.json",
+  "type": "object",
+  "required": ["format", "source_root", "assets"],
+  "additionalProperties": false,
+  "properties": {
+    "format": { "const": "aurora-inventory-v2" },
+    "source_root": { "type": "string" },
+    "assets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/asset" }
+    }
+  },
+  "$defs": {
+    "asset": {
+      "type": "object",
+      "required": ["id", "relative_path", "content_digest", "video"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "relative_path": { "type": "string" },
+        "content_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "video": { "$ref": "#/$defs/video" },
+        "audio_tracks": { "type": "array", "items": { "$ref": "#/$defs/audio_track" } },
+        "subtitle_tracks": { "type": "array", "items": { "$ref": "#/$defs/subtitle_track" } }
+      }
+    },
+    "video": {
+      "type": "object",
+      "required": ["width", "height", "fps", "pix_fmt", "has_alpha", "rotation"],
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "fps": { "type": "string" },
+        "pix_fmt": { "type": "string" },
+        "color_transfer": { "type": "string" },
+        "has_alpha": { "type": "boolean" },
+        "rotation": { "type": "integer" },
+        "duration_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "audio_track": {
+      "type": "object",
+      "required": ["index", "language"],
+      "additionalProperties": false,
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "language": { "type": "string" },
+        "channels": { "type": "integer" },
+        "codec": { "type": "string" }
+      }
+    },
+    "subtitle_track": {
+      "type": "object",
+      "required": ["index", "language"],
+      "additionalProperties": false,
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "language": { "type": "string" },
+        "codec": { "type": "string" },
+        "relative_path": { "type": "string" },
+        "content_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    }
+  }
+}
