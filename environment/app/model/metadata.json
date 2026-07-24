@@ -1,7 +1,0 @@
-{
-  "model_id": "screen-lr-2026-07",
-  "kind": "logistic_regression",
-  "feature_order": ["edge_density", "skin_ratio", "text_ratio"],
-  "weights": [1.8, 2.4, -1.2],
-  "bias": -1.1
-}
