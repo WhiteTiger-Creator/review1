@@ -1,8 +1,0 @@
-[package]
-name = "nugetfix-core"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-nugetfix-graph = { path = "../nugetfix-graph" }

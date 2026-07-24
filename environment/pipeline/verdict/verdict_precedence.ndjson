@@ -1,0 +1,10 @@
+{"rank":1,"check":"quarantine_feed","fail_verdict":"SEQUENCE_REJECTED","never_rescued":true}
+{"rank":2,"check":"timestamp_grammar","fail_verdict":"TIMESTAMP_REJECTED","regex":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"}
+{"rank":3,"check":"route_in_registry","fail_verdict":"ROUTE_UNKNOWN","registry":"/app/timetable/timetable_routes.tsv"}
+{"rank":4,"check":"strict_int_sequence","fail_verdict":"SEQUENCE_REJECTED","rescue":"PIN_RESCUED"}
+{"rank":5,"check":"stale_ingest","threshold_seconds":21600,"fail_verdict":"STALE_INGEST"}
+{"rank":6,"check":"dedup_trip_start_date","fail_verdict":"DEDUP_DUPLICATE","tiebreak":"earliest_received_ts"}
+{"rank":7,"check":"canceled_preempt","admit_verdict":"CANCELED_TRIP","consumes_slot":false}
+{"rank":8,"check":"hourly_cap","over_verdict":"CAP_EXCEEDED","cascade_demotion":"CASCADE_SUPPRESSED"}
+{"rank":9,"check":"skipped_stop_preempt","admit_verdict":"SKIPPED_STOP","consumes_slot":true}
+{"rank":10,"check":"schedule_relationship","route":{"SCHEDULED":"ADMITTED_SCHEDULED","ADDED":"ADMITTED_ADDED","NO_DATA":"ADMITTED_NO_DATA","UNSCHEDULED":"ADMITTED_UNSCHEDULED"},"consumes_slot":true}

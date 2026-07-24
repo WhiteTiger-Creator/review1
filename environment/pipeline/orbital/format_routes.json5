@@ -1,0 +1,9 @@
+{
+  // Feed label is derived from the file extension and is the canonical short name
+  // emitted in every decision. Length-prefixed binary uses 4-byte little-endian uint32.
+  alpha:      { kind: "ndjson",  separator: null, ts_field: "received_ts" },
+  beta:       { kind: "delim",   separator: "\t", ts_field: "received_ts" },
+  gamma:      { kind: "delim",   separator: "|",  ts_field: "received_ts" },
+  delta:      { kind: "binary",  length_prefix: "u32le", payload: "json" },
+  quarantine: { kind: "passthrough", forced_verdict: "SEQUENCE_REJECTED" }
+}

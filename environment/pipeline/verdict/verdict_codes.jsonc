@@ -1,0 +1,28 @@
+{
+  // Fourteen closed verdict codes. Every code is reported in totals even at zero.
+  // Top-level output keys in declaration order: report_id, window, report_digest, decisions, totals, route_share.
+  // report_digest formula (lowercase hex, first 16 chars of SHA-256):
+  //   preimage = "tripfix-v1|" + str(N_decisions) + "|" + join(";", [str(ordinal) + ":" + verdict + ":" + trip_id for d in decisions])
+  //   report_digest = hex(SHA-256(utf8(preimage)))[:16]
+  // The preimage uses pipe-then-semicolon separators with colon-joined triples in emit order.
+  // Strict received_ts grammar: ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$
+  //   No fractional seconds. No offset other than literal trailing Z. Anything else -> TIMESTAMP_REJECTED.
+  // Stale ingest threshold: ingest_ts - received_ts > 21600 seconds (6 hours) -> STALE_INGEST.
+  // Route registry: route_id not present in /app/timetable/timetable_routes.tsv -> ROUTE_UNKNOWN.
+  "codes": [
+    { "code": "ADMITTED_SCHEDULED",   "family": "ADMIT",    "consumes_slot": true  },
+    { "code": "ADMITTED_ADDED",       "family": "ADMIT",    "consumes_slot": true  },
+    { "code": "ADMITTED_NO_DATA",     "family": "ADMIT",    "consumes_slot": true  },
+    { "code": "ADMITTED_UNSCHEDULED", "family": "ADMIT",    "consumes_slot": true  },
+    { "code": "CANCELED_TRIP",        "family": "STATUS",   "consumes_slot": false },
+    { "code": "SKIPPED_STOP",         "family": "STATUS",   "consumes_slot": true  },
+    { "code": "DEDUP_DUPLICATE",      "family": "DEDUP",    "consumes_slot": false },
+    { "code": "CAP_EXCEEDED",         "family": "CAP",      "consumes_slot": false },
+    { "code": "CASCADE_SUPPRESSED",   "family": "CASCADE",  "consumes_slot": false },
+    { "code": "SEQUENCE_REJECTED",    "family": "REJECT",   "consumes_slot": false },
+    { "code": "PIN_RESCUED",          "family": "RESCUE",   "consumes_slot": false },
+    { "code": "TIMESTAMP_REJECTED",   "family": "REJECT",   "consumes_slot": false },
+    { "code": "ROUTE_UNKNOWN",        "family": "REJECT",   "consumes_slot": false },
+    { "code": "STALE_INGEST",         "family": "REJECT",   "consumes_slot": false }
+  ]
+}

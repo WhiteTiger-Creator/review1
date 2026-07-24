@@ -1,0 +1,13 @@
+report_id = "tripfix-v1"
+feeds_dir = "/app/feeds"
+timetable_dir = "/app/timetable"
+envelope_dir = "/app/envelope"
+verdict_dir = "/app/verdict"
+output_path = "/app/ledger/output.json"
+
+[feed_routes]
+".ndjson" = "alpha"
+".tsv"    = "beta"
+".psv"    = "gamma"
+".bin"    = "delta"
+".unknown_v9" = "quarantine"

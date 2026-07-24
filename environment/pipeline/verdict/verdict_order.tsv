@@ -1,0 +1,4 @@
+sort_key	direction	tiebreak_rank
+received_ts	asc	1
+trip_id	asc	2
+feed	asc	3

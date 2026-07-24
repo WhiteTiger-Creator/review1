@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "dependencies": {
-    "Ledger.Core": { "type": "Direct", "resolved": "1.2.0", "contentHash": "sha256:corecorecorecorecorecorecorecorecorecorecorecorecorecorecoreco" },
-    "Ledger.Utils": { "type": "Direct", "resolved": "1.2.0", "contentHash": "sha256:utilsutilsutilsutilsutilsutilsutilsutilsutilsutilsutilsutilsutil" },
-    "Ledger.Gateway": { "type": "Direct", "resolved": "1.2.0", "contentHash": "sha256:gategategategategategategategategategategategategategategategate" },
-    "Ledger.Metrics": { "type": "Direct", "resolved": "1.2.0", "contentHash": "sha256:metmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetmetm" }
-  }
-}
