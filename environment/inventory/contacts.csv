@@ -1,4 +1,0 @@
-role,team,channel
-change-owner,network-operations,netops-primary
-rollback-owner,site-reliability,sre-network
-observer,routing-security,routing-watch

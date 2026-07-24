@@ -1,6 +1,0 @@
-hostname,interface,address,purpose
-edge-ams-01,lo,192.0.2.10/32,router-id
-edge-ams-01,xe0,192.0.2.1/30,transit-a-v4
-edge-ams-01,xe1,192.0.2.5/30,transit-b-v4
-edge-ams-01,xe2,2001:db8:10::1/64,transit-a-v6
-edge-ams-01,xe3,2001:db8:20::1/64,transit-b-v6
