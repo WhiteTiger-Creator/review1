@@ -1,0 +1,1 @@
+{"lane":"L2","actors":[0,1,2],"root":{"role":"svc","mask":1,"meta":{"z":0}},"patch":{"prototype":{"polluted":true},"mask":9,"meta":{"d":4,"inner":{"constructor":{"k":1}}},"tag":"L2","extra":{"k":"v"}},"deltas":[1,2,4,1]}
