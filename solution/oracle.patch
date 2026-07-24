@@ -1,0 +1,223 @@
+diff --git a/cmd/nuosc/main.go b/cmd/nuosc/main.go
+index bca8de2..77fec50 100644
+--- a/cmd/nuosc/main.go
++++ b/cmd/nuosc/main.go
+@@ -9,7 +9,7 @@ import (
+ )
+ 
+ func main() {
+-	config := flag.String("config", "/app/fixtures/earth_medium.json", "propagation configuration")
++	config := flag.String("config", "/app/fixtures/earth_mantle_profile.json", "propagation configuration")
+ 	propagation := flag.String("propagation", "/app/output/propagation.json", "propagation output")
+ 	continuation := flag.String("continuation", "/app/output/continuation.json", "continuation output")
+ 	reproducibility := flag.String("reproducibility", "/app/output/reproducibility.json", "reproducibility output")
+diff --git a/internal/medium/validate.go b/internal/medium/validate.go
+index cf06da0..11eac95 100644
+--- a/internal/medium/validate.go
++++ b/internal/medium/validate.go
+@@ -1,7 +1,6 @@
+ package medium
+ 
+ import (
+-	"bytes"
+ 	"crypto/sha256"
+ 	"encoding/hex"
+ 	"errors"
+@@ -47,7 +46,7 @@ func (c *Config) Validate() error {
+ }
+ 
+ func ExactSHA256(raw []byte) string {
+-	sum := sha256.Sum256(bytes.TrimSpace(raw))
++	sum := sha256.Sum256(raw)
+ 	return hex.EncodeToString(sum[:])
+ }
+ 
+diff --git a/internal/observables/publication.go b/internal/observables/publication.go
+index 0a2e5c9..b80a3ba 100644
+--- a/internal/observables/publication.go
++++ b/internal/observables/publication.go
+@@ -11,10 +11,12 @@ type OutputFile struct {
+ 	Path string
+ 	Data []byte
+ }
+-
+ type stagedTarget struct {
+ 	OutputFile
+-	Temp string
++	Temp       string
++	Backup     string
++	HadRegular bool
++	Installed  bool
+ }
+ 
+ func WritePublication(targets []OutputFile) error {
+@@ -22,20 +24,20 @@ func WritePublication(targets []OutputFile) error {
+ 		return nil
+ 	}
+ 	seen := map[string]bool{}
+-	staged := make([]stagedTarget, 0, len(targets))
+-	for _, target := range targets {
++	staged := make([]stagedTarget, len(targets))
++	for i, target := range targets {
+ 		clean := filepath.Clean(target.Path)
+ 		if target.Path == "" || seen[clean] {
+ 			return errors.New("result targets must be non-empty and distinct")
+ 		}
+ 		seen[clean] = true
+ 		if err := os.MkdirAll(filepath.Dir(clean), 0o755); err != nil {
+-			removeTemps(staged)
++			removeStaged(staged)
+ 			return err
+ 		}
+ 		tmp, err := os.CreateTemp(filepath.Dir(clean), "."+filepath.Base(clean)+".tmp-*")
+ 		if err != nil {
+-			removeTemps(staged)
++			removeStaged(staged)
+ 			return err
+ 		}
+ 		name := tmp.Name()
+@@ -51,25 +53,63 @@ func WritePublication(targets []OutputFile) error {
+ 		}
+ 		if err != nil {
+ 			_ = os.Remove(name)
+-			removeTemps(staged)
++			removeStaged(staged)
+ 			return err
+ 		}
+-		staged = append(staged, stagedTarget{OutputFile: OutputFile{Path: clean, Data: target.Data}, Temp: name})
++		staged[i] = stagedTarget{OutputFile: OutputFile{Path: clean, Data: target.Data}, Temp: name}
+ 	}
+ 	for i := range staged {
++		info, err := os.Lstat(staged[i].Path)
++		if err == nil && info.Mode().IsRegular() {
++			backup, createErr := os.CreateTemp(filepath.Dir(staged[i].Path), "."+filepath.Base(staged[i].Path)+".bak-*")
++			if createErr != nil {
++				restoreCommitted(staged, i-1)
++				return createErr
++			}
++			backupName := backup.Name()
++			_ = backup.Close()
++			_ = os.Remove(backupName)
++			if err := os.Rename(staged[i].Path, backupName); err != nil {
++				restoreCommitted(staged, i-1)
++				return fmt.Errorf("backup %s: %w", staged[i].Path, err)
++			}
++			staged[i].Backup, staged[i].HadRegular = backupName, true
++		}
+ 		if err := os.Rename(staged[i].Temp, staged[i].Path); err != nil {
+-			removeTemps(staged[i:])
++			restoreCommitted(staged, i)
+ 			return fmt.Errorf("replace %s: %w", staged[i].Path, err)
+ 		}
+ 		staged[i].Temp = ""
++		staged[i].Installed = true
++	}
++	for i := range staged {
++		if staged[i].Backup != "" {
++			_ = os.Remove(staged[i].Backup)
++		}
+ 	}
+ 	return nil
+ }
+ 
+-func removeTemps(staged []stagedTarget) {
++func restoreCommitted(staged []stagedTarget, through int) {
++	for i := through; i >= 0; i-- {
++		if staged[i].Installed {
++			_ = os.Remove(staged[i].Path)
++		}
++		if staged[i].HadRegular && staged[i].Backup != "" {
++			_ = os.Rename(staged[i].Backup, staged[i].Path)
++			staged[i].Backup = ""
++		}
++	}
++	removeStaged(staged)
++}
++
++func removeStaged(staged []stagedTarget) {
+ 	for _, item := range staged {
+ 		if item.Temp != "" {
+ 			_ = os.Remove(item.Temp)
+ 		}
++		if item.Backup != "" {
++			_ = os.Remove(item.Backup)
++		}
+ 	}
+ }
+diff --git a/internal/observables/reproducibility.go b/internal/observables/reproducibility.go
+index 090b245..ff4ca2a 100644
+--- a/internal/observables/reproducibility.go
++++ b/internal/observables/reproducibility.go
+@@ -10,7 +10,7 @@ func BuildReproducibility(configSHA, mode string, start, end physics.Boundary, p
+ 		SchemaVersion: 1, ConfigSHA256: configSHA, Mode: mode,
+ 		StartLayer: start.NextLayer, StartSubstep: start.NextSubstep, StartCompletedSteps: start.CompletedSteps,
+ 		EndLayer: end.NextLayer, EndSubstep: end.NextSubstep, CompletedSteps: end.CompletedSteps,
+-		PropagationSHA256: state.SHA256(propagationBytes), ContinuationSHA256: state.SHA256(propagationBytes),
++		PropagationSHA256: state.SHA256(propagationBytes), ContinuationSHA256: state.SHA256(continuationBytes),
+ 		FinalStateSHA256: stateDigest, FinalTraceChainSHA256: traceDigest,
+ 	}
+ }
+diff --git a/internal/physics/plan.go b/internal/physics/plan.go
+index ecc2f02..fbcea86 100644
+--- a/internal/physics/plan.go
++++ b/internal/physics/plan.go
+@@ -38,7 +38,7 @@ func BuildPlan(cfg medium.Config) Plan {
+ 		count := substepCount(cfg, layer)
+ 		plan.LayerSubsteps[layerIndex] = count
+ 		for substep := 0; substep < count; substep++ {
+-			fraction := float64(substep) / float64(count)
++			fraction := (float64(substep) + 0.5) / float64(count)
+ 			density := layer.DensityStartGCM3 + (layer.DensityEndGCM3-layer.DensityStartGCM3)*fraction
+ 			plan.Steps = append(plan.Steps, Step{
+ 				GlobalIndex: len(plan.Steps), LayerIndex: layerIndex, SubstepIndex: substep, SubstepCount: count,
+@@ -56,9 +56,11 @@ func substepCount(cfg medium.Config, layer medium.Layer) int {
+ 	}
+ 	maxPhase := 0.0
+ 	for _, energy := range cfg.EnergiesGEV {
+-		phase := PhaseMagnitude(cfg.MixingAngleRad, cfg.DeltaM2EV2, energy, layer.LengthKM, layer.DensityStartGCM3, layer.ElectronFraction)
+-		if phase > maxPhase {
+-			maxPhase = phase
++		for _, density := range []float64{layer.DensityStartGCM3, layer.DensityEndGCM3} {
++			phase := PhaseMagnitude(cfg.MixingAngleRad, cfg.DeltaM2EV2, energy, layer.LengthKM, density, layer.ElectronFraction)
++			if phase > maxPhase {
++				maxPhase = phase
++			}
+ 		}
+ 	}
+ 	count := int(math.Ceil(maxPhase / cfg.MaxPhaseStepRad))
+diff --git a/internal/physics/propagate.go b/internal/physics/propagate.go
+index 796b70a..37796d4 100644
+--- a/internal/physics/propagate.go
++++ b/internal/physics/propagate.go
+@@ -19,5 +19,5 @@ func ApplyStep(s *FlavorState, theta, deltaM2 float64, step Step) {
+ 	si := math.Sin(phase)
+ 	oldE, oldMu := s.Electron, s.Muon
+ 	s.Electron = complex(co, -si*nz)*oldE + complex(0, -si*nx)*oldMu
+-	s.Muon = complex(0, -si*nx)*s.Electron + complex(co, si*nz)*oldMu
++	s.Muon = complex(0, -si*nx)*oldE + complex(co, si*nz)*oldMu
+ }
+diff --git a/internal/simulation/run.go b/internal/simulation/run.go
+index a8b4b22..b8fbced 100644
+--- a/internal/simulation/run.go
++++ b/internal/simulation/run.go
+@@ -30,7 +30,6 @@ func Run(opts Options) error {
+ 		if !state.EqualStates(restored, replayed, 2e-12) || replayChain != cp.TraceChainSHA256 {
+ 			return errors.New("invalid continuation history")
+ 		}
+-		startBoundary.CompletedSteps++
+ 		states, chain, mode = restored, cp.TraceChainSHA256, "resume"
+ 	}
+ 	stop, err := resolveStop(opts, plan)
+diff --git a/internal/state/digest.go b/internal/state/digest.go
+index b6fcd1b..6d2f5f7 100644
+--- a/internal/state/digest.go
++++ b/internal/state/digest.go
+@@ -32,7 +32,7 @@ func Digest(boundary physics.Boundary, amps []Amplitude) string {
+ 	sorted := append([]Amplitude(nil), amps...)
+ 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].EnergyGEV < sorted[j].EnergyGEV })
+ 	var b strings.Builder
+-	fmt.Fprintf(&b, "boundary=%d:%d\n", boundary.NextLayer, boundary.CompletedSteps)
++	fmt.Fprintf(&b, "boundary=%d:%d:%d\n", boundary.NextLayer, boundary.NextSubstep, boundary.CompletedSteps)
+ 	for _, amp := range sorted {
+ 		values := []float64{amp.EnergyGEV, amp.Electron[0], amp.Electron[1], amp.Muon[0], amp.Muon[1]}
+ 		for i, value := range values {

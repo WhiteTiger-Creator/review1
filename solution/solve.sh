@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-cd /app
-patch -p1 --forward --batch < "${ROOT_DIR}/aurora-fix.patch"
-chmod +x /app/aurora-build.mjs
+cd /solution
+patch -d /app/environment -p1 --batch < oracle.patch
+gofmt -w /app/environment/cmd /app/environment/internal
+go -C /app/environment test ./...
+go -C /app/environment build -trimpath -o /tmp/nuosc ./cmd/nuosc
 
-rm -rf /output/oracle-check /output/oracle-legacy
-mkdir -p /output/oracle-check /output/oracle-legacy
+scratch=$(mktemp -d /tmp/neutrino-resume-smoke.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT
+/tmp/nuosc \
+  --config /app/fixtures/earth_mantle_profile.json \
+  --propagation "$scratch/partial-propagation.json" \
+  --continuation "$scratch/partial-continuation.json" \
+  --reproducibility "$scratch/partial-reproducibility.json" \
+  --stop-after-steps 3
+/tmp/nuosc \
+  --config /app/fixtures/earth_mantle_profile.json \
+  --propagation "$scratch/resumed-propagation.json" \
+  --continuation "$scratch/resumed-continuation.json" \
+  --reproducibility "$scratch/resumed-reproducibility.json" \
+  --resume "$scratch/partial-continuation.json"
 
-node /app/aurora-build.mjs synthesize \
-  --inventory /data/cases/current/inventory.json \
-  --profiles /data/cases/current/profiles.yaml \
-  --output-dir /output/oracle-check
-
-node /app/aurora-build.mjs synthesize \
-  --inventory /data/cases/legacy/inventory.json \
-  --profiles /data/cases/legacy/profiles-v1.json \
-  --output-dir /output/oracle-legacy
-
-make -n -f /output/oracle-check/ffmpeg.mk all ASSET_ROOT=/data/assets
+mkdir -p /app/output
+/tmp/nuosc \
+  --config /app/fixtures/earth_mantle_profile.json \
+  --propagation /app/output/propagation.json \
+  --continuation /app/output/continuation.json \
+  --reproducibility /app/output/reproducibility.json

@@ -1,4 +1,0 @@
-# Aurora build troubleshooting log (seeded)
-
-- Record inventory case id and dependency-lock fingerprint when comparing build plans across machines.
-- Re-run synthesis with --check after profile edits to validate inputs before writing outputs.
