@@ -1,5 +1,0 @@
-seed = 12
-steps = []
-
-[[steps]]
-cmd = ["cargo", "run", "--release", "-p", "m07", "--", "verify-store", "--root", "/var/lib/mint"]

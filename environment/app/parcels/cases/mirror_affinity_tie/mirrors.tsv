@@ -1,0 +1,5 @@
+input_name	mirror_id	receipt_digest	mirror_trust	mirror_priority
+in_alpha	M_AFF	aabbcc01	yes	10
+in_alpha	M_LOW	aabbcc01	yes	5
+in_beta	M_AAA	ddeeff02	yes	10
+in_beta	M_AFF	ddeeff02	yes	10

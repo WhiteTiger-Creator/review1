@@ -1,0 +1,2 @@
+shard_id	crate_id	shard_order	input_name	byte_count	shard_digest
+S1	CRATE_T	1	in_gamma	100	11223344

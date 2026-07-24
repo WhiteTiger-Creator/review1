@@ -1,0 +1,4 @@
+crate_id	family	compression_stamp	release_tier	crate_priority	seal_token
+CRATE_A	ember	vala_exit	draft	30	KILN_SEAL
+CRATE_B	ember	BROTLI	candidate	20	AMBER_SEAL
+CRATE_C	ember	ZIP	gold	10	BRONZE_SEAL

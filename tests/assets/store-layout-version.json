@@ -1,8 +1,0 @@
-{
-  "layout_version": 1,
-  "catalog": "catalog.db",
-  "lease_journal": "lease.journal",
-  "blobs": "blobs/sha256",
-  "snapshots": "snapshots",
-  "manifests": "manifests"
-}

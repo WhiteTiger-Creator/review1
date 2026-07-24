@@ -1,0 +1,10 @@
+input_name	mirror_id	receipt_digest	mirror_trust	mirror_priority
+in_alpha	M_HIGH	aabbcc01	yes	50
+in_alpha	M_LOW	aabbcc01	yes	5
+in_beta	M_BETA_HI	ddeeff02	yes	90
+in_beta	M_BETA_LO	ddeeff02	yes	10
+in_gamma	M_GAMMA_HI	11223344	yes	40
+in_gamma	M_GAMMA_LO	11223344	yes	7
+in_delta	M_DEL_HI	55667788	yes	25
+in_delta	M_DEL_LO	55667788	yes	3
+in_eps	M_EPS	99aabbcc	yes	3

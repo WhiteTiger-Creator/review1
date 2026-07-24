@@ -1,0 +1,5 @@
+stamp	stamp_priority
+XZ	40
+BROTLI	30
+GZIP	20
+ZIP	10

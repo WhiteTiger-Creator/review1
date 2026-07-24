@@ -1,0 +1,4 @@
+release_tier	predecessor_tier	tier_priority	tier_wording
+gold	candidate	30	gold_release
+candidate	draft	20	candidate_hold
+draft		10	draft_hold

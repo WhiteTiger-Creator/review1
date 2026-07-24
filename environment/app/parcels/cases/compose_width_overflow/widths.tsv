@@ -1,0 +1,14 @@
+product	column	width
+crate.index	crate_id	10
+crate.index	family	10
+crate.index	shard_count	4
+crate.index	byte_total	8
+crate.index	lane_id	8
+crate.index	release_tier	12
+crate.index	index_note	8
+seal.manifest	crate_id	10
+seal.manifest	seal_token	12
+seal.manifest	mirror_id	10
+seal.manifest	notice_fence	12
+seal.manifest	checksum_alphabet	10
+seal.manifest	public_seal_text	20

@@ -1,8 +1,0 @@
-seed = 77
-steps = []
-
-[[steps]]
-cmd = ["cargo", "run", "--release", "-p", "m07", "--", "recover", "--root", "/var/lib/mint", "--output", "/output/store-inventory.json"]
-
-[[steps]]
-cmd = ["cargo", "run", "--release", "-p", "m07", "--", "gc", "--root", "/var/lib/mint"]
