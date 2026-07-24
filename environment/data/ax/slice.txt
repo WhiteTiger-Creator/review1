@@ -1,2 +1,0 @@
-annex-id ax0708
-byte-window header+chunks

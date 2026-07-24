@@ -4,24 +4,27 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "scientific-computing"
-tags = ["scientific-computing", "numeric", "flare", "widening", "lyapunov", "java"]
-languages = ["java"]
+category = "system-administration"
+subcategories = [ "tool_specific" ]
 codebase_size = "small"
+languages = [ "bash" ]
+tags = [ "frrouting", "ripestat", "bgp", "route-maps", "change-control" ]
+expert_time_estimate_min = 360
+junior_time_estimate_min = 900
 number_of_milestones = 0
-subcategories = ["db_interaction"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 360
 
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
 
 [verifier]
-timeout_sec = 1200
+timeout_sec = 450.0
 
 [environment]
-allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 1800.0
+docker_flags = []
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+gpus = 0
+gpu_types = []
+allow_internet = true
