@@ -1,2 +1,0 @@
-[tool.ruff.lint]
-ignore = ["I001", "PLW1510", "RUF007"]
