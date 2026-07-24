@@ -1,7 +1,0 @@
-[package]
-name = "m3"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-p8 = { path = "../p8" }

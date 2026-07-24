@@ -3,28 +3,25 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "hard"
-category = "scientific-computing"
-tags = ["scientific-computing", "rust", "go", "bash", "structural-beam"]
-languages = ["rust", "go", "bash"]
-codebase_size = "small"
-number_of_milestones = 0
+category = "security"
 subcategories = []
-expert_time_estimate_min = 150
-junior_time_estimate_min = 420
+difficulty = "hard"
+codebase_size = "minimal"
+number_of_milestones = 0
+languages = ["c"]
+tags = ["x86-64", "binary-recovery", "decompilation", "reverse-engineering", "differential-testing"]
+expert_time_estimate_min = 300
+junior_time_estimate_min = 720
+
+[verifier]
+timeout_sec = 1800
 
 [agent]
 timeout_sec = 1800
 
-[verifier]
-timeout_sec = 1200
-
 [environment]
-allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 1800
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-
-[reference_pattern]
-justification_if_none = "No promoted reference in docs/reference_tasks/index.json matches polyglot Rust+Go Euler-Bernoulli beam coarse/fine mesh mid-span deflection and support-reaction parity with load-doubling linearity and identical-rerun scratch isolation; closest tasks (oral-auc-dose-parity, aquifer-csr-head-parity, county-seir-peak-parity) differ in domain physics (PK/groundwater/SEIR vs structural beam FEA), metamorphic probes (dose/AUC vs load/deflection), and failure topology (Hermite stiffness + reaction residual extraction)."
+allow_internet = false

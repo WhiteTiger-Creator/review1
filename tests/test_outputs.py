@@ -1,408 +1,348 @@
-"""Span screening verifier for coarse/fine parity observables."""
-
-import json
+import glob
 import os
 import subprocess
-from pathlib import Path
+from shutil import copyfile
+from tempfile import mkdtemp
 
 import pytest
 
-ROOT = Path(os.environ.get("APP_ENV_ROOT", "/app/environment"))
-OUT = Path(os.environ.get("BEAM_OUT", "/app/output/span_parity.json"))
-KIT = ROOT / "exec" / "kit.sh"
+APP_ROOT = "/app"
+TESTS_ROOT = "/tests"
+RECOVERED_SRC = os.path.join(APP_ROOT, "src", "recovered.c")
+MAKE_SRC = os.path.join(APP_ROOT, "Makefile")
+REFERENCE_BIN = os.path.join(APP_ROOT, "bin", "timers")
+VISIBLE_DIR = os.path.join(APP_ROOT, "inputs")
+HIDDEN_DIR = os.path.join(TESTS_ROOT, "inputs_hidden")
+GOLDEN_DIR = os.path.join(TESTS_ROOT, "golden")
+REFERENCE_DIR = os.path.join(TESTS_ROOT, "reference")
+UNPRIVILEGED = ["setpriv", "--reuid=65534", "--regid=65534", "--clear-groups"]
 
 
-def _rebuild_screen() -> dict:
-    if OUT.exists():
-        OUT.unlink()
-    subprocess.run(["bash", "/app/environment/exec/kit.sh"], check=True)
-    return json.loads(OUT.read_text(encoding="utf-8"))
+def _inputs(directory):
+    return sorted(glob.glob(os.path.join(directory, "*.bin")))
 
 
-@pytest.fixture(scope="module")
-def report() -> dict:
-    return _rebuild_screen()
+VISIBLE_INPUTS = _inputs(VISIBLE_DIR)
+HIDDEN_INPUTS = _inputs(HIDDEN_DIR)
 
 
-def _band_limits() -> tuple[str, float, float, float]:
-    text = (ROOT / "docs" / "tol_policy.md").read_text(encoding="utf-8")
-    tol_class = "abs_span"
-    tol_limit = 0.50
-    react_tol = 40.0
-    lin_tol = 0.08
-    for line in text.splitlines():
-        s = line.strip()
-        if s.startswith("tol_class "):
-            tol_class = s.split(None, 1)[1]
-        elif s.startswith("tol_limit "):
-            tol_limit = float(s.split(None, 1)[1])
-        elif s.startswith("react_tol_limit "):
-            react_tol = float(s.split(None, 1)[1])
-        elif s.startswith("lin_tol_limit "):
-            lin_tol = float(s.split(None, 1)[1])
-    return tol_class, tol_limit, react_tol, lin_tol
+def _family(name):
+    return sorted(glob.glob(os.path.join(HIDDEN_DIR, f"hidden_{name}_*.bin")))
 
 
-def _iter_rows(report: dict) -> list[dict]:
-    rows: list[dict] = []
-    for case in report["cases"]:
-        rows.extend(case["rows"])
-    return rows
+def _ids(paths):
+    return [os.path.basename(path) for path in paths]
 
 
-def _point_defl(x: float, length: float, e_mod: float, i_sec: float, a: float, p: float) -> float:
-    """Simply-supported point-load deflection at x (downward positive)."""
-    b = length - a
-    ei = e_mod * i_sec
-    if x <= a:
-        return p * b * x * (length * length - x * x - b * b) / (6.0 * ei * length)
-    return p * a * (length - x) * (length * length - (length - x) * (length - x) - a * a) / (
-        6.0 * ei * length
+def _golden(path):
+    base = os.path.join(GOLDEN_DIR, os.path.basename(path))
+    with open(base + ".out", "rb") as handle:
+        payload = handle.read()
+    with open(base + ".code") as handle:
+        code = int(handle.read())
+    return payload, code
+
+
+def _payload(path):
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def _share(directory):
+    os.chmod(directory, 0o755)
+    return directory
+
+
+def _run(binary, path, cwd):
+    done = subprocess.run(
+        UNPRIVILEGED + [binary],
+        input=_payload(path),
+        capture_output=True,
+        timeout=300,
+        cwd=cwd,
+        check=False,
+    )
+    return done.stdout, done.returncode
+
+
+def _compile(source, output):
+    return subprocess.run(
+        ["gcc", "-std=c11", "-O2", "-o", output, source],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
     )
 
 
-def _analytic_mid(case: dict) -> tuple[float, float, float]:
-    length = float(case["length_m"])
-    e_mod = float(case["e_pa"])
-    i_sec = float(case["i_m4"])
-    mid = 0.5 * length
-    defl = 0.0
-    react_l = 0.0
-    react_r = 0.0
-    for load in case["loads"]:
-        a = float(load["x_m"])
-        p = float(load["force_n"])
-        defl += _point_defl(mid, length, e_mod, i_sec, a, p)
-        react_l += p * (length - a) / length
-        react_r += p * a / length
-    return abs(defl) * 1000.0, react_l, react_r
+@pytest.fixture(scope="session")
+def agent_binary():
+    """Compile only the recovered source and the public build rules in isolation."""
+    build_dir = _share(mkdtemp(prefix="tw_agent_build_"))
+    os.makedirs(os.path.join(build_dir, "src"), exist_ok=True)
+    _share(os.path.join(build_dir, "src"))
+    copyfile(RECOVERED_SRC, os.path.join(build_dir, "src", "recovered.c"))
+    copyfile(MAKE_SRC, os.path.join(build_dir, "Makefile"))
+    result = subprocess.run(
+        ["make", "recovered"],
+        cwd=build_dir,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    output = os.path.join(build_dir, "build", "recovered")
+    assert os.path.exists(output)
+    _share(os.path.join(build_dir, "build"))
+    os.chmod(output, 0o755)
+    if os.path.exists(REFERENCE_BIN):
+        os.remove(REFERENCE_BIN)
+    yield output, _share(mkdtemp(prefix="tw_agent_run_"))
 
 
-def test_screen_defl_gap(report: dict) -> None:
-    """Coarse vs fine mid-span deflection residual stays inside published tol_limit."""
-    _, lim, _, _ = _band_limits()
-    for row in _iter_rows(report):
-        assert row["defl_residual"] <= lim
+def _baseline(source_name):
+    build_dir = _share(mkdtemp(prefix="tw_wrong_build_"))
+    output = os.path.join(build_dir, source_name.removesuffix(".c"))
+    result = _compile(os.path.join(REFERENCE_DIR, source_name), output)
+    assert result.returncode == 0, result.stdout + result.stderr
+    os.chmod(output, 0o755)
+    return output
 
 
-def test_screen_react_left(report: dict) -> None:
-    """Coarse vs fine left reaction residual stays inside published react_tol_limit."""
-    _, _, react_tol, _ = _band_limits()
-    for row in _iter_rows(report):
-        assert row["react_l_residual"] <= react_tol
+@pytest.fixture(scope="session")
+def wrong_unsigned():
+    """A recovery whose due test compares the deadline and the clock as unsigned."""
+    return _baseline("wrong_unsigned.c")
 
 
-def test_screen_react_right(report: dict) -> None:
-    """Coarse vs fine right reaction residual stays inside published react_tol_limit."""
-    _, _, react_tol, _ = _band_limits()
-    for row in _iter_rows(report):
-        assert row["react_r_residual"] <= react_tol
+@pytest.fixture(scope="session")
+def wrong_boundary():
+    """A recovery that admits the exact boundary delta into the nearer tier."""
+    return _baseline("wrong_boundary.c")
 
 
-def test_screen_lin_defl(report: dict) -> None:
-    """After load doubling, lin_defl_ratio is near 2.0 within lin_tol_limit."""
-    _, _, _, lin_tol = _band_limits()
-    for row in _iter_rows(report):
-        assert abs(row["lin_defl_ratio"] - 2.0) <= lin_tol
+@pytest.fixture(scope="session")
+def wrong_append():
+    """A recovery that keeps every pending group in arrival order."""
+    return _baseline("wrong_append.c")
 
 
-def test_screen_lin_react(report: dict) -> None:
-    """After load doubling, reactions scale near 2x within react_tol_limit."""
-    _, _, react_tol, _ = _band_limits()
-    for row in _iter_rows(report):
-        assert abs(row["react_l_doubled_n"] - 2.0 * row["react_l_coarse_n"]) <= react_tol
-        assert abs(row["react_r_doubled_n"] - 2.0 * row["react_r_coarse_n"]) <= react_tol
+@pytest.fixture(scope="session")
+def wrong_cascade():
+    """A recovery that re-homes a due group in list order instead of reversing it."""
+    return _baseline("wrong_cascade.c")
 
 
-def test_screen_rerun_lock(report: dict) -> None:
-    """Second identical driver run leaves coarse deflection and reactions unchanged."""
-    second = _rebuild_screen()
-    a = {(c["case_id"], r["row_id"]): r for c in report["cases"] for r in c["rows"]}
-    b = {(c["case_id"], r["row_id"]): r for c in second["cases"] for r in c["rows"]}
-    assert a.keys() == b.keys()
-    for key in a:
-        assert a[key]["defl_coarse_mm"] == b[key]["defl_coarse_mm"]
-        assert a[key]["react_l_coarse_n"] == b[key]["react_l_coarse_n"]
-        assert a[key]["react_r_coarse_n"] == b[key]["react_r_coarse_n"]
+@pytest.fixture(scope="session")
+def wrong_delegate():
+    """A recovery that execs the reference artifact instead of reproducing it."""
+    return _baseline("wrong_delegate.c")
 
 
-def test_screen_byte_lock(report: dict) -> None:
-    """Full span_parity.json matches across two consecutive rebuilds."""
-    first = OUT.read_bytes()
-    _rebuild_screen()
-    second = OUT.read_bytes()
-    assert first == second
+@pytest.fixture(scope="session")
+def wrong_rearm():
+    """A recovery that treats a cancelled id as armable again straight away."""
+    return _baseline("wrong_rearm.c")
 
 
-def test_screen_case_cover(report: dict) -> None:
-    """Report includes every bundled case with a single main screening row."""
-    case_ids = {c["case_id"] for c in report["cases"]}
-    for path in sorted((ROOT / "cases").glob("*.json")):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["case_id"] in case_ids
-        got = next(c for c in report["cases"] if c["case_id"] == data["case_id"])
-        assert len(got["rows"]) == 1
-        assert got["rows"][0]["row_id"] == "main"
+@pytest.fixture(scope="session")
+def visible_lookup():
+    """An overfit answer map that recognizes only the public example traces."""
+    return _baseline("hardcoded_visible.c")
 
 
-def test_screen_schema(report: dict) -> None:
-    """Required observation fields exist; no boolean answer-key suffixes."""
-    assert "cases" in report and "tol_class" in report and "tol_limit" in report
-    assert "react_tol_limit" in report and "lin_tol_limit" in report and "fold_probe" in report
-    need = {
-        "row_id",
-        "defl_coarse_mm",
-        "defl_fine_mm",
-        "react_l_coarse_n",
-        "react_r_coarse_n",
-        "react_l_fine_n",
-        "react_r_fine_n",
-        "defl_residual",
-        "react_l_residual",
-        "react_r_residual",
-        "defl_doubled_mm",
-        "lin_defl_ratio",
-        "react_l_doubled_n",
-        "react_r_doubled_n",
+def _assert_match(agent_binary, path):
+    binary, cwd = agent_binary
+    stdout, code = _run(binary, path, cwd)
+    want, want_code = _golden(path)
+    assert stdout == want
+    assert code == want_code
+
+
+def _moved(wrong, paths):
+    total = 0
+    for path in paths:
+        if _run(wrong, path, None) != _golden(path):
+            total += 1
+    return total
+
+
+def test_executed_case_floor_and_golden_coverage():
+    """The hidden battery holds at least 120 distinct traces with complete goldens."""
+    assert len(HIDDEN_INPUTS) >= 120
+    hidden_bytes = {_payload(path) for path in HIDDEN_INPUTS}
+    visible_bytes = {_payload(path) for path in VISIBLE_INPUTS}
+    assert len(hidden_bytes) == len(HIDDEN_INPUTS)
+    assert not (hidden_bytes & visible_bytes)
+    for path in VISIBLE_INPUTS + HIDDEN_INPUTS:
+        base = os.path.join(GOLDEN_DIR, os.path.basename(path))
+        assert os.path.exists(base + ".out")
+        assert os.path.exists(base + ".code")
+
+
+def test_every_error_token_is_exercised():
+    """The battery reaches all five disclosed error tokens."""
+    seen = set()
+    for path in HIDDEN_INPUTS:
+        payload, code = _golden(path)
+        if code == 1:
+            seen.add(payload.strip().split(b"\n")[-1])
+    assert seen == {
+        b"ERR syntax",
+        b"ERR range",
+        b"ERR ops",
+        b"ERR capacity",
+        b"ERR budget",
     }
-    forbidden = ("_ok", "_valid", "_passes", "_green")
-    for row in _iter_rows(report):
-        assert need <= set(row)
-        for key in row:
-            for sfx in forbidden:
-                assert key[-len(sfx) :] != sfx
 
 
-def test_screen_analytic_fine(report: dict) -> None:
-    """Independent analytical oracle agrees with emitted fine fields within tolerances."""
-    _, lim, react_tol, _ = _band_limits()
-    for path in (ROOT / "cases").glob("*.json"):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        case = next(c for c in report["cases"] if c["case_id"] == data["case_id"])
-        row = case["rows"][0]
-        defl_mm, react_l, react_r = _analytic_mid(data)
-        assert abs(row["defl_fine_mm"] - defl_mm) <= lim
-        assert abs(row["react_l_fine_n"] - react_l) <= react_tol
-        assert abs(row["react_r_fine_n"] - react_r) <= react_tol
+@pytest.mark.parametrize("path", VISIBLE_INPUTS, ids=_ids(VISIBLE_INPUTS))
+def test_recovered_matches_visible_traces(agent_binary, path):
+    """The recovered source matches every public example byte for byte."""
+    _assert_match(agent_binary, path)
 
 
-def test_screen_regen(report: dict) -> None:
-    """Deleting output and rebuilding from sources regenerates a valid report."""
-    assert OUT.exists()
-    OUT.unlink()
-    assert not OUT.exists()
-    again = _rebuild_screen()
-    assert OUT.exists()
-    assert again["cases"]
+@pytest.mark.parametrize("path", HIDDEN_INPUTS, ids=_ids(HIDDEN_INPUTS))
+def test_recovered_matches_hidden_traces(agent_binary, path):
+    """The recovered source matches independent goldens on unseen traces."""
+    _assert_match(agent_binary, path)
 
 
-def test_screen_band_echo(report: dict) -> None:
-    """Emitted band tokens echo the published limit document."""
-    tol_class, tol_limit, react_tol, lin_tol = _band_limits()
-    assert report["tol_class"] == tol_class
-    assert report["tol_limit"] == tol_limit
-    assert report["react_tol_limit"] == react_tol
-    assert report["lin_tol_limit"] == lin_tol
-    assert report["fold_probe"] == 0.0
+def test_output_envelope_holds_on_every_hidden_trace(agent_binary):
+    """Successful runs close with a digest line and failures with one error line."""
+    binary, cwd = agent_binary
+    for path in HIDDEN_INPUTS:
+        stdout, code = _run(binary, path, cwd)
+        lines = stdout.decode("ascii").splitlines()
+        assert lines
+        if code == 0:
+            assert lines[-1].startswith("D ")
+            assert len(lines[-1]) == 10
+        else:
+            assert code == 1
+            assert lines[-1].startswith("ERR ")
 
 
-def _case_map(report: dict) -> dict[str, dict]:
-    return {c["case_id"]: c for c in report["cases"]}
+def test_goldens_are_sealed_from_the_graded_uid():
+    """The uid that runs the candidate cannot read the goldens it is scored against."""
+    target = os.path.join(GOLDEN_DIR, os.path.basename(HIDDEN_INPUTS[0]) + ".out")
+    assert os.path.exists(target)
+    probe = subprocess.run(
+        UNPRIVILEGED + ["cat", target],
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert probe.returncode != 0
+    assert probe.stdout == b""
 
 
-def test_screen_stiff_span(report: dict) -> None:
-    """Stiff short-span case stays inside deflection residual band."""
-    _, lim, _, _ = _band_limits()
-    case = _case_map(report)["c_d"]
-    row = case["rows"][0]
-    assert row["defl_residual"] <= lim
+def test_reference_is_absent_and_execution_repeats(agent_binary):
+    """Grading holds no reference artifact and the candidate repeats exactly."""
+    binary, cwd = agent_binary
+    assert not os.path.exists(REFERENCE_BIN)
+    target = _family("mixed")[0]
+    first = _run(binary, target, cwd)
+    second = _run(binary, target, cwd)
+    assert first == second == _golden(target)
 
 
-def test_screen_long_soft(report: dict) -> None:
-    """Long soft-span case keeps deflection residual inside band with nonzero mid-span deflection."""
-    _, lim, _, _ = _band_limits()
-    case = _case_map(report)["c_e"]
-    row = case["rows"][0]
-    assert row["defl_residual"] <= lim
-    assert row["defl_fine_mm"] > 1.0
+@pytest.mark.parametrize("path", _family("wrap"), ids=_ids(_family("wrap")))
+def test_wrap_safe_due_test_is_necessary(agent_binary, path):
+    """Traces that carry the clock across its wrap are matched exactly."""
+    _assert_match(agent_binary, path)
 
 
-def test_screen_fine_balance(report: dict) -> None:
-    """Fine left+right reactions balance total applied force within react_tol_limit."""
-    _, _, react_tol, _ = _band_limits()
-    for path in (ROOT / "cases").glob("*.json"):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        total = sum(float(x["force_n"]) for x in data["loads"])
-        case = _case_map(report)[data["case_id"]]
-        row = case["rows"][0]
-        assert abs(row["react_l_fine_n"] + row["react_r_fine_n"] - total) <= react_tol
+def test_unsigned_due_test_diverges_across_the_wrap(wrong_unsigned):
+    """Comparing deadline and clock as unsigned moves most wrap traces."""
+    assert _moved(wrong_unsigned, _family("wrap")) >= 12
 
 
-def test_screen_defl_sign(report: dict) -> None:
-    """Coarse and fine mid-span deflections are positive for every case."""
-    for row in _iter_rows(report):
-        assert row["defl_coarse_mm"] > 0.0
-        assert row["defl_fine_mm"] > 0.0
-        assert row["defl_doubled_mm"] > 0.0
+@pytest.mark.parametrize("path", _family("bound"), ids=_ids(_family("bound")))
+def test_tier_boundary_is_necessary(agent_binary, path):
+    """Traces sitting on the exact boundary delta are matched exactly."""
+    _assert_match(agent_binary, path)
 
 
-def test_screen_offspan(report: dict) -> None:
-    """Off-midspan single-load case keeps unequal fine reactions within published bands."""
-    _, _, react_tol, _ = _band_limits()
-    case = _case_map(report)["c_c"]
-    row = case["rows"][0]
-    assert abs(row["react_l_fine_n"] - row["react_r_fine_n"]) > react_tol
-    assert row["react_l_residual"] <= react_tol
-    assert row["react_r_residual"] <= react_tol
+@pytest.mark.parametrize("path", _family("rearm"), ids=_ids(_family("rearm")))
+def test_arming_after_a_cancel_is_necessary(agent_binary, path):
+    """The recovered source matches every trace that cancels and arms one id."""
+    _assert_match(agent_binary, path)
 
 
-def test_screen_dense_asym(report: dict) -> None:
-    """Five-load asymmetric span keeps deflection and reaction residuals inside published bands."""
-    _, lim, react_tol, _ = _band_limits()
-    case = _case_map(report)["c_i"]
-    row = case["rows"][0]
-    assert row["defl_residual"] <= lim
-    assert row["react_l_residual"] <= react_tol
-    assert row["react_r_residual"] <= react_tol
-    assert abs(row["react_l_fine_n"] - row["react_r_fine_n"]) > react_tol
+def test_treating_a_cancelled_id_as_free_diverges(wrong_rearm):
+    """Arming a cancelled id straight away diverges on the cancel traces."""
+    assert _moved(wrong_rearm, _family("rearm")) >= 8
 
 
-def test_screen_near_support(report: dict) -> None:
-    """Near-support load pair keeps left reaction dominant and residuals inside bands."""
-    _, lim, react_tol, _ = _band_limits()
-    case = _case_map(report)["c_j"]
-    row = case["rows"][0]
-    assert row["defl_residual"] <= lim
-    assert row["react_l_residual"] <= react_tol
-    assert row["react_r_residual"] <= react_tol
-    assert row["react_l_fine_n"] > row["react_r_fine_n"]
-    assert row["react_l_fine_n"] > 2.0 * row["react_r_fine_n"]
+def test_the_cancel_rule_clears_every_public_trace(wrong_rearm):
+    """That same reading matches every shipped example, so samples cannot show it."""
+    assert _moved(wrong_rearm, VISIBLE_INPUTS) == 0
 
 
-def test_screen_mesh_split(report: dict) -> None:
-    """Coarse-vs-fine mesh contrast case stays inside deflection residual with positive mid-span deflection."""
-    _, lim, _, lin_tol = _band_limits()
-    case = _case_map(report)["c_k"]
-    row = case["rows"][0]
-    assert row["defl_residual"] <= lim
-    assert row["defl_fine_mm"] > 0.5
-    assert abs(row["lin_defl_ratio"] - 2.0) <= lin_tol
+def test_boundary_admission_diverges_on_exact_deltas(wrong_boundary):
+    """Admitting the boundary delta into the nearer tier moves most boundary traces."""
+    assert _moved(wrong_boundary, _family("bound")) >= 10
 
 
-def test_screen_force_ladder(report: dict) -> None:
-    """Stepped four-load ladder keeps load-doubling deflection and reaction linearity inside bands."""
-    _, lim, react_tol, lin_tol = _band_limits()
-    case = _case_map(report)["c_l"]
-    row = case["rows"][0]
-    assert row["defl_residual"] <= lim
-    assert abs(row["lin_defl_ratio"] - 2.0) <= lin_tol
-    assert abs(row["react_l_doubled_n"] - 2.0 * row["react_l_coarse_n"]) <= react_tol
-    assert abs(row["react_r_doubled_n"] - 2.0 * row["react_r_coarse_n"]) <= react_tol
+@pytest.mark.parametrize(
+    "path",
+    _family("orderdirect") + _family("ordermixed"),
+    ids=_ids(_family("orderdirect") + _family("ordermixed")),
+)
+def test_pending_group_order_is_necessary(agent_binary, path):
+    """Traces whose groups come due together are matched in the reference order."""
+    _assert_match(agent_binary, path)
 
 
-def test_screen_irregular(report: dict) -> None:
-    """Six-load irregular long-span cluster matches analytical fine reactions and stays inside bands."""
-    _, lim, react_tol, _ = _band_limits()
-    path = ROOT / "cases" / "c_m.json"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    case = _case_map(report)["c_m"]
-    row = case["rows"][0]
-    defl_mm, react_l, react_r = _analytic_mid(data)
-    assert row["defl_residual"] <= lim
-    assert abs(row["defl_fine_mm"] - defl_mm) <= lim
-    assert abs(row["react_l_fine_n"] - react_l) <= react_tol
-    assert abs(row["react_r_fine_n"] - react_r) <= react_tol
-    assert abs(row["react_l_fine_n"] - row["react_r_fine_n"]) > react_tol
+def test_arrival_order_recovery_diverges(wrong_append):
+    """Keeping groups in arrival order moves the direct and mixed families."""
+    assert _moved(wrong_append, _family("orderdirect") + _family("ordermixed")) >= 12
 
 
-def test_screen_coarse_balance(report: dict) -> None:
-    """Coarse left+right reactions balance total applied force within react_tol_limit."""
-    _, _, react_tol, _ = _band_limits()
-    for path in (ROOT / "cases").glob("*.json"):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        total = sum(float(x["force_n"]) for x in data["loads"])
-        case = _case_map(report)[data["case_id"]]
-        row = case["rows"][0]
-        assert abs(row["react_l_coarse_n"] + row["react_r_coarse_n"] - total) <= react_tol
+@pytest.mark.parametrize(
+    "path",
+    _family("ordercascade") + _family("ordermixed"),
+    ids=_ids(_family("ordercascade") + _family("ordermixed")),
+)
+def test_rehomed_group_order_is_necessary(agent_binary, path):
+    """Traces whose groups are re-homed before coming due keep the reference order."""
+    _assert_match(agent_binary, path)
 
 
-def test_screen_station_double(report: dict) -> None:
-    """Multi-load doubling keeps mid-span deflection near 2x with stations fixed at case coordinates."""
-    _, lim, _, lin_tol = _band_limits()
-    for cid in ("c_i", "c_l", "c_m"):
-        case = _case_map(report)[cid]
-        row = case["rows"][0]
-        assert row["defl_residual"] <= lim
-        assert abs(row["lin_defl_ratio"] - 2.0) <= lin_tol
-        path = ROOT / "cases" / f"{cid}.json"
-        data = json.loads(path.read_text(encoding="utf-8"))
-        doubled = {
-            **data,
-            "loads": [
-                {**load, "force_n": float(load["force_n"]) * 2.0} for load in data["loads"]
-            ],
-        }
-        defl_mm, _, _ = _analytic_mid(doubled)
-        assert abs(row["defl_doubled_mm"] - defl_mm) <= lim * 3.0
+def test_rehome_order_recovery_diverges(wrong_cascade):
+    """Re-homing in list order moves the re-homed and mixed families."""
+    assert _moved(wrong_cascade, _family("ordercascade") + _family("ordermixed")) >= 12
 
 
-def test_screen_class_token(report: dict) -> None:
-    """tol_class token is a non-empty string echoed from the published limit document."""
-    tol_class, _, _, _ = _band_limits()
-    assert report["tol_class"] == tol_class
-    assert isinstance(report["tol_class"], str)
-    assert len(report["tol_class"]) >= 3
+def test_shift_pairs_agree_on_the_due_sequence(agent_binary):
+    """A trace and its clock-shifted twin report the same ids in the same order."""
+    binary, cwd = agent_binary
+    bases = sorted(glob.glob(os.path.join(HIDDEN_DIR, "hidden_shift_*a.bin")))
+    assert len(bases) >= 4
+    for base in bases:
+        twin = base[:-5] + "b.bin"
+        assert os.path.exists(twin)
+        left = _run(binary, base, cwd)[0].decode("ascii").splitlines()
+        right = _run(binary, twin, cwd)[0].decode("ascii").splitlines()
+        left_ids = [line.split()[2:] for line in left if line.startswith("F ")]
+        right_ids = [line.split()[2:] for line in right if line.startswith("F ")]
+        assert left_ids == right_ids
+        assert any(left_ids)
 
 
-def test_screen_case_order(report: dict) -> None:
-    """Emitted cases follow ascending case_id order."""
-    ids = [c["case_id"] for c in report["cases"]]
-    assert ids == sorted(ids)
-    assert len(ids) >= 13
+def test_delegation_wrapper_produces_nothing(agent_binary, wrong_delegate):
+    """A recovery that execs the reference fails once the artifact is gone."""
+    assert not os.path.exists(REFERENCE_BIN)
+    targets = _family("short")
+    assert _moved(wrong_delegate, targets) == len(targets)
+    for path in targets:
+        _assert_match(agent_binary, path)
 
 
-def test_screen_row_singleton(report: dict) -> None:
-    """Every case carries exactly one main screening row."""
-    for case in report["cases"]:
-        assert len(case["rows"]) == 1
-        assert case["rows"][0]["row_id"] == "main"
-
-
-def test_screen_doubled_positive(report: dict) -> None:
-    """Doubled coarse reactions stay positive for every case."""
-    for row in _iter_rows(report):
-        assert row["react_l_doubled_n"] > 0.0
-        assert row["react_r_doubled_n"] > 0.0
-
-
-def test_screen_lin_floor(report: dict) -> None:
-    """Load-doubling ratio stays above 1.5 on every row (anti-collapse floor)."""
-    for row in _iter_rows(report):
-        assert row["lin_defl_ratio"] > 1.5
-
-
-def test_screen_residual_formula(report: dict) -> None:
-    """Emitted defl_residual equals abs(coarse-fine) mid-span deflection."""
-    for row in _iter_rows(report):
-        assert abs(row["defl_residual"] - abs(row["defl_coarse_mm"] - row["defl_fine_mm"])) < 1e-9
-
-
-def test_screen_react_residual_formula(report: dict) -> None:
-    """Emitted reaction residuals equal absolute coarse-fine differences."""
-    for row in _iter_rows(report):
-        assert abs(row["react_l_residual"] - abs(row["react_l_coarse_n"] - row["react_l_fine_n"])) < 1e-9
-        assert abs(row["react_r_residual"] - abs(row["react_r_coarse_n"] - row["react_r_fine_n"])) < 1e-9
-
-
-def test_screen_case_count_floor(report: dict) -> None:
-    """Bundled screening emits one case object per JSON fixture."""
-    paths = sorted((ROOT / "cases").glob("*.json"))
-    assert len(report["cases"]) == len(paths)
-    assert len(paths) >= 13
-    for path, case in zip(paths, report["cases"], strict=True):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert case["case_id"] == data["case_id"]
-        assert len(case["rows"]) == 1
-        assert case["rows"][0]["row_id"] == "main"
-        assert case["rows"][0]["defl_fine_mm"] > 0.0
-        assert case["rows"][0]["defl_coarse_mm"] > 0.0
+def test_visible_answer_map_does_not_generalize(visible_lookup):
+    """A map over the public traces passes them and fails the hidden battery."""
+    for path in VISIBLE_INPUTS:
+        assert _run(visible_lookup, path, None) == _golden(path)
+    assert _moved(visible_lookup, HIDDEN_INPUTS) == len(HIDDEN_INPUTS)

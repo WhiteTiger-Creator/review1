@@ -1,9 +1,0 @@
-{
-  "case_id": "c_e",
-  "length_m": 18.0,
-  "e_pa": 1.9e11,
-  "i_m4": 4.0e-5,
-  "n_coarse": 6,
-  "n_fine": 54,
-  "loads": [{"id": "L1", "x_m": 9.0, "force_n": 12000.0}]
-}

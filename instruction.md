@@ -1,23 +1,22 @@
-Bridge-span screening in this checkout is producing bad mid-span deflection (mm) and support reaction (N) numbers for the offline case bundle.
+The question here is a timing one. Given a clock, a set of deadlines armed
+against it, and a stream of advances, which deadlines come due at which tick,
+and in what order are they reported when several come due during one advance.
+The only surviving evidence is a stripped x86-64 executable at /app/bin/timers,
+optimized and carrying no symbols. Its source is gone, so the discipline it
+settled on has to be recovered by analysing it and running it on traces of your
+choosing.
 
-Run `bash /app/environment/exec/kit.sh` to rebuild the Rust driver plus Go helper and regenerate `/app/output/span_parity.json`.
+The framing is settled in /app/docs/io-contract.txt: an ASCII trace that sets a
+starting clock and then arms, cancels and advances, answered by one due line
+and one live count per advance and closed by a digest. That document gives
+every field range, every output line, and every error token.
 
-The verifier wipes that file and rebuilds from `/app/environment` before scoring.
+Nothing about the internal timing is written down. How the executable treats
+each operation it accepts, and how it decides which deadlines come due and in
+what order, are deterministic, and the executable is their only account.
 
-Static or hand-edited JSON is insufficient; the normal pipeline must regenerate the artifacts.
-
-Coarse-mesh results disagree with fine-mesh beyond `/app/environment/docs/tol_policy.md`.
-
-Doubling every point force should nearly double deflection and reactions inside the published bands without moving load stations, but several cases break that.
-
-A second identical kit pass drifts and leaves `fold_probe` dirty.
-
-More than one helper behind the bash entrypoint is involved.
-
-Schema and residual formulas are in `/app/environment/docs/report_contract.md`.
-
-Inputs live under `/app/environment/cases/`.
-
-The report must include `cases`, `tol_class`, `tol_limit`, `react_tol_limit`, `lin_tol_limit`, and `fold_probe`.
-
-Fix the sources that feed the driver. Element formulation is not prescribed.
+/app/harness/run.sh feeds a trace in, /app/harness/diff.py compares the two,
+and /app/inputs holds examples that do not reach everywhere the grading traces
+reach. Write the recovered C to /app/src/recovered.c; running make from /app
+compiles it to /app/build/recovered. Grading recompiles that source alone,
+where no copy of the executable exists.
