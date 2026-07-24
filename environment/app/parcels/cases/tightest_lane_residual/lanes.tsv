@@ -1,3 +1,0 @@
-lane_id	crate_id	capacity_bytes	used_bytes	lane_priority	lane_note
-LANE_X	CRATE_T	300	0	10	loose
-LANE_Z	CRATE_T	100	0	10	exact

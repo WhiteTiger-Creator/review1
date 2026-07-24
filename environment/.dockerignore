@@ -8,17 +8,24 @@
 **/node_modules/
 **/.venv/
 **/venv/
-.env
-*.log
-*.zip
-*.tar
-*.tar.gz
-*.tgz
-solution/
-tests/
-editor/
-.idea/
-.vscode/
-**/.DS_Store
-**/cases/_work/
-_gen_fixtures.py
+**/*.tmp
+**/*.orig
+
+# Real Cargo build outputs only (do NOT use broad **/target/ or **/build/
+# patterns: vendored crates legitimately ship source under paths such as
+# app/vendor/cc/src/target/ and app/vendor/thiserror/build/).
+app/target/
+**/target/debug/
+**/target/release/
+**/.fingerprint/
+**/incremental/
+
+# NOTE: vendored Rust crates under app/vendor/ legitimately contain
+# directories and files named things like "build", "tests", "examples", or
+# "output" (e.g. build-script helper sources). Cargo's offline vendor
+# verification requires every file recorded in each crate's
+# .cargo-checksum.json to actually be present, so excluding any generic
+# basename pattern here would silently break `cargo build --offline`. Keep
+# exclusions scoped to real siblings of this build context instead of
+# generic basenames, and explicitly guard the vendor tree.
+!app/vendor/**

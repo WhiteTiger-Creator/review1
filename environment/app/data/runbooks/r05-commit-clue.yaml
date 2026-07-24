@@ -1,0 +1,65 @@
+runbook_id: r05-commit-clue
+version: 1.0.0
+checksum_sha256: c076eff8ebe7068f42aed4beca6f466103d35a7911089993712b25103ad26a7e
+plan_rank: 50
+requires:
+- r04-read-clue
+- r07-legacy-clue-sync
+conflicts: []
+replaces: []
+provides_runbook_ids:
+- r05-commit-clue
+allowed_api_revisions:
+- api-v1
+- api-v2
+allowed_database_revisions:
+- db-v1
+- db-v2
+- db-v3
+steps:
+- step_id: r05-s01-verify
+  step_rank: 10
+  step_kind: local_prepare
+  requires_step_ids: []
+  required_capabilities:
+  - state:clue_loaded
+  - state:legacy_sync_ready
+  provided_capabilities: []
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: null
+  retry_mode: safe
+  idempotency_key_source_or_null: null
+- step_id: r05-s02-commit
+  step_rank: 20
+  step_kind: database_write
+  requires_step_ids:
+  - r05-s01-verify
+  required_capabilities:
+  - db:column:maze_clues.route_token
+  provided_capabilities:
+  - state:clue_committed
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: commit_maze_clue
+  retry_mode: never
+  idempotency_key_source_or_null: null
+- step_id: r05-s03-final
+  step_rank: 30
+  step_kind: local_finalize
+  requires_step_ids:
+  - r05-s02-commit
+  required_capabilities:
+  - state:clue_committed
+  provided_capabilities: []
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: null
+  retry_mode: safe
+  idempotency_key_source_or_null: null

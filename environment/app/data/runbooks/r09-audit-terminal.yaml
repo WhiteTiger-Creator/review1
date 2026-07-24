@@ -1,0 +1,60 @@
+runbook_id: r09-audit-terminal
+version: 1.0.0
+checksum_sha256: b5cc3eda22603e9607e95f25c33e78c16375883b1b100ef4efce0ffb990ed445
+plan_rank: 70
+requires:
+- r05-commit-clue
+conflicts: []
+replaces: []
+provides_runbook_ids:
+- r09-audit-terminal
+allowed_api_revisions:
+- api-v1
+- api-v2
+allowed_database_revisions:
+- db-v1
+- db-v2
+- db-v3
+steps:
+- step_id: r09-s01-prep
+  step_rank: 10
+  step_kind: local_prepare
+  requires_step_ids: []
+  required_capabilities:
+  - db:table:audit_events
+  provided_capabilities: []
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: null
+  retry_mode: safe
+  idempotency_key_source_or_null: null
+- step_id: r09-s02-scan
+  step_rank: 20
+  step_kind: database_read
+  requires_step_ids:
+  - r09-s01-prep
+  required_capabilities: []
+  provided_capabilities: []
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: scan_audit_events
+  retry_mode: safe
+  idempotency_key_source_or_null: null
+- step_id: r09-s03-write
+  step_rank: 30
+  step_kind: database_write
+  requires_step_ids:
+  - r09-s02-scan
+  required_capabilities: []
+  provided_capabilities: []
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: write_audit_event
+  retry_mode: never
+  idempotency_key_source_or_null: null

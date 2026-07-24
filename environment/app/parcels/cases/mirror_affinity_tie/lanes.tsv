@@ -1,2 +1,0 @@
-lane_id	crate_id	capacity_bytes	used_bytes	lane_priority	lane_note
-LANE1	CRATE_A	200	0	10	only

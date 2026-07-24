@@ -1,0 +1,19 @@
+[package]
+name = "vault-maze-lock"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "vault-maze-lock"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5.23", features = ["derive"] }
+hex = "0.4.3"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.134"
+serde_yaml = "0.9.34"
+sha2 = "0.10.8"
+thiserror = "2.0.11"
+toml = "0.8.19"

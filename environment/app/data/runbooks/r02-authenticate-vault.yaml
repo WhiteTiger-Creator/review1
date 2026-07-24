@@ -1,0 +1,48 @@
+runbook_id: r02-authenticate-vault
+version: 1.0.0
+checksum_sha256: cb5320498f5a000c60d3e6c101854898e9cd2b6b754417d73e189364e17e08c0
+plan_rank: 20
+requires:
+- r01-bootstrap-session
+conflicts: []
+replaces: []
+provides_runbook_ids:
+- r02-authenticate-vault
+allowed_api_revisions:
+- api-v1
+- api-v2
+allowed_database_revisions:
+- db-v1
+- db-v2
+- db-v3
+steps:
+- step_id: r02-s01-prep
+  step_rank: 10
+  step_kind: local_prepare
+  requires_step_ids: []
+  required_capabilities:
+  - state:vault_session_ready
+  provided_capabilities: []
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: null
+  retry_mode: safe
+  idempotency_key_source_or_null: null
+- step_id: r02-s02-auth
+  step_rank: 20
+  step_kind: api_request
+  requires_step_ids:
+  - r02-s01-prep
+  required_capabilities: []
+  provided_capabilities:
+  - state:vault_authenticated
+  api_operation_id_or_null: op-auth-vault
+  http_method_or_null: POST
+  request_content_type_or_null: application/json
+  accepted_statuses:
+  - 200
+  database_action_or_null: null
+  retry_mode: never
+  idempotency_key_source_or_null: null

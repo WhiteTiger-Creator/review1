@@ -1,4 +1,0 @@
-lane_id	crate_id	capacity_bytes	used_bytes	lane_priority	lane_note
-LANE_A	CRATE_A	400	0	10	root
-LANE1	CRATE_B	150	0	20	tight
-LANE2	CRATE_B	600	0	20	wide

@@ -1,7 +1,0 @@
-lane_id	crate_id	capacity_bytes	used_bytes	lane_priority	lane_note
-LANE2	CRATE_C	800	0	10	south
-LANE1	CRATE_C	800	0	20	north
-LANE2	CRATE_B	800	0	10	south
-LANE1	CRATE_B	800	0	20	north
-LANE2	CRATE_A	800	0	10	south
-LANE1	CRATE_A	800	0	20	north

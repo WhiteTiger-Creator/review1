@@ -1,6 +1,0 @@
-shard_id	crate_id	shard_order	input_name	byte_count	shard_digest
-S1	CRATE_A	1	in_alpha	100	aabbcc01
-S2	CRATE_A	2	in_beta	150	ddeeff02
-S3	CRATE_B	1	in_gamma	200	11223344
-S4	CRATE_C	1	in_delta	80	55667788
-S5	CRATE_D	1	in_eps	40	99aabbcc

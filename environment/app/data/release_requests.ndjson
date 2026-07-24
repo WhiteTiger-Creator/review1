@@ -1,0 +1,4 @@
+{"request_id":"request-accepted-v2","deployment_id":"deployment-staging-v2","target_runbook_ids":["r06-unlock-route"],"target_api_revision":"api-v2","target_database_revision":"db-v2"}
+{"request_id":"request-api-v1-mismatch","deployment_id":"deployment-staging-v2","target_runbook_ids":["r06-unlock-route"],"target_api_revision":"api-v1","target_database_revision":"db-v2"}
+{"request_id":"request-audit-capability-missing","deployment_id":"deployment-audit-v3","target_runbook_ids":["r09-audit-terminal"],"target_api_revision":"api-v2","target_database_revision":"db-v3"}
+{"request_id":"request-checksum-drift","deployment_id":"deployment-drift-v2","target_runbook_ids":["r02-authenticate-vault"],"target_api_revision":"api-v2","target_database_revision":"db-v2"}

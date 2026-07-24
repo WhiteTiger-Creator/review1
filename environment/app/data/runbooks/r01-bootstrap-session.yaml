@@ -1,0 +1,61 @@
+runbook_id: r01-bootstrap-session
+version: 1.0.0
+checksum_sha256: bf8c05984f5569bd3b5028f5a01be41ca91b9ca877dc3560b1bc82a53dd2e5a7
+plan_rank: 10
+requires: []
+conflicts: []
+replaces: []
+provides_runbook_ids:
+- r01-bootstrap-session
+allowed_api_revisions:
+- api-v1
+- api-v2
+allowed_database_revisions:
+- db-v1
+- db-v2
+- db-v3
+steps:
+- step_id: r01-s01-prep
+  step_rank: 10
+  step_kind: local_prepare
+  requires_step_ids: []
+  required_capabilities: []
+  provided_capabilities: []
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: null
+  retry_mode: safe
+  idempotency_key_source_or_null: null
+- step_id: r01-s02-init
+  step_rank: 20
+  step_kind: database_write
+  requires_step_ids:
+  - r01-s01-prep
+  required_capabilities: []
+  provided_capabilities:
+  - db:table:vault_sessions
+  - state:vault_session_ready
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: init_vault_sessions
+  retry_mode: never
+  idempotency_key_source_or_null: null
+- step_id: r01-s03-done
+  step_rank: 30
+  step_kind: local_finalize
+  requires_step_ids:
+  - r01-s02-init
+  required_capabilities:
+  - state:vault_session_ready
+  provided_capabilities: []
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: null
+  retry_mode: safe
+  idempotency_key_source_or_null: null

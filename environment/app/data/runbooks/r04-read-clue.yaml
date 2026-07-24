@@ -1,0 +1,48 @@
+runbook_id: r04-read-clue
+version: 1.0.0
+checksum_sha256: 90033d13344290b77ad3e285a102b0fed82be204b63a7337f8e4837feb5cb28e
+plan_rank: 40
+requires:
+- r03-enter-maze
+conflicts: []
+replaces: []
+provides_runbook_ids:
+- r04-read-clue
+allowed_api_revisions:
+- api-v1
+- api-v2
+allowed_database_revisions:
+- db-v1
+- db-v2
+- db-v3
+steps:
+- step_id: r04-s01-prep
+  step_rank: 10
+  step_kind: local_prepare
+  requires_step_ids: []
+  required_capabilities:
+  - state:maze_entered
+  provided_capabilities: []
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: null
+  retry_mode: safe
+  idempotency_key_source_or_null: null
+- step_id: r04-s02-read
+  step_rank: 20
+  step_kind: database_read
+  requires_step_ids:
+  - r04-s01-prep
+  required_capabilities: []
+  provided_capabilities:
+  - state:clue_loaded
+  - db:column:maze_clues.route_token
+  api_operation_id_or_null: null
+  http_method_or_null: null
+  request_content_type_or_null: null
+  accepted_statuses: []
+  database_action_or_null: read_maze_clue
+  retry_mode: safe
+  idempotency_key_source_or_null: null

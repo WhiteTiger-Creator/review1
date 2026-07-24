@@ -1,0 +1,13 @@
+# Terminus static checks: do not lint vendored crate trees.
+target-version = "py311"
+
+extend-exclude = [
+    "environment/app/vendor",
+    "solution/oracle_src/vendor",
+    "**/vendor/**",
+    "**/target/**",
+]
+
+# Reference helpers are invoked via `python -m`, not as executables.
+[lint]
+ignore = ["EXE001"]

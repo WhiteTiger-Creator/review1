@@ -1,3 +1,0 @@
-crate_id	notice_fence	inherited_from	notice_priority	public_text
-CRATE_A	FENCE_KIN		10	amber_root
-CRATE_B		CRATE_A	20	ember_child

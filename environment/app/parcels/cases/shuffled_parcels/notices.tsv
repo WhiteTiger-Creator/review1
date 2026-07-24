@@ -1,4 +1,0 @@
-crate_id	notice_fence	inherited_from	notice_priority	public_text
-CRATE_C	FENCE_ROOT	CRATE_B	20	child_c_text
-CRATE_B		CRATE_A	30	child_b_text
-CRATE_A	FENCE_ROOT		10	root_seal_ok
