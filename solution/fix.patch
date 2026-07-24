@@ -1,0 +1,284 @@
+--- a/pkg/m01/src/lib.rs
++++ b/pkg/m01/src/lib.rs
+@@ -2,6 +2,9 @@
+ mod reachability;
+ 
+ use anyhow::{Context, Result};
++use m02::ContentStore;
++use m04::LeaseJournal;
++use m03::SnapshotStore;
+ use migrations::apply_migrations;
+ use m00::{Digest, ImageManifest, SnapshotKind};
+ use rusqlite::{params, Connection, OptionalExtension};
+@@ -303,15 +306,14 @@
+     }
+ 
+     pub fn compute_reachability(&self) -> Result<Reachability> {
++        let store_root = self.path().parent().context("store root")?;
+         let images = self.list_images()?;
++        let snapshots = SnapshotStore::new(store_root);
+         let mut reachable_blobs = HashSet::new();
++        let mut reachable_snapshots = HashSet::new();
+         for image in &images {
+-            if let Ok(manifest_bytes) = std::fs::read(
+-                self.path()
+-                    .parent()
+-                    .unwrap()
+-                    .join(format!("manifests/{}.json", image.name)),
+-            ) {
++            let manifest_path = store_root.join(format!("manifests/{}.json", image.name));
++            if let Ok(manifest_bytes) = std::fs::read(&manifest_path) {
+                 if let Ok(manifest) = serde_json::from_slice::<ImageManifest>(&manifest_bytes) {
+                     for layer in &manifest.layers {
+                         reachable_blobs.insert(layer.digest.clone());
+@@ -319,18 +321,59 @@
+                     reachable_blobs.insert(manifest.config_digest.clone());
+                 }
+             }
+-        }
+-        let snapshots: HashSet<String> = images
+-            .iter()
+-            .map(|i| i.root_snapshot_id.clone())
+-            .collect();
++            if let Ok(chain) = snapshots.parent_closure(&image.root_snapshot_id) {
++                for snap_id in chain {
++                    reachable_snapshots.insert(snap_id.clone());
++                    if let Ok(meta) = snapshots.load_meta(&snap_id) {
++                        reachable_blobs.insert(meta.digest.clone());
++                    }
++                }
++            }
++        }
++        let journal = LeaseJournal::new(store_root);
++        if let Ok(lease_state) = journal.replay() {
++            for (_, digest, _) in lease_state.active {
++                reachable_blobs.insert(digest);
++            }
++        }
+         Ok(Reachability {
+             blobs: reachable_blobs,
+-            snapshots,
++            snapshots: reachable_snapshots,
+         })
+     }
+ 
+-    pub fn is_runnable(&self, image: &ImageRow, content_exists: impl Fn(&Digest) -> bool) -> bool {
+-        content_exists(&image.manifest_digest)
+-    }
+-}
++    pub fn is_runnable(&self, image: &ImageRow, store_root: &Path) -> bool {
++        let content = ContentStore::new(store_root);
++        let snapshots = SnapshotStore::new(store_root);
++        let manifest_path = store_root.join(format!("manifests/{}.json", image.name));
++        let Ok(manifest_bytes) = std::fs::read(&manifest_path) else {
++            return false;
++        };
++        let Ok(manifest) = serde_json::from_slice::<ImageManifest>(&manifest_bytes) else {
++            return false;
++        };
++        if !content.exists(&manifest.config_digest) {
++            return false;
++        }
++        for layer in &manifest.layers {
++            if !content.exists(&layer.digest) {
++                return false;
++            }
++        }
++        let Ok(chain) = snapshots.parent_closure(&image.root_snapshot_id) else {
++            return false;
++        };
++        for snap_id in &chain {
++            let Ok(meta) = snapshots.load_meta(snap_id) else {
++                return false;
++            };
++            if content.verify_blob(&meta.digest).is_err() {
++                return false;
++            }
++            if snapshots.verify_indexes(snap_id).is_err() {
++                return false;
++            }
++        }
++        true
++    }
++}
+--- a/pkg/m03/src/lib.rs
++++ b/pkg/m03/src/lib.rs
+@@ -65,13 +65,12 @@
+     }
+ 
+     pub fn validate_parent_chain(&self, meta: &SnapshotMeta) -> Result<()> {
+-        if meta.kind == SnapshotKind::Marker {
+-            return Ok(());
+-        }
+         if let Some(parent) = &meta.parent {
+             if !self.meta_path(parent).is_file() {
+                 bail!("missing parent snapshot {parent}");
+             }
++            let parent_meta = self.load_meta(parent)?;
++            self.validate_parent_chain(&parent_meta)?;
+         }
+         Ok(())
+     }
+--- a/pkg/m04/src/lib.rs
++++ b/pkg/m04/src/lib.rs
+@@ -81,11 +81,8 @@
+         for (idx, entry) in entries.iter().enumerate() {
+             if let JournalEntry::Watermark { generation } = entry {
+                 watermark = *generation;
+-                start_idx = idx + 1;
++                start_idx = idx;
+             }
+-        }
+-        if start_idx < entries.len() {
+-            start_idx += 1;
+         }
+         let mut state = LeaseState {
+             watermark,
+@@ -98,17 +95,14 @@
+                     digest,
+                     generation,
+                 } => {
+-                    state.retain_active(generation);
++                    state.active.retain(|(id, _, _)| id != &lease_id);
+                     state.active.push((lease_id, digest, generation));
+                 }
+                 JournalEntry::Release {
+                     lease_id,
+                     generation,
+                 } => {
+-                    state.retain_active(generation);
+-                    state
+-                        .active
+-                        .retain(|(id, _, _)| id != &lease_id || generation == 0);
++                    state.active.retain(|(id, _, g)| !(id == &lease_id && *g == generation));
+                 }
+                 JournalEntry::Watermark { .. } => {}
+             }
+--- a/pkg/m05/src/lib.rs
++++ b/pkg/m05/src/lib.rs
+@@ -98,15 +98,29 @@
+         }
+ 
+         let intents = catalog.list_gc_intent()?;
+-        for (digest, _stage) in intents {
++        for (digest, stage) in intents {
+             if lease_state.is_leased(&digest) {
+                 pending.push(digest);
+                 continue;
+             }
+-            catalog.delete_blob(&digest)?;
+-            catalog.clear_gc_intent(&digest)?;
+-            if !reclaimed.contains(&digest) {
+-                reclaimed.push(digest);
++            match stage {
++                GcStage::Planned => {
++                    if content.exists(&digest) {
++                        pending.push(digest);
++                    } else {
++                        catalog.clear_gc_intent(&digest)?;
++                    }
++                }
++                GcStage::Unlinked => {
++                    catalog.delete_blob(&digest)?;
++                    catalog.clear_gc_intent(&digest)?;
++                    if !reclaimed.contains(&digest) {
++                        reclaimed.push(digest);
++                    }
++                }
++                GcStage::CatalogRemoved => {
++                    catalog.clear_gc_intent(&digest)?;
++                }
+             }
+         }
+ 
+@@ -125,13 +139,15 @@
+         let journal = LeaseJournal::new(&self.root);
+         let mut state = journal.replay()?;
+         state.validate_release(lease_id, generation)?;
+-        state.active.retain(|(id, _, g)| !(id == lease_id && *g <= generation));
++        state.active.retain(|(id, _, g)| !(id == lease_id && *g == generation));
+         journal.release(lease_id, generation)?;
+         let catalog = self.catalog()?;
+-        for (id, digest, lease_generation, _) in catalog.list_leases()? {
+-            if id == lease_id && lease_generation <= generation {
+-                catalog.record_lease(&id, &digest, lease_generation, false)?;
+-            }
++        if let Some((_, digest, g, _)) = catalog
++            .list_leases()?
++            .into_iter()
++            .find(|(id, _, lease_gen, _)| id == lease_id && *lease_gen == generation)
++        {
++            catalog.record_lease(lease_id, &digest, g, false)?;
+         }
+         Ok(())
+     }
+--- a/pkg/m06/src/lib.rs
++++ b/pkg/m06/src/lib.rs
+@@ -70,10 +70,21 @@
+             }
+         }
+ 
++        for blob in catalog.list_blobs()? {
++            if content.verify_blob(&blob.digest).is_err() {
++                tampered = true;
++            }
++        }
++
+         if tampered {
+             let report = self.build_rejected_report(&catalog)?;
+             self.write_report(output, &report)?;
+             return Ok(report);
++        }
++
++        for id in &on_disk_snapshots {
++            let meta = snapshots.load_meta(id)?;
++            snapshots.validate_parent_chain(&meta)?;
+         }
+ 
+         if interrupt_after == Some(RecoveryInterrupt::Validation) {
+@@ -116,7 +127,7 @@
+         };
+ 
+         for image in catalog.list_images()? {
+-            let runnable = catalog.is_runnable(&image, |d| content.exists(d));
++            let runnable = catalog.is_runnable(&image, &self.root);
+             report.images.push(ImageInventory {
+                 name: image.name,
+                 manifest_digest: image.manifest_digest,
+@@ -153,6 +164,17 @@
+                 digest,
+                 generation,
+                 active: active && journal_active,
++            });
++        }
++        for (lease_id, digest, generation) in &lease_state.active {
++            if report.leases.iter().any(|l| l.lease_id == *lease_id) {
++                continue;
++            }
++            report.leases.push(LeaseInventory {
++                lease_id: lease_id.clone(),
++                digest: digest.clone(),
++                generation: *generation,
++                active: true,
+             });
+         }
+ 
+@@ -229,6 +251,7 @@
+             if !seen.insert(meta.id.clone()) {
+                 bail!("duplicate snapshot id {}", meta.id);
+             }
++            snapshots.validate_parent_chain(&meta)?;
+             content.verify_blob(&meta.digest)?;
+             snapshots.verify_indexes(&id)?;
+         }
+--- a/pkg/m07/src/launch.rs
++++ b/pkg/m07/src/launch.rs
+@@ -20,7 +20,7 @@
+         .find(|i| i.name == image_name)
+         .with_context(|| format!("image {image_name} not found"))?;
+ 
+-    if !catalog.is_runnable(&image, |d| content.exists(d)) {
++    if !catalog.is_runnable(&image, root_path) {
+         bail!("image {image_name} is not runnable");
+     }
+ 

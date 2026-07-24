@@ -1,0 +1,13 @@
+[package]
+name = "m05"
+edition = "2024"
+
+[dependencies]
+m00 = { workspace = true }
+m01 = { workspace = true }
+m02 = { workspace = true }
+m04 = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }

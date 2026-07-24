@@ -4,30 +4,32 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "scientific-computing"
-category_profile = "state_recovery_crash_consistency"
-tags = ["cpp", "mpi", "hdf5", "checkpoint", "numerical-restart"]
-languages = ["cpp", "bash"]
-codebase_size = "small"
+category = "build-and-dependency-management"
+subcategories = []
 number_of_milestones = 0
-subcategories = ["tool_specific"]
-expert_time_estimate_min = 240
+codebase_size = "small"
+languages = ["rust", "bash"]
+tags = [
+  "content-addressed-artifacts",
+  "vendored-build",
+  "generation-retention",
+  "cargo",
+  "garbage-collection",
+]
+expert_time_estimate_min = 270
 junior_time_estimate_min = 600
-
-[reference_pattern]
-justification_if_none = "No promoted reference in docs/reference_tasks/index.json; C++ MPI/HDF5 adaptive repartition resume distinct from TypeScript AMR particle restart and Rust numeric checkpoint replay."
 
 [agent]
 timeout_sec = 1800
 
 [verifier]
-timeout_sec = 1800
+timeout_sec = 1200
 
 [environment]
-allow_internet = false
-build_timeout_sec = 1200
+build_timeout_sec = 900
 cpus = 2
 memory_mb = 4096
-storage_mb = 10240
+storage_mb = 12288
 gpus = 0
-workdir = "/app"
+gpu_types = []
+allow_internet = false
