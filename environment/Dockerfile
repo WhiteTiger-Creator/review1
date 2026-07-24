@@ -1,31 +1,25 @@
+# Canonical Terminal-Bench Go image for Go 1.21-1.26 tasks.
 FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-WORKDIR /app
+LABEL org.opencontainers.image.title="vault-quorum-seal" \
+      org.opencontainers.image.description="Offline robust vault quorum recovery" \
+      org.opencontainers.image.source="terminal-bench"
 
+ENV DEBIAN_FRONTEND=noninteractive
+COPY requirements.lock /tmp/requirements.lock
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        asciinema=2.2.0-1 \
-        patch=2.7.6-7 \
-        python3=3.11.2-1+b1 \
-        python3-venv=3.11.2-1+b1 \
-        tmux=3.3a-3 \
+        asciinema \
+        ca-certificates \
+        python3 \
+        python3-pip \
+        tmux \
+    && python3 -m pip install --no-cache-dir --break-system-packages --require-hashes --no-deps \
+        -r /tmp/requirements.lock \
+    && ln -sf /usr/local/go/bin/go /usr/local/bin/go \
+    && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m venv /opt/verifier
-RUN cd /tmp && /opt/verifier/bin/pip install --no-cache-dir --only-binary=:all: --require-hashes --no-deps -r ./requirements.lock
-RUN rm -f /tmp/requirements.lock
-
-ENV PATH=/opt/verifier/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-COPY go.mod /app/environment/go.mod
-COPY cmd/ /app/environment/cmd/
-COPY internal/ /app/environment/internal/
-COPY docs/ /app/docs/
-COPY fixtures/ /app/fixtures/
-
-RUN mkdir -p /app/output \
-    && go -C /app/environment build -trimpath -o /tmp/nuosc-build-check ./cmd/nuosc \
-    && rm -f /tmp/nuosc-build-check
-
-CMD ["bash"]
+# The verifier intentionally rebuilds the submitted Go source in the runtime image.
+WORKDIR /app
+COPY app/ /app/
