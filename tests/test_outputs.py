@@ -1,364 +1,774 @@
+"""Behavioral verifier for the privileged helper authority dispatcher."""
+
+from __future__ import annotations
+
 import hashlib
 import json
-import math
+import os
 import subprocess
-import tarfile
+import tempfile
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-ROOT = Path("/app/environment")
-PACK = ROOT / "fixtures" / "ax025_pack"
-OUT = Path("/app/output/evidence_bundle.tar")
-LEDGER_DB = Path("/app/output/shift_ledger.db")
-SEED_DB = ROOT / "db" / "shift_ledger_seed.db"
-EDGES = [0.00, 0.25, 0.50, 0.75, 1.00]
-MARGIN = 0.050000
-BUDGET = 8
+APP = Path("/app")
+SRC = APP / "cmd" / "privhelper"
+SUPPORT = Path("/tests/support")
+BIN = Path("/tmp/privhelper-verifier-bin")
+CALLER_ENV = APP / "fixtures" / "contaminated-caller.conf"
 
 
-def _sha(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _sha_text(text: str) -> str:
-    return _sha(text.encode("utf-8"))
-
-
-def _json_lite_stringify(obj) -> str:
-    if obj is None:
-        return "null"
-    if isinstance(obj, str):
-        return json.dumps(obj, ensure_ascii=True)
-    if isinstance(obj, (int, float, bool)):
-        return json.dumps(obj)
-    if isinstance(obj, dict):
-        parts = []
-        for key, value in obj.items():
-            parts.append(f"{_json_lite_stringify(str(key))}:{_json_lite_stringify(value)}")
-        return "{" + ",".join(parts) + "}"
-    if isinstance(obj, (list, tuple)):
-        return "[" + ",".join(_json_lite_stringify(x) for x in obj) + "]"
-    return json.dumps(str(obj), ensure_ascii=True)
-
-
-def _manifest_self_hash(cert_hash: str) -> str:
-    man_no_self = {"certificate.json": cert_hash}
-    return _sha_text(_json_lite_stringify(man_no_self))
-
-
-def _ledger_rows() -> list[tuple[str, int, str]]:
-    out = subprocess.run(
-        [
-            "sqlite3",
-            "-separator",
-            "|",
-            str(LEDGER_DB),
-            "SELECT fingerprint, epoch, marker FROM replay_journal ORDER BY epoch",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    rows = []
-    for line in out.stdout.splitlines():
-        if not line.strip():
-            continue
-        fp, epoch, marker = line.split("|", 2)
-        rows.append((fp, int(epoch), marker))
-    return rows
-
-
-def _catalog_files(db_path: Path) -> set[str]:
-    out = subprocess.run(
-        ["sqlite3", str(db_path), "SELECT pack_file FROM fixture_catalog ORDER BY pack_file"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return {ln.strip() for ln in out.stdout.splitlines() if ln.strip()}
-
-
-def _load_probes(pack: Path = PACK):
-    probes = []
-    for path in sorted(pack.glob("*.jsonl")):
-        last = 0
-        seen = False
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            epoch = int(row["epoch"])
-            if seen and epoch < last:
-                raise ValueError(f"non-increasing epoch in {path.name}")
-            seen = True
-            last = epoch
-            probes.append(row)
-    return probes
-
-
-def _fingerprint(pack: Path = PACK) -> str:
-    lines = []
-    for path in sorted(p for p in pack.rglob("*") if p.is_file()):
-        rel = path.relative_to(pack).as_posix()
-        lines.append(f"{rel}|{path.stat().st_size}")
-    return _sha_text("\n".join(lines))
-
-
-def _bin_index(x: float) -> int:
-    for i in range(4):
-        lo, hi = EDGES[i], EDGES[i + 1]
-        if i < 3:
-            if lo <= x < hi:
-                return i
-        else:
-            if lo <= x <= hi:
-                return i
-    return 3
-
-
-def _mi(rows):
-    if not rows:
-        return 0.0
-    joint = [[0, 0] for _ in range(4)]
-    b_count = [0, 0, 0, 0]
-    u_count = [0, 0]
-    for row in rows:
-        b = _bin_index(float(row["feats"][0]))
-        u = 1 if row["unsafe"] else 0
-        joint[b][u] += 1
-        b_count[b] += 1
-        u_count[u] += 1
-    n = float(len(rows))
-    mi = 0.0
-    for b in range(4):
-        for u in range(2):
-            c = joint[b][u]
-            if c == 0:
-                continue
-            pbu = c / n
-            pb = b_count[b] / n
-            pu = u_count[u] / n
-            mi += pbu * math.log(pbu / (pb * pu))
-    return mi
-
-
-def _greedy(probes):
-    by_id = {}
-    for p in probes:
-        by_id[p["id"]] = p
-    picked = []
-    limit = min(BUDGET, len(by_id))
-    while len(picked) < limit:
-        best = None
-        best_mi = -1.0
-        for cand, _row in by_id.items():
-            if cand in picked:
-                continue
-            trial = [by_id[i] for i in picked] + [_row]
-            mi = _mi(trial)
-            if mi > best_mi + 1e-15 or (
-                abs(mi - best_mi) <= 1e-15 and (best is None or cand < best)
-            ):
-                best_mi = mi
-                best = cand
-        if best is None:
-            break
-        picked.append(best)
-    return picked
-
-
-def _enclosure(probes, picked_ids):
-    by_id = {p["id"]: p for p in probes}
-    selected_unsafe = [by_id[i] for i in picked_ids if by_id[i]["unsafe"]]
-    if not selected_unsafe:
-        return [], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
-    lo = [1.0, 1.0, 1.0]
-    hi = [0.0, 0.0, 0.0]
-    for p in selected_unsafe:
-        for i in range(3):
-            lo[i] = min(lo[i], float(p["feats"][i]))
-            hi[i] = max(hi[i], float(p["feats"][i]))
-    lo = [max(0.0, min(1.0, v - MARGIN)) for v in lo]
-    hi = [max(0.0, min(1.0, v + MARGIN)) for v in hi]
-    lines = []
-    for p in selected_unsafe:
-        lines.append(
-            f"{p['id']}|{lo[0]:.6f},{lo[1]:.6f},{lo[2]:.6f}|{hi[0]:.6f},{hi[1]:.6f},{hi[2]:.6f}"
-        )
-    lines.sort()
-    return lines, lo, hi
-
-
-def _inside(vec, lo, hi):
-    return all(lo[i] <= float(vec[i]) <= hi[i] for i in range(3))
-
-
-def _arm_map(probes, lo, hi, picked_ids):
-    by_id = {p["id"]: p for p in probes}
-    selected_unsafe = [by_id[i] for i in picked_ids if by_id[i]["unsafe"]]
-    arms = sorted({p["arm"] for p in probes})
-    out = {}
-    for arm in arms:
-        keep = True
-        for p in probes:
-            if p["arm"] != arm or not p["unsafe"]:
-                continue
-            vec = [float(x) for x in p["feats"]]
-            if not selected_unsafe or not _inside(vec, lo, hi):
-                keep = False
-                break
-        out[arm] = "KEEP" if keep else "REJECT"
-    return out
-
-
-def _expected():
-    probes = _load_probes()
-    picked = _greedy(probes)
-    enc, lo, hi = _enclosure(probes, picked)
-    arms = _arm_map(probes, lo, hi, picked)
-    pack_fp = _fingerprint()
-    max_epoch = max(int(p["epoch"]) for p in probes)
-    by_id = {p["id"]: p for p in probes}
-    sel_rows = [{"epoch": int(by_id[i]["epoch"]), "probe_id": i} for i in picked]
-    jr_rows = [
-        {"epoch": e, "fingerprint": pack_fp, "marker": f"E{e}"}
-        for e in range(1, max_epoch + 1)
+def request_digest(req: dict) -> str:
+    parts = [
+        "privhelper-request-v1",
+        req["request_id"],
+        req["principal"],
+        req["action"],
+        req["unit"],
     ]
-    inclusion = _sha_text("\n".join(enc))
-    algebra = _sha_text("\n".join(f"{a}|{d}" for a, d in sorted(arms.items())))
-    keep = sum(1 for d in arms.values() if d == "KEEP")
-    band = round(keep / len(arms), 6) if arms else 0.0
-    return picked, sel_rows, jr_rows, inclusion, algebra, band, arms, pack_fp, max_epoch
+    blob = b"\x00".join(p.encode() for p in parts)
+    return hashlib.sha256(blob).hexdigest()
 
 
-def _run_gate():
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    if OUT.exists():
-        OUT.unlink()
-    return subprocess.run(
-        [
-            "/app/environment/tools/rivet_gate",
-            "--pack",
-            str(PACK),
-            "--db",
-            str(LEDGER_DB),
-            "--bundle-out",
-            str(OUT),
-        ],
-        check=False,
+def load_priv() -> Ed25519PrivateKey:
+    return Ed25519PrivateKey.from_private_bytes((SUPPORT / "authority.priv").read_bytes())
+
+
+def sign_bytes(data: bytes) -> bytes:
+    return load_priv().sign(data)
+
+
+def write_json(path: Path, obj) -> None:
+    path.write_text(json.dumps(obj, indent=2) + "\n")
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def ledger_digest() -> str:
+    def load(path: Path, key: str):
+        rows = []
+        if path.exists():
+            for line in path.read_text().splitlines():
+                if line.strip():
+                    rows.append(json.loads(line))
+        rows.sort(key=lambda r: r.get(key, 0))
+        return rows
+
+    payload = {
+        "decisions": load(APP / "var/privhelper/decisions.jsonl", "seq"),
+        "effects": load(APP / "var/privhelper/effects.jsonl", "seq"),
+        "journal": load(APP / "var/privhelper/journal.jsonl", "event_seq"),
+    }
+    blob = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    return hashlib.sha256(blob).hexdigest()
+
+
+def run(args, check=True, input_text=None):
+    env = os.environ.copy()
+    env["CGO_ENABLED"] = "0"
+    cp = subprocess.run(
+        [str(BIN), *args],
+        text=True,
+        capture_output=True,
+        input=input_text,
+        env=env,
+    )
+    if check and cp.returncode != 0:
+        raise AssertionError(
+            f"cmd failed ({cp.returncode}): {args}\nstdout={cp.stdout}\nstderr={cp.stderr}"
+        )
+    return cp
+
+
+def effects() -> list[dict]:
+    path = APP / "var/privhelper/effects.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def decisions() -> list[dict]:
+    path = APP / "var/privhelper/decisions.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def journal() -> list[dict]:
+    path = APP / "var/privhelper/journal.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def make_request(path: Path, **fields) -> Path:
+    write_json(path, fields)
+    return path
+
+
+def build_signed_manifest(generation: int, policy: dict | None = None, helpers: dict | None = None) -> tuple[Path, Path, dict, str]:
+    base = json.loads((APP / "share/privhelper/authority-manifest-v1.json").read_text())
+    man = {
+        "scenario": "ops-seal",
+        "generation": generation,
+        "policy": policy or base["policy"],
+        "helpers": helpers or base["helpers"],
+    }
+    raw = (json.dumps(man, indent=2) + "\n").encode()
+    sig = sign_bytes(raw)
+    td = Path(tempfile.mkdtemp(prefix="man-"))
+    mpath = td / "manifest.json"
+    spath = td / "manifest.sig"
+    mpath.write_bytes(raw)
+    spath.write_bytes(sig)
+    return mpath, spath, man, hashlib.sha256(raw).hexdigest()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def build_verifier_binary():
+    """Compile submitted Go sources into an isolated verifier binary."""
+    assert SRC.exists(), "missing Go sources under /app/cmd/privhelper"
+    env = os.environ.copy()
+    env.update({"CGO_ENABLED": "0", "GOWORK": "off", "GOFLAGS": "-mod=readonly"})
+    cp = subprocess.run(
+        ["go", "build", "-o", str(BIN), "./cmd/privhelper"],
+        cwd="/app",
+        env=env,
         capture_output=True,
         text=True,
     )
+    assert cp.returncode == 0, f"go build failed:\n{cp.stdout}\n{cp.stderr}"
+    assert BIN.exists()
+    yield
 
 
-def _read_bundle():
-    assert OUT.is_file(), "missing evidence_bundle.tar"
-    with tarfile.open(OUT, "r:") as tf:
-        names = set(tf.getnames())
-        assert "certificate.json" in names
-        assert "manifest.json" in names
-        cert_bytes = tf.extractfile("certificate.json").read()
-        man_bytes = tf.extractfile("manifest.json").read()
-        cert = json.loads(cert_bytes.decode("utf-8"))
-        manifest = json.loads(man_bytes.decode("utf-8"))
-    return cert, manifest, cert_bytes
+@pytest.fixture(autouse=True)
+def clean_state():
+    """Reset durable state before every test."""
+    run(["reset", "--scenario", "ops-seal"])
+    yield
 
 
-@pytest.fixture(scope="module")
-def bundle():
-    subprocess.run(["/app/environment/scripts/compile_lane.sh"], check=True)
-    result = _run_gate()
-    assert result.returncode == 0, result.stderr
-    return _read_bundle()
+# ---------------------------------------------------------------------------
+# A. Baseline and policy
+# ---------------------------------------------------------------------------
 
 
-def test_rvg_a1(bundle):
-    """MI-greedy selection_trace probe_id order matches the closed pack schedule."""
-    cert, _, _ = bundle
-    picked, *_ = _expected()
-    got = [row["probe_id"] for row in cert["selection_trace"]]
-    assert got == picked
+def test_owner_actions_succeed_on_generation_one():
+    """Generation-1 owner seal/export/rotate requests are allowed with matching effects."""
+    for action, effect, unit in [
+        ("seal_unit", "unit_sealed", "alpha-owner-1"),
+        ("export_bundle", "bundle_exported", "alpha-owner-1"),
+        ("rotate_token", "token_rotated", "tok-owner-1"),
+    ]:
+        req = {
+            "request_id": f"own-{action}",
+            "principal": "ops.owner",
+            "action": action,
+            "unit": unit,
+        }
+        p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+        out = json.loads(run(["dispatch", "--request", str(p), "--via", "direct"]).stdout)
+        assert out["decision"] == "allow"
+        assert out["outcome"] == effect
+    assert len(effects()) == 3
 
 
-def test_rvg_a2(bundle):
-    """Greedy probe schedule differs from smoke-only ordering when both are available."""
-    cert, _, _ = bundle
-    picked, *_ = _expected()
-    smoke_order = sorted(p["id"] for p in _load_probes() if p["arm"] == "smoke")[:8]
-    got = [row["probe_id"] for row in cert["selection_trace"]]
-    assert got == picked
-    assert len(picked) >= min(BUDGET, len({p["id"] for p in _load_probes()}))
-    if smoke_order and picked != smoke_order:
-        assert got != smoke_order
+def test_operator_seal_and_export_succeed():
+    """Operators may seal and export under generation-1 policy."""
+    for action, effect in [("seal_unit", "unit_sealed"), ("export_bundle", "bundle_exported")]:
+        req = {
+            "request_id": f"op-{action}",
+            "principal": "ops.operator",
+            "action": action,
+            "unit": "pier-op-1",
+        }
+        p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+        out = json.loads(run(["dispatch", "--request", str(p), "--via", "job"]).stdout)
+        assert out["decision"] == "allow"
+        assert out["outcome"] == effect
 
 
-def test_rvg_a3(bundle):
-    """Shift ledger fixture_catalog rows align with pack assembly files."""
-    cert, _, _ = bundle
-    assert cert["selection_trace"]
-    pack_files = {p.name for p in PACK.glob("*.jsonl")}
-    assert _catalog_files(SEED_DB) == pack_files
-    assert _catalog_files(LEDGER_DB) == pack_files
+def test_denied_principals_and_actions_leave_no_effects():
+    """Guest, auditor, unknown principal, unknown action, and operator rotate are denied without effects."""
+    cases = [
+        ("ops.guest", "seal_unit", "g1"),
+        ("ops.auditor", "export_bundle", "a1"),
+        ("ops.nobody", "seal_unit", "u1"),
+        ("ops.owner", "invent_action", "u2"),
+        ("ops.operator", "rotate_token", "tok"),
+    ]
+    for i, (principal, action, unit) in enumerate(cases):
+        req = {
+            "request_id": f"deny-{i}",
+            "principal": principal,
+            "action": action,
+            "unit": unit,
+        }
+        p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+        out = json.loads(run(["dispatch", "--request", str(p), "--via", "direct"]).stdout)
+        assert out["decision"] == "deny"
+        assert out["outcome"] == "none"
+    assert effects() == []
 
 
-def test_rvg_b1(bundle):
-    """selection_trace and replay_journal match epoch and fingerprint contract rows."""
-    cert, _, _ = bundle
-    _, sel_rows, jr_rows, *_ = _expected()
-    assert cert["selection_trace"] == sel_rows
-    assert cert["replay_journal"] == jr_rows
+def test_direct_and_job_surfaces_agree():
+    """Direct and job launches produce the same authorization decision for identical requests."""
+    results = []
+    for via in ("direct", "job"):
+        run(["reset", "--scenario", "ops-seal"])
+        req = {
+            "request_id": "surface-1",
+            "principal": "ops.operator",
+            "action": "seal_unit",
+            "unit": "same-unit",
+        }
+        p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+        out = json.loads(run(["dispatch", "--request", str(p), "--via", via]).stdout)
+        results.append((out["decision"], out["outcome"]))
+    assert results[0] == results[1] == ("allow", "unit_sealed")
 
 
-def test_rvg_b2(bundle):
-    """inclusion_digest matches enclosure bytes and obligation keeps all arms."""
-    cert, _, _ = bundle
-    _, _, _, inclusion, _, _, arms, _, _ = _expected()
-    assert cert["inclusion_digest"] == inclusion
-    assert all(d == "KEEP" for d in arms.values())
+# ---------------------------------------------------------------------------
+# B. Caller substitution and live helper integrity
+# ---------------------------------------------------------------------------
 
 
-def test_rvg_b3(bundle):
-    """algebra_digest matches arm decisions including held-out rot loop context."""
-    cert, _, _ = bundle
-    _, _, _, _, algebra, _, arms, _, _ = _expected()
-    assert cert["algebra_digest"] == algebra
-    assert "rot" in arms
-    assert all(d == "KEEP" for d in arms.values())
+def test_contaminated_caller_env_does_not_hijack_helper():
+    """Contaminated HELPER_PATH/PATH/PYTHON*/BASH_ENV/ENV/LD_PRELOAD cannot change trusted helper identity."""
+    req = {
+        "request_id": "contam-1",
+        "principal": "ops.owner",
+        "action": "seal_unit",
+        "unit": "c-unit",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+    out = json.loads(
+        run(
+            [
+                "dispatch",
+                "--request",
+                str(p),
+                "--via",
+                "job",
+                "--caller-env",
+                str(CALLER_ENV),
+            ]
+        ).stdout
+    )
+    assert out["decision"] == "allow"
+    assert out["helper_path"].startswith("/app/libexec/privhelper/")
+    assert out.get("helper_trusted", True) is True or Path(out["helper_path"]).exists()
+    trusted = file_sha256(APP / "libexec/privhelper/seal-unit.py")
+    assert out["helper_digest"] == trusted
 
 
-def test_rvg_c1(bundle):
-    """Evidence TAR exposes required certificate.json and manifest.json members."""
-    cert, manifest, _ = bundle
-    for key in (
-        "selection_trace",
-        "inclusion_digest",
-        "algebra_digest",
-        "replay_journal",
-        "coverage_band",
-    ):
-        assert key in cert
-    assert "certificate.json" in manifest
+def test_caller_bin_artifacts_remain_and_differ():
+    """Competing caller-bin helpers remain present and differ from trusted libexec helpers after success."""
+    req = {
+        "request_id": "preserve-1",
+        "principal": "ops.owner",
+        "action": "export_bundle",
+        "unit": "p-unit",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+    run(["dispatch", "--request", str(p), "--via", "direct", "--caller-env", str(CALLER_ENV)])
+    for name in ("seal-unit", "export-bundle", "rotate-token"):
+        caller = APP / "var/caller-bin" / name
+        assert caller.exists()
+        assert caller.stat().st_size > 0
+    trusted = (APP / "libexec/privhelper/export-bundle.py").read_bytes()
+    competing = (APP / "var/caller-bin/export-bundle").read_bytes()
+    assert trusted != competing
 
 
-def test_rvg_c2(bundle):
-    """Digests recompute from formulas and manifest cert hash matches bytes."""
-    cert, manifest, cert_bytes = bundle
-    _, _, _, inclusion, algebra, *_ = _expected()
-    assert cert["inclusion_digest"] == inclusion
-    assert cert["algebra_digest"] == algebra
-    assert manifest["certificate.json"] == _sha(cert_bytes)
-    assert manifest["manifest.json"] == _manifest_self_hash(manifest["certificate.json"])
+def test_symlinked_group_writable_and_mutated_helpers_rejected():
+    """Symlinked, group/world-writable, missing, or digest-mutated helpers are rejected without effects."""
+    lib = APP / "libexec/privhelper/seal-unit.py"
+    original = lib.read_bytes()
+
+    # digest mutation
+    lib.write_bytes(original + b"\n#mut\n")
+    req = {
+        "request_id": "mut-1",
+        "principal": "ops.owner",
+        "action": "seal_unit",
+        "unit": "m",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+    out = json.loads(run(["dispatch", "--request", str(p), "--via", "direct"]).stdout)
+    assert out["decision"] == "deny"
+    lib.write_bytes(original)
+
+    # group writable
+    lib.chmod(0o775)
+    out = json.loads(run(["dispatch", "--request", str(p), "--via", "direct"]).stdout)
+    assert out["decision"] == "deny"
+    lib.chmod(0o755)
+
+    # symlink
+    lib.unlink()
+    lib.symlink_to(APP / "var/caller-bin/seal-unit")
+    out = json.loads(run(["dispatch", "--request", str(p), "--via", "direct"]).stdout)
+    assert out["decision"] == "deny"
+    lib.unlink()
+    lib.write_bytes(original)
+    lib.chmod(0o755)
+    assert effects() == []
 
 
-def test_rvg_c3(bundle):
-    """coverage_band coherence and foreign fingerprint rejection in shift ledger."""
-    cert, _, _ = bundle
-    _, _, _, inclusion, algebra, band, _, pack_fp, _ = _expected()
-    assert float(cert["coverage_band"]) == band
-    assert cert["inclusion_digest"] == inclusion
-    assert cert["algebra_digest"] == algebra
-    rows = _ledger_rows()
-    fps = {fp for fp, _, _ in rows}
-    assert "FOREIGN_PACK_ZZ" not in fps
-    assert fps == {pack_fp}
+def test_resolved_helpers_recompute_trust():
+    """resolved-helpers dump recomputes live digests and marks trusted helpers under contamination."""
+    out = json.loads(
+        run(
+            ["resolved-helpers", "dump", "--json", "--caller-env", str(CALLER_ENV)]
+        ).stdout
+    )
+    assert out["scenario"] == "ops-seal"
+    assert len(out["probes"]) == 3
+    for probe in out["probes"]:
+        assert probe["helper_path"].startswith("/app/libexec/privhelper/")
+        live = file_sha256(Path(probe["helper_path"]))
+        assert probe["helper_digest"] == live
+        assert probe["helper_trusted"] is True
+
+
+# ---------------------------------------------------------------------------
+# C. Manifest signature and rotation
+# ---------------------------------------------------------------------------
+
+
+def test_valid_higher_generation_installs_atomically():
+    """A valid higher-generation signed manifest installs and becomes the current authority."""
+    mpath, spath, man, digest = build_signed_manifest(2)
+    run(["manifest-install", "--manifest", str(mpath), "--signature", str(spath)])
+    installed = json.loads((APP / "var/privhelper/authority-manifest.json").read_text())
+    assert installed["generation"] == 2
+    assert file_sha256(APP / "var/privhelper/authority-manifest.json") == digest
+
+
+def test_bad_manifest_installs_are_rejected():
+    """Bad signature, equal generation, rollback, traversal path, and unsupported interpreter leave the install untouched."""
+    man_path = APP / "var/privhelper/authority-manifest.json"
+    sig_path = APP / "var/privhelper/authority-manifest.sig"
+
+    def snapshot():
+        return man_path.read_bytes(), sig_path.read_bytes()
+
+    def assert_unchanged(before_man, before_sig):
+        assert man_path.read_bytes() == before_man
+        assert sig_path.read_bytes() == before_sig
+
+    # bad signature
+    before_man, before_sig = snapshot()
+    mpath, spath, _, _ = build_signed_manifest(2)
+    spath.write_bytes(b"\x00" * 64)
+    cp = run(["manifest-install", "--manifest", str(mpath), "--signature", str(spath)], check=False)
+    assert cp.returncode != 0
+    assert_unchanged(before_man, before_sig)
+    # equal generation
+    before_man, before_sig = snapshot()
+    mpath, spath, _, _ = build_signed_manifest(1)
+    cp = run(["manifest-install", "--manifest", str(mpath), "--signature", str(spath)], check=False)
+    assert cp.returncode != 0
+    assert_unchanged(before_man, before_sig)
+    # successful generation-2 install; later failures must preserve it
+    mpath, spath, _, _ = build_signed_manifest(2)
+    run(["manifest-install", "--manifest", str(mpath), "--signature", str(spath)])
+    gen2_man, gen2_sig = snapshot()
+    # rollback
+    mpath0, spath0, _, _ = build_signed_manifest(1)
+    cp = run(["manifest-install", "--manifest", str(mpath0), "--signature", str(spath0)], check=False)
+    assert cp.returncode != 0
+    assert_unchanged(gen2_man, gen2_sig)
+    # traversal
+    bad_helpers = json.loads((APP / "share/privhelper/authority-manifest-v1.json").read_text())["helpers"]
+    bad_helpers = dict(bad_helpers)
+    bad_helpers["seal-unit"] = dict(bad_helpers["seal-unit"])
+    bad_helpers["seal-unit"]["relative_path"] = "../etc/passwd"
+    mpath, spath, _, _ = build_signed_manifest(3, helpers=bad_helpers)
+    cp = run(["manifest-install", "--manifest", str(mpath), "--signature", str(spath)], check=False)
+    assert cp.returncode != 0
+    assert_unchanged(gen2_man, gen2_sig)
+    # unsupported interpreter
+    bad_helpers = json.loads((APP / "share/privhelper/authority-manifest-v1.json").read_text())["helpers"]
+    bad_helpers = dict(bad_helpers)
+    bad_helpers["seal-unit"] = dict(bad_helpers["seal-unit"])
+    bad_helpers["seal-unit"]["interpreter"] = "/bin/bash"
+    mpath, spath, _, _ = build_signed_manifest(3, helpers=bad_helpers)
+    cp = run(["manifest-install", "--manifest", str(mpath), "--signature", str(spath)], check=False)
+    assert cp.returncode != 0
+    assert_unchanged(gen2_man, gen2_sig)
+    # after rollback attempt generation remains 2
+    installed = json.loads(man_path.read_text())
+    assert installed["generation"] == 2
+
+
+def test_installed_manifest_mutation_detected():
+    """Mutating the installed manifest bytes is detected by dispatch and reconcile."""
+    man_path = APP / "var/privhelper/authority-manifest.json"
+    data = json.loads(man_path.read_text())
+    data["policy"]["ops.guest"] = ["seal_unit"]
+    man_path.write_text(json.dumps(data, indent=2) + "\n")
+    req = {
+        "request_id": "mutman-1",
+        "principal": "ops.owner",
+        "action": "seal_unit",
+        "unit": "x",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+    out = json.loads(run(["dispatch", "--request", str(p), "--via", "direct"]).stdout)
+    assert out["decision"] == "deny"
+    run(
+        [
+            "reconcile",
+            "--trace",
+            "/app/reports/reconcile-trace.jsonl",
+            "--output",
+            "/app/reports/authority-report.json",
+        ]
+    )
+    rep = json.loads((APP / "reports/authority-report.json").read_text())
+    assert rep["authority_sound"] is False
+
+
+def test_dynamic_signed_manifest_rotation_revokes_operator_export():
+    """A dynamically signed higher generation can revoke operator export while owner remains allowed."""
+    base = json.loads((APP / "share/privhelper/authority-manifest-v1.json").read_text())
+    policy = {
+        "ops.owner": ["seal_unit", "export_bundle", "rotate_token"],
+        "ops.operator": ["seal_unit"],
+    }
+    mpath, spath, _, _ = build_signed_manifest(2, policy=policy, helpers=base["helpers"])
+    run(["manifest-install", "--manifest", str(mpath), "--signature", str(spath)])
+    op = {
+        "request_id": "dyn-op-export",
+        "principal": "ops.operator",
+        "action": "export_bundle",
+        "unit": "dyn-unit",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **op)
+    out = json.loads(run(["dispatch", "--request", str(p), "--via", "job"]).stdout)
+    assert out["decision"] == "deny"
+    own = {
+        "request_id": "dyn-owner-export",
+        "principal": "ops.owner",
+        "action": "export_bundle",
+        "unit": "dyn-unit",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **own)
+    out = json.loads(run(["dispatch", "--request", str(p), "--via", "direct"]).stdout)
+    assert out["decision"] == "allow"
+
+
+# ---------------------------------------------------------------------------
+# D. Helper reply and request binding
+# ---------------------------------------------------------------------------
+
+
+def test_dishonest_helper_reply_is_denied(tmp_path):
+    """A registry-trusted helper returning a mismatched binding field is denied without an effect."""
+    helper = APP / "libexec/privhelper/seal-unit.py"
+    original = helper.read_text()
+    dishonest = original.replace(
+        'bind["request_digest"]',
+        '"0"*64',
+    )
+    # Force wrong digest literally
+    dishonest = '''#!/usr/bin/env python3
+import json, os
+req = json.loads(os.environ["PRIVHELPER_REQUEST"])
+bind = json.loads(os.environ["PRIVHELPER_BINDING"])
+print(json.dumps({
+  "status": "ok",
+  "request_digest": "0"*64,
+  "manifest_generation": bind["manifest_generation"],
+  "manifest_digest": bind["manifest_digest"],
+  "action": req["action"],
+  "unit": req["unit"],
+  "effect": "unit_sealed",
+}))
+'''
+    helper.write_text(dishonest)
+    # Update manifest digest in place after re-signing requires install.
+    # Instead restore digest match by rewriting share and reinstalling through reset helpers path:
+    # Easiest valid path: recompute sha into a new signed generation-2 pointing at mutated helper.
+    sha = hashlib.sha256(dishonest.encode()).hexdigest()
+    base = json.loads((APP / "share/privhelper/authority-manifest-v1.json").read_text())
+    helpers = dict(base["helpers"])
+    helpers["seal-unit"] = dict(helpers["seal-unit"])
+    helpers["seal-unit"]["sha256"] = sha
+    mpath, spath, _, _ = build_signed_manifest(2, helpers=helpers)
+    run(["manifest-install", "--manifest", str(mpath), "--signature", str(spath)])
+    req = {
+        "request_id": "dishonest-1",
+        "principal": "ops.owner",
+        "action": "seal_unit",
+        "unit": "d-unit",
+    }
+    p = make_request(tmp_path / "r.json", **req)
+    out = json.loads(run(["dispatch", "--request", str(p), "--via", "direct"]).stdout)
+    assert out["decision"] == "deny"
+    assert effects() == []
+    helper.write_text(original)
+
+
+def test_exact_retry_is_idempotent():
+    """Repeating the identical request body returns the original decision and keeps a single effect."""
+    req = {
+        "request_id": "retry-same-dyn",
+        "principal": "ops.owner",
+        "action": "seal_unit",
+        "unit": "retry-unit-7",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+    first = json.loads(run(["dispatch", "--request", str(p), "--via", "direct"]).stdout)
+    second = json.loads(run(["dispatch", "--request", str(p), "--via", "direct"]).stdout)
+    assert first["decision"] == second["decision"] == "allow"
+    assert first["request_digest"] == second["request_digest"] == request_digest(req)
+    matched = [e for e in effects() if e["request_id"] == req["request_id"]]
+    assert len(matched) == 1
+
+
+def test_changed_body_conflict_uses_dynamic_ids():
+    """Same request_id with a changed canonical field returns conflict and adds no effect."""
+    rid = "conflict-dyn-42"
+    first = {
+        "request_id": rid,
+        "principal": "ops.owner",
+        "action": "seal_unit",
+        "unit": "unit-a",
+    }
+    second = dict(first)
+    second["unit"] = "unit-b"
+    p1 = make_request(Path(tempfile.mkdtemp()) / "a.json", **first)
+    p2 = make_request(Path(tempfile.mkdtemp()) / "b.json", **second)
+    run(["dispatch", "--request", str(p1), "--via", "job"])
+    out = json.loads(run(["dispatch", "--request", str(p2), "--via", "job"]).stdout)
+    assert out["decision"] == "conflict"
+    assert len([e for e in effects() if e["request_id"] == rid]) == 1
+    assert any(j["event"] == "conflict" for j in journal())
+
+
+# ---------------------------------------------------------------------------
+# E. Crash recovery and rotation
+# ---------------------------------------------------------------------------
+
+
+def test_crash_after_prepared_recovers_when_authority_valid():
+    """Crash after prepared leaves no effect; recovery completes the request exactly once."""
+    req = {
+        "request_id": "crash-prep-1",
+        "principal": "ops.owner",
+        "action": "seal_unit",
+        "unit": "cp-unit",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+    cp = run(
+        ["dispatch", "--request", str(p), "--via", "direct", "--crash-after", "prepared"],
+        check=False,
+    )
+    assert cp.returncode != 0
+    assert effects() == []
+    run(["recover", "--trace", "/app/reports/recover-trace.jsonl"])
+    assert len(effects()) == 1
+    run(["recover", "--trace", "/app/reports/recover-trace.jsonl"])
+    assert len(effects()) == 1
+    assert any(d["request_id"] == req["request_id"] and d["decision"] == "allow" for d in decisions())
+
+
+def test_crash_after_prepared_then_rotation_denies():
+    """Crash after prepared followed by revoking rotation yields recovery denial and no effect."""
+    req = {
+        "request_id": "crash-prep-revoked",
+        "principal": "ops.operator",
+        "action": "export_bundle",
+        "unit": "rev-unit",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+    cp = run(
+        ["dispatch", "--request", str(p), "--via", "job", "--crash-after", "prepared"],
+        check=False,
+    )
+    assert cp.returncode != 0
+    policy = {
+        "ops.owner": ["seal_unit", "export_bundle", "rotate_token"],
+        "ops.operator": ["seal_unit"],
+    }
+    base = json.loads((APP / "share/privhelper/authority-manifest-v1.json").read_text())
+    mpath, spath, _, _ = build_signed_manifest(2, policy=policy, helpers=base["helpers"])
+    run(["manifest-install", "--manifest", str(mpath), "--signature", str(spath)])
+    run(["recover", "--trace", "/app/reports/recover-trace.jsonl"])
+    assert effects() == []
+    assert any(
+        d["request_id"] == req["request_id"] and d["decision"] == "deny" for d in decisions()
+    )
+
+
+def test_crash_after_effect_commits_without_reexecution():
+    """Crash after effect leaves exactly one effect; recovery commits without creating another."""
+    req = {
+        "request_id": "crash-eff-1",
+        "principal": "ops.owner",
+        "action": "export_bundle",
+        "unit": "ce-unit",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+    cp = run(
+        ["dispatch", "--request", str(p), "--via", "direct", "--crash-after", "effect"],
+        check=False,
+    )
+    assert cp.returncode != 0
+    assert len(effects()) == 1
+    assert not any(d["request_id"] == req["request_id"] for d in decisions())
+    run(["recover", "--trace", "/app/reports/recover-trace.jsonl"])
+    assert len(effects()) == 1
+    run(["recover", "--trace", "/app/reports/recover-trace.jsonl"])
+    assert len(effects()) == 1
+    assert any(d["request_id"] == req["request_id"] and d["decision"] == "allow" for d in decisions())
+
+
+# ---------------------------------------------------------------------------
+# F. Reconciliation
+# ---------------------------------------------------------------------------
+
+
+def test_clean_reconcile_is_sound():
+    """A clean owner/operator workflow yields authority_sound with a correctly independently computed ledger digest."""
+    run(
+        [
+            "dispatch-batch",
+            "--fixture",
+            "/app/fixtures/incident-owner-requests.jsonl",
+            "--via",
+            "job",
+            "--caller-env",
+            str(CALLER_ENV),
+        ]
+    )
+    run(
+        [
+            "dispatch-batch",
+            "--fixture",
+            "/app/fixtures/incident-operator-requests.jsonl",
+            "--via",
+            "direct",
+            "--caller-env",
+            str(CALLER_ENV),
+        ]
+    )
+    run(
+        [
+            "reconcile",
+            "--trace",
+            "/app/reports/reconcile-trace.jsonl",
+            "--output",
+            "/app/reports/authority-report.json",
+        ]
+    )
+    rep = json.loads((APP / "reports/authority-report.json").read_text())
+    assert rep["scenario"] == "ops-seal"
+    assert rep["authority_sound"] is True
+    assert rep["violations"] == []
+    assert rep["pending_requests"] == 0
+    assert rep["helpers_trusted"] is True
+    assert rep["idempotency_sound"] is True
+    assert rep["recovery_complete"] is True
+    assert rep["ledger_digest"] == ledger_digest()
+    trace = (APP / "reports/reconcile-trace.jsonl").read_text()
+    assert '"phase": "reconcile"' in trace or '"phase":"reconcile"' in trace
+
+
+def test_reconcile_detects_orphan_and_duplicate_effects():
+    """Reconcile independently flags orphan and duplicate effects injected into the effect ledger."""
+    req = {
+        "request_id": "clean-for-inj",
+        "principal": "ops.owner",
+        "action": "seal_unit",
+        "unit": "inj",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+    run(["dispatch", "--request", str(p), "--via", "direct"])
+    epath = APP / "var/privhelper/effects.jsonl"
+    row = json.loads(epath.read_text().splitlines()[0])
+    orphan = dict(row)
+    orphan["request_id"] = "orphan-rid"
+    orphan["request_digest"] = "a" * 64
+    epath.write_text(epath.read_text() + json.dumps(orphan) + "\n" + json.dumps(row) + "\n")
+    run(
+        [
+            "reconcile",
+            "--trace",
+            "/app/reports/reconcile-trace.jsonl",
+            "--output",
+            "/app/reports/authority-report.json",
+        ]
+    )
+    rep = json.loads((APP / "reports/authority-report.json").read_text())
+    assert rep["authority_sound"] is False
+    joined = " ".join(rep["violations"])
+    assert "orphan_effect" in joined
+    assert "duplicate_effect" in joined
+
+
+def test_reconcile_detects_pending_and_digest_mismatch():
+    """Reconcile detects unresolved prepared work and mismatched request digests in decisions."""
+    req = {
+        "request_id": "pend-1",
+        "principal": "ops.owner",
+        "action": "seal_unit",
+        "unit": "pend",
+    }
+    p = make_request(Path(tempfile.mkdtemp()) / "r.json", **req)
+    run(
+        ["dispatch", "--request", str(p), "--via", "direct", "--crash-after", "prepared"],
+        check=False,
+    )
+    run(
+        [
+            "reconcile",
+            "--trace",
+            "/app/reports/reconcile-trace.jsonl",
+            "--output",
+            "/app/reports/authority-report.json",
+        ]
+    )
+    rep = json.loads((APP / "reports/authority-report.json").read_text())
+    assert rep["authority_sound"] is False
+    assert rep["pending_requests"] >= 1 or any("unresolved_pending" in v for v in rep["violations"])
+
+    run(["reset", "--scenario", "ops-seal"])
+    p = make_request(Path(tempfile.mkdtemp()) / "r2.json", **req)
+    run(["dispatch", "--request", str(p), "--via", "direct"])
+    dpath = APP / "var/privhelper/decisions.jsonl"
+    rows = [json.loads(line) for line in dpath.read_text().splitlines() if line.strip()]
+    rows[0]["request_digest"] = "b" * 64
+    dpath.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    # Also break effect binding to force mismatch signal via orphan / digest mismatch path
+    epath = APP / "var/privhelper/effects.jsonl"
+    erows = [json.loads(line) for line in epath.read_text().splitlines() if line.strip()]
+    erows[0]["helper_digest"] = "c" * 64
+    epath.write_text("\n".join(json.dumps(r) for r in erows) + "\n")
+    run(
+        [
+            "reconcile",
+            "--trace",
+            "/app/reports/reconcile-trace.jsonl",
+            "--output",
+            "/app/reports/authority-report.json",
+        ]
+    )
+    rep = json.loads((APP / "reports/authority-report.json").read_text())
+    assert rep["authority_sound"] is False
+    assert any("helper_digest" in v or "mismatch" in v or "orphan" in v for v in rep["violations"])
+
+
+def test_security_selftest_emits_token():
+    """Security self-test emits SECURITY_SELFTEST_OK without leaving the main ledger corrupted."""
+    before = (APP / "var/privhelper/decisions.jsonl").read_bytes()
+    out = run(["selftest", "--mode", "security"]).stdout
+    assert "SECURITY_SELFTEST_OK" in out.splitlines()
+    assert (APP / "var/privhelper/decisions.jsonl").read_bytes() == before
