@@ -1,0 +1,4 @@
+{"id":"d01","arm":"rot","epoch":1,"unsafe":true,"feats":[0.842,0.422,0.312]}
+{"id":"d02","arm":"rot","epoch":1,"unsafe":false,"feats":[0.15,0.8,0.2]}
+{"id":"d03","arm":"rot","epoch":2,"unsafe":true,"feats":[0.848,0.418,0.308]}
+{"id":"d04","arm":"rot","epoch":2,"unsafe":false,"feats":[0.25,0.75,0.3]}

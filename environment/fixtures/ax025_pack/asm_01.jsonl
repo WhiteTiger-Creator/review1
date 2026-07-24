@@ -1,0 +1,4 @@
+{"id":"a01","arm":"smoke","epoch":1,"unsafe":false,"feats":[0.12,0.4,0.22]}
+{"id":"a02","arm":"smoke","epoch":1,"unsafe":true,"feats":[0.84,0.42,0.31]}
+{"id":"a03","arm":"smoke","epoch":2,"unsafe":false,"feats":[0.18,0.33,0.41]}
+{"id":"a04","arm":"smoke","epoch":2,"unsafe":true,"feats":[0.86,0.4,0.29]}

@@ -1,22 +1,7 @@
-The question here is a timing one. Given a clock, a set of deadlines armed
-against it, and a stream of advances, which deadlines come due at which tick,
-and in what order are they reported when several come due during one advance.
-The only surviving evidence is a stripped x86-64 executable at /app/bin/timers,
-optimized and carrying no symbols. Its source is gone, so the discipline it
-settled on has to be recovered by analysing it and running it on traces of your
-choosing.
+Need the dialysis scheduling fairness forecast desk under `/app/environment` to produce a graded evidence bundle again.
 
-The framing is settled in /app/docs/io-contract.txt: an ASCII trace that sets a
-starting clock and then arms, cancels and advances, answered by one due line
-and one live count per advance and closed by a digest. That document gives
-every field range, every output line, and every error token.
+Build and run the published rivet_gate command in `/app/environment/docs/emit_contract.md` so `/app/output/evidence_bundle.tar` is regenerated. The verifier deletes that TAR and reruns the same pipeline, so static writes are insufficient.
 
-Nothing about the internal timing is written down. How the executable treats
-each operation it accepts, and how it decides which deadlines come due and in
-what order, are deterministic, and the executable is their only account.
+STEP AP242 assemblies with PMI annotations (pinned annex slice 25) feed chair-slot fairness forecast evaluation. Mutual-information greedy selection picks PMI feature probes; differential replay drives fairness-calibration epochs. Obligation #14 requires zero violations on the closed fixture algebra under case 0968 via sound overapprox inclusion over fairness regions. Scratch under `/app/output/scratch/soft.txt` is a regular file the gate writes during emit; it is not graded and can look healthy even when the terminal bundle fails. Smoke fairness gaps can stay green on arm 0968 inclusion failures. Do not mutate `/app/environment/fixtures/ax025_pack` or leave foreign fingerprints in `/app/output/shift_ledger.db`. The shift ledger `fixture_catalog` must stay aligned with pack assembly files, and `replay_journal` must contain only the current pack fingerprint (no preloaded foreign rows such as `FOREIGN_PACK_ZZ`).
 
-/app/harness/run.sh feeds a trace in, /app/harness/diff.py compares the two,
-and /app/inputs holds examples that do not reach everywhere the grading traces
-reach. Write the recovered C to /app/src/recovered.c; running make from /app
-compiles it to /app/build/recovered. Grading recompiles that source alone,
-where no copy of the executable exists.
+The TAR must contain certificate.json and manifest.json. Certificate fields include selection_trace (ordered epoch and probe_id picks), inclusion_digest, algebra_digest, replay_journal, and coverage_band. Normative formulas and probe-row schema are in `/app/environment/docs/emit_contract.md`. Annex slice 25 rules are in `/app/environment/docs/annex025_note.md`. Ops notes under `/app/environment/docs/ops_notes.md` are smoke shortcuts. Align the Ruby module sources under `/app/environment` so module behavior and the rivet_gate CLI path both stay correct after `compile_lane.sh`.
