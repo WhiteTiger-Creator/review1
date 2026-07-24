@@ -1,0 +1,5 @@
+# px profile knobs
+KAPPA=0.35
+DT0=0.0015
+CFL=0.40
+TOL=1e-3

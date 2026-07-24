@@ -1,0 +1,5 @@
+# qy profile knobs
+KAPPA=0.42
+DT0=0.0012
+CFL=0.35
+TOL=1e-3

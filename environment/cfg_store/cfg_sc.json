@@ -1,0 +1,8 @@
+{
+  "n_global": 73,
+  "until_step": 14,
+  "ckpt_step": 7,
+  "kappa_scale": 1.05,
+  "seed": 41,
+  "tag": "sc"
+}

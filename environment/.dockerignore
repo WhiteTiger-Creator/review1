@@ -6,3 +6,8 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
+build
+solution
+tests
+.DS_Store
+bin

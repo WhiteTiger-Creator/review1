@@ -1,33 +1,33 @@
-# Task configuration schema version
 version = "2.0"
 
-# Task metadata (author, difficulty, categorization)
 [metadata]
-author_name = "prince"
-author_email = "anonymous@example.com"
+author_name = "anonymous"
+author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = [ ]
+category = "scientific-computing"
+category_profile = "state_recovery_crash_consistency"
+tags = ["cpp", "mpi", "hdf5", "checkpoint", "numerical-restart"]
+languages = ["cpp", "bash"]
+codebase_size = "small"
 number_of_milestones = 0
-codebase_size = "minimal"
-languages = [ "go" ]
-tags = [ "cryptography", "certificate-transparency", "rfc6962", "concurrency", "security" ]
-expert_time_estimate_min = 60
-junior_time_estimate_min = 120
+subcategories = ["tool_specific"]
+expert_time_estimate_min = 240
+junior_time_estimate_min = 600
 
-# Verifier: runs the test script to check task completion
-[verifier]
-timeout_sec = 450.0
+[reference_pattern]
+justification_if_none = "No promoted reference in docs/reference_tasks/index.json; C++ MPI/HDF5 adaptive repartition resume distinct from TypeScript AMR particle restart and Rust numeric checkpoint replay."
 
-# Agent: limits how long the agent can run when attempting the task
 [agent]
-timeout_sec = 900.0
+timeout_sec = 1800
 
-# Sandbox environment limits
+[verifier]
+timeout_sec = 1800
+
 [environment]
-build_timeout_sec = 600.0
+allow_internet = false
+build_timeout_sec = 1200
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-allow_internet = false
-
+gpus = 0
+workdir = "/app"
