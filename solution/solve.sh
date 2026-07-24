@@ -1,12 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-cd /app/environment
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-python3 /solution/apply_fix.py
+bash "$ROOT_DIR/apply_knot.sh"
+bash "$ROOT_DIR/apply_quad.sh"
+bash "$ROOT_DIR/apply_vial.sh"
 
-cp /solution/security_notes.md security_notes.md
-
-go build ./...
-
-echo "oracle: solve.sh complete"
+cd /app
+mvn -q -DskipTests package
+mkdir -p /app/output
+java -jar /app/drive/target/drive-1.0.0-shaded.jar

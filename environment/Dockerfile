@@ -1,36 +1,36 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS gotoolchain
+FROM public.ecr.aws/docker/library/maven:3.9.9-eclipse-temurin-21@sha256:3a4ab3276a087bf276f79cae96b1af04f53731bec53fb2e651aca79e4b10211e
 
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+WORKDIR /app
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      patch \
-      ca-certificates \
-      jq \
-      tmux \
-      asciinema \
-      git \
- && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3=3.12.3-0ubuntu2.1 \
+    python3-venv=3.12.3-0ubuntu2.1 \
+    python3-pip=24.0+dfsg-1ubuntu1.3 \
+    tmux=3.4-1ubuntu0.1 \
+    asciinema=2.4.0-1 \
+    libsqlite3-0=3.45.1-1ubuntu2.7 \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY --from=gotoolchain /usr/local/go /usr/local/go
-RUN ln -s /usr/local/go/bin/go /usr/local/bin/go \
- && ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
-ENV PATH=/usr/local/go/bin:$PATH \
-    GOPATH=/root/go \
-    GOCACHE=/root/.cache/go-build \
-    GOFLAGS=-mod=mod
+RUN python3 -m venv /opt/verifier \
+    && /opt/verifier/bin/pip install --no-cache-dir \
+        pytest==8.4.1 \
+        pytest-json-ctrf==0.3.5 \
+        pytest-randomly==3.16.0
+ENV PATH=/opt/verifier/bin:${PATH}
 
-COPY requirements.txt /tmp/requirements.txt
-RUN python3 -m venv /opt/verifier-venv \
- && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt
+# Prefetch Maven artifacts while build network is available.
+COPY pom.xml /app/pom.xml
+COPY core/pom.xml /app/core/pom.xml
+COPY k1/pom.xml /app/k1/pom.xml
+COPY k2/pom.xml /app/k2/pom.xml
+COPY k3/pom.xml /app/k3/pom.xml
+COPY drive/pom.xml /app/drive/pom.xml
+RUN mkdir -p \
+    /app/core/src/main/java \
+    /app/k1/src/main/java \
+    /app/k2/src/main/java \
+    /app/k3/src/main/java \
+    /app/drive/src/main/java \
+    && mvn -q -DskipTests dependency:go-offline
 
-WORKDIR /app/environment
-
-COPY go.mod /app/environment/go.mod
-COPY requirements.txt /app/environment/requirements.txt
-COPY cmd/ /app/environment/cmd/
-COPY internal/ /app/environment/internal/
-COPY testdata/ /app/environment/testdata/
-
-WORKDIR /app/environment
+COPY . /app

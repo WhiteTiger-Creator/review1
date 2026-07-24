@@ -1,868 +1,320 @@
+"""Domain checks for landfill methane flare triage case 0708.
+
+Golden field values are fixed oracle expectations embedded here. The grade path
+rebuilds the agent's Java sources and compares emitted pack fields to those
+constants; it does not re-implement k1/k2/k3 decode, widen, or ledger logic.
+"""
+
 from __future__ import annotations
 
 import json
-import os
-import pwd
-import re
+import math
 import subprocess
-import tempfile
-import uuid
 from pathlib import Path
 
 import pytest
 
-ENV = Path("/app/environment")
-BIN = "/tmp/scepd-bin"
+APP = Path("/app")
+OUT = APP / "output" / "hardened_policy_pack.json"
+MARGIN = 0.05
+W_CAP = 1.5
+SCHEMA = "hz-pack-1"
 
-DEFAULT_MAX_VALIDITY = 90
-DEFAULT_CHALLENGE = "s3cr3t-default"
-CA_SUBJECT = "Example SCEP Intermediate CA"
+# Oracle-fixed expectations for the shipped fixtures (case 0708).
+EXPECTED_CASES: dict[str, dict[str, object]] = {
+    "hz01": {
+        "status": "ok",
+        "hex_pair": "000a0014001e00280032003c",
+        "widen_digest": "ad004932ed005282a1c039345d82f6bb8af0751394ecf63063241c9da9430c40",
+        "row_digest": "50844ead791e1cba6478540a3a4139c173c0464fe8ae164003798723c149dac4",
+        "clf_blob_hex": "763d303b6d6f64653d726f773b68783d35302e36",
+        "violations": 0,
+        "cap_bound": 0.75,
+        "ledger_mode": "row",
+    },
+    "hz02": {
+        "status": "ok",
+        "hex_pair": "006400c8009600fa00070008",
+        "widen_digest": "96aab50168a08a6efd35ec24004f9328a3b77280dff3999a1d98a691233f0fb1",
+        "row_digest": "3168c96a39960331ef63d80bba91429cd40d8f9604c162ffea66a986f6c047fb",
+        "clf_blob_hex": "763d303b6d6f64653d726f773b68783d3135312e32",
+        "violations": 0,
+        "cap_bound": 1.5,
+        "ledger_mode": "row",
+    },
+    "hz03": {
+        "status": "ok",
+        "hex_pair": "00010002000300040005000600070008",
+        "widen_digest": "51287b793b0c5b567d9ec409b72a142eece218ec8d8f867ea3f07c4866b3d181",
+        "row_digest": "e1bed36c63eb999fbdf7f221b9674d5cb6c1be2b4b8709b44b2e60fa6dcfd419",
+        "clf_blob_hex": "763d303b6d6f64653d726f773b68783d372e33",
+        "violations": 0,
+        "cap_bound": 0.375,
+        "ledger_mode": "row",
+    },
+    "hz04": {
+        "status": "ok",
+        "hex_pair": "0009000b000d001100130017",
+        "widen_digest": "52b4ac442a93bc14e8e374033bebd10707ce53038ef895c78d62ad13bba1ee5a",
+        "row_digest": "da68316a0e315f2fd4567dd8e0edf0d7a979146a29faefe723564419c1c0c2de",
+        "clf_blob_hex": "763d303b6d6f64653d726f773b68783d31392e38",
+        "violations": 0,
+        "cap_bound": 1.8,
+        "ledger_mode": "row",
+    },
+    "hz_tr": {
+        "status": "reject",
+        "hex_pair": "",
+        "widen_digest": "",
+        "row_digest": "",
+        "clf_blob_hex": "",
+        "violations": 0,
+        "cap_bound": 0.0,
+        "ledger_mode": "sum",
+    },
+    "hz_rt": {
+        "status": "ok",
+        "hex_pair": "00280032003c0046",
+        "widen_digest": "e83117786519f9c55588cc856cf37ea84c3e7a885edf6ea4a2b42f5d52a35591",
+        "row_digest": "e87ef1242ba215ea4cf2e07de6ff9f3abba036e5521344994fea4eda74c626f3",
+        "clf_blob_hex": "763d303b6d6f64653d726f773b68783d36302e39",
+        "violations": 0,
+        "cap_bound": 0.9,
+        "ledger_mode": "row",
+    },
+}
 
-GO_CRASH_SIGNATURES = (
-    "panic:",
-    "goroutine ",
-    "runtime error",
-    "fatal error",
-    "signal sigsegv",
-    "stack overflow",
-    "out of memory",
+EXPECTED_PACK_DIGEST = "54fa8048d5ddd63b9e4830399adcd33151c3e343da5891ce6b6e9d9fd0f298fb"
+HZ02_LE_MISREAD_HEX = "6400c8009600fa0000070008"
+HZ_RT_WIDEN_DIGEST_NO_ROT = (
+    "1e4c1fd84678ccb0a6ec31d225eea372aaceb68d921c1d9123c752187061c821"
 )
 
 
-def _candidate_sandbox():
-    """Extra subprocess kwargs that drop the candidate binary to an unprivileged
-    user when the verifier runs as root, so a submitted binary cannot read the
-    verifier trees (/tests, /solution, /logs/verifier). A no-op for non-root local
-    runs, where those trees are not present."""
-    try:
-        if os.geteuid() != 0:
-            return {}
-    except AttributeError:  # non-POSIX
-        return {}
-    try:
-        pw = pwd.getpwnam("nobody")
-    except KeyError:
-        return {}
-    return {"user": pw.pw_uid, "group": pw.pw_gid, "extra_groups": []}
+def _hypot2(a: float, b: float) -> float:
+    return math.sqrt(a * a + b * b)
 
 
-_SANDBOX = _candidate_sandbox()
-
-
-def run_candidate(cmd, **kwargs):
-    """Run the built scepd binary under the unprivileged sandbox (when root)."""
-    kwargs.setdefault("text", True)
-    return subprocess.run(cmd, **_SANDBOX, **kwargs)
-
-
-@pytest.fixture(scope="session")
-def binary():
-    """Build the scepd binary from the agent's on-disk source.
-
-    The build itself runs with the verifier's privileges (it needs the Go cache);
-    every invocation of the resulting binary goes through run_candidate, which
-    drops it to an unprivileged user.
-    """
-    build = subprocess.run(
-        ["go", "build", "-o", BIN, "./cmd/scepd"],
-        cwd=str(ENV),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=300,
+def _rebuild() -> dict:
+    subprocess.run(
+        ["mvn", "-q", "-DskipTests", "package", "-Dhz.marker=/app/environment/k1"],
+        cwd=APP,
+        check=True,
     )
-    assert build.returncode == 0, f"go build failed:\n{build.stdout}"
-    assert os.path.exists(BIN), "scepd binary not produced"
-    # World-readable+executable so the unprivileged sandbox user can run it.
-    os.chmod(BIN, 0o755)
-    return BIN
-
-
-def run_enroll(binary, relpath, timeout=60):
-    """Run scepd enroll against a fixture path relative to the environment root."""
-    return run_candidate(
-        [binary, "enroll", str(ENV / relpath)],
-        cwd=str(ENV),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["java", "-jar", "/app/drive/target/drive-1.0.0-shaded.jar"],
+        cwd=APP,
+        check=True,
     )
+    return json.loads(OUT.read_text(encoding="utf-8"))
 
 
-def run_enroll_obj(binary, obj, timeout=60):
-    """Run scepd enroll against a request object written to a fresh temp file."""
-    fd, path = tempfile.mkstemp(suffix=".json")
+@pytest.fixture(scope="module")
+def pack() -> dict:
+    return _rebuild()
+
+
+def _cids() -> list[str]:
+    return [ln.strip() for ln in (APP / "docs" / "cid.txt").read_text().splitlines() if ln.strip()]
+
+
+def _wts() -> dict[str, tuple[float, float, float]]:
+    out: dict[str, tuple[float, float, float]] = {}
+    for ln in (APP / "data" / "wts.tsv").read_text().splitlines():
+        if not ln or ln.startswith("cid"):
+            continue
+        p = ln.split("\t")
+        out[p[0]] = (float(p[1]), float(p[2]), float(p[3]))
+    return out
+
+
+def _load_ledger(cid: str) -> list[tuple[int, float, float, float, str]]:
+    import sqlite3
+
+    con = sqlite3.connect(APP / "data" / "mx8.sqlite")
     try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(obj, fh)
-        # Readable by the unprivileged sandbox user that runs the candidate binary.
-        os.chmod(path, 0o644)
-        return run_candidate(
-            [binary, "enroll", path],
-            cwd=str(ENV),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-        )
+        rows = con.execute(
+            "SELECT rid, v_pre, v_post, delta, col_tag FROM ledger WHERE cid=? ORDER BY rid",
+            (cid,),
+        ).fetchall()
+        return [(int(r[0]), float(r[1]), float(r[2]), float(r[3]), str(r[4])) for r in rows]
     finally:
-        os.unlink(path)
+        con.close()
 
 
-def _not_after_days(stdout: str) -> int | None:
-    m = re.search(r"not_after_days=(\d+)", stdout)
-    return int(m.group(1)) if m else None
+def _case_map(pack: dict) -> dict[str, dict]:
+    return {c["cid"]: c for c in pack["cases"]}
 
 
-def assert_clean_rejection(r, name, subsystem_keywords, reason_words):
-    """Assert a request was refused by a clean error, not a crash, with a reason."""
-    err = (r.stdout + "\n" + r.stderr).lower()
-    assert "issued" not in r.stdout.lower(), (
-        f"{name}: a certificate was ISSUED but the request must be refused.\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
-    assert r.returncode != 0, (
-        f"{name}: expected a non-zero exit for the refused request.\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
-    for sig in GO_CRASH_SIGNATURES:
-        assert sig not in err, (
-            f"{name}: the request was refused via a crash ({sig!r}), not the clean "
-            f"returned-error path.\nstderr:\n{r.stderr}"
+def test_hz_c1_layout(pack: dict) -> None:
+    """Pack schema, case ids, and required fields after rebuild."""
+    assert pack["schema"] == SCHEMA
+    assert isinstance(pack["cases"], list)
+    assert set(_case_map(pack)) == set(_cids())
+    digest = pack["pack_digest"]
+    assert isinstance(digest, str)
+    assert len(digest) == 64
+    assert pack["verdict"] == "green"
+    assert pack["pack_digest"] == EXPECTED_PACK_DIGEST
+    for c in pack["cases"]:
+        for key in (
+            "cid",
+            "status",
+            "hex_pair",
+            "widen_digest",
+            "row_digest",
+            "clf_blob_hex",
+            "violations",
+            "cap_bound",
+            "ledger_mode",
+        ):
+            assert key in c
+
+
+def test_hz_c2_hex_pair(pack: dict) -> None:
+    """Mixed-endian hex pairs match the closed oracle fixture set."""
+    cases = _case_map(pack)
+    for cid in _cids():
+        expect = EXPECTED_CASES[cid]
+        assert cases[cid]["status"] == expect["status"]
+        assert cases[cid]["hex_pair"] == expect["hex_pair"]
+
+
+def test_hz_c3_digest_rule(pack: dict) -> None:
+    """Widen digests match the closed oracle fixture set."""
+    cases = _case_map(pack)
+    for cid in _cids():
+        if EXPECTED_CASES[cid]["status"] == "reject":
+            continue
+        assert cases[cid]["widen_digest"] == EXPECTED_CASES[cid]["widen_digest"]
+
+
+def test_hz_c4_cap_bound(pack: dict) -> None:
+    """Cap bound and radii obligation hold for non-trunc cases."""
+    cases = _case_map(pack)
+    for cid in _cids():
+        if EXPECTED_CASES[cid]["status"] == "reject":
+            continue
+        a, b, _c = _wts()[cid]
+        bound = W_CAP * max(a, b)
+        radii = _hypot2(a, b)
+        assert round(float(cases[cid]["cap_bound"]), 6) == round(bound, 6)
+        assert round(float(cases[cid]["cap_bound"]), 6) == round(
+            float(EXPECTED_CASES[cid]["cap_bound"]), 6
         )
-    assert any(k in err for k in subsystem_keywords), (
-        f"{name}: the refusal must name its subsystem "
-        f"{subsystem_keywords}.\nstderr:\n{r.stderr}"
-    )
-    assert any(w in err for w in reason_words), (
-        f"{name}: the refusal must name what was wrong "
-        f"{reason_words}.\nstderr:\n{r.stderr}"
-    )
-
-
-def test_binary_builds_and_prints_usage(binary):
-    """The tree builds a scepd that prints usage and exits 2 with no args."""
-    r = run_candidate([binary], capture_output=True, timeout=10)
-    assert r.returncode == 2, (
-        f"bare scepd should print usage and exit 2; got rc={r.returncode}\n{r.stderr}"
-    )
-    assert "usage" in r.stderr.lower(), r.stderr
-
-
-def test_ca_info_reports_provisioner_config(binary):
-    """ca-info reports the CA subject and each provisioner's policy."""
-    r = run_candidate(
-        [binary, "ca-info"], cwd=str(ENV), capture_output=True, timeout=30
-    )
-    assert r.returncode == 0, f"ca-info failed:\n{r.stderr}"
-    out = r.stdout.lower()
-    assert "ca.subject" in out and "provisioner.default.max_validity_days" in out, (
-        r.stdout
-    )
-
-
-def test_valid_corpus_all_issue(binary):
-    """Every well-formed enrollment and renewal fixture is issued a certificate."""
-    for i in range(1, 8):
-        f = f"testdata/valid/valid_{i:03d}.json"
-        r = run_enroll(binary, f)
-        assert r.returncode == 0, (
-            f"{f} was refused:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-        )
-        assert "ISSUED" in r.stdout, f"{f} produced no certificate:\n{r.stdout}"
-
-
-def test_valid_sub_max_validity_is_unchanged(binary):
-    """A request below the maximum keeps its requested validity."""
-    r = run_enroll(binary, "testdata/valid/valid_001.json")
-    assert r.returncode == 0, r.stderr
-    assert _not_after_days(r.stdout) == 60, (
-        f"a 60-day request under the 90-day maximum must be issued "
-        f"for 60 days, not re-clamped.\n{r.stdout}"
-    )
-
-
-def test_boundary_at_max_validity_issues(binary):
-    """A request exactly at the provisioner maximum is issued at the maximum."""
-    r = run_enroll(binary, "testdata/valid/valid_004.json")
-    assert r.returncode == 0, r.stderr
-    assert _not_after_days(r.stdout) == DEFAULT_MAX_VALIDITY, (
-        f"an at-maximum (90-day) request must still be issued at 90 days.\n{r.stdout}"
-    )
-
-
-def test_valid_zero_validity_issues_at_max(binary):
-    """An enrollment with unset (zero) validity is issued at the provisioner maximum."""
-    r = run_enroll(binary, "testdata/valid/valid_006.json")
-    assert r.returncode == 0, (
-        f"a zero-validity request must be issued at the maximum, not refused.\n{r.stderr}"
-    )
-    assert _not_after_days(r.stdout) == DEFAULT_MAX_VALIDITY, (
-        f"an unset (zero-day) request must be issued at the provisioner maximum "
-        f"({DEFAULT_MAX_VALIDITY}).\n{r.stdout}"
-    )
-
-
-def test_boundary_near_expiry_signer_renewal_issues(binary):
-    """A renewal with a CA-issued, barely-valid signer still issues."""
-    r = run_enroll(binary, "testdata/valid/valid_005.json")
-    assert r.returncode == 0, (
-        f"a renewal with a CA-issued, one-day-remaining signer must still be issued.\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
-    assert "ISSUED" in r.stdout, r.stdout
-
-
-def test_updatereq_is_not_authorized(binary):
-    """An UpdateReq (type 18) enrollment is refused, not issued unauthenticated."""
-    r = run_enroll(binary, "testdata/exploits/exploit_01.json")
-    assert_clean_rejection(
-        r,
-        "updatereq",
-        subsystem_keywords=(
-            "scep/api",
-            "api",
-            "scep/authority",
-            "authority",
-            "scep/challenge",
-            "challenge",
-        ),
-        reason_words=(
-            "message type",
-            "messagetype",
-            "authoriz",
-            "unauthorized",
-            "enroll",
-            "not allowed",
-            "not permitted",
-            "not supported",
-            "reject",
-            "operation",
-            "implement",
-        ),
-    )
-
-
-def test_fresh_updatereq_is_not_authorized(binary):
-    """A fresh UpdateReq with a random subject is refused (no fixture hardcoding)."""
-    nonce = uuid.uuid4().hex[:10]
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "18",
-        "provisioner": "default",
-        "challenge": "",
-        "subject_common_name": f"device-{nonce}",
-        "sans": [f"device-{nonce}.corp.example"],
-        "requested_validity_days": 365,
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "fresh-updatereq",
-        subsystem_keywords=(
-            "scep/api",
-            "api",
-            "scep/authority",
-            "authority",
-            "scep/challenge",
-            "challenge",
-        ),
-        reason_words=(
-            "message type",
-            "messagetype",
-            "authoriz",
-            "unauthorized",
-            "enroll",
-            "not allowed",
-            "not permitted",
-            "not supported",
-            "reject",
-            "operation",
-            "implement",
-        ),
-    )
-
-
-def test_unknown_message_type_refused_without_crash(binary):
-    """A reserved or unknown message type is refused, never a panic."""
-    r = run_enroll(binary, "testdata/exploits/exploit_02.json")
-    assert_clean_rejection(
-        r,
-        "unknown-type",
-        subsystem_keywords=("scep/authority", "authority"),
-        reason_words=("unknown", "message type", "not accepted"),
-    )
-
-
-def test_fresh_unknown_message_type_refused_without_crash(binary):
-    """A freshly chosen reserved message type is refused without a panic."""
-    nonce = uuid.uuid4().hex[:8]
-    reserved = str(40 + (int(nonce, 16) % 50))
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": reserved,
-        "provisioner": "default",
-        "challenge": "",
-        "subject_common_name": f"device-{nonce}",
-        "sans": [f"device-{nonce}.corp.example"],
-        "requested_validity_days": 60,
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "fresh-unknown-type",
-        subsystem_keywords=("scep/authority", "authority"),
-        reason_words=("unknown", "message type", "not accepted"),
-    )
-
-
-def test_unconfigured_challenge_provisioner_refused(binary):
-    """Enrollment against a provisioner with no challenge configured fails closed."""
-    r = run_enroll(binary, "testdata/exploits/exploit_03.json")
-    assert_clean_rejection(
-        r,
-        "no-challenge-provisioner",
-        subsystem_keywords=("scep/challenge", "challenge"),
-        reason_words=("challenge", "refused", "configured"),
-    )
-
-
-def test_renewal_foreign_signer_refused(binary):
-    """A renewal signed by a certificate this authority did not issue is refused."""
-    r = run_enroll(binary, "testdata/exploits/exploit_04.json")
-    assert_clean_rejection(
-        r,
-        "foreign-signer",
-        subsystem_keywords=("scep/renewal", "renewal"),
-        reason_words=(
-            "signer",
-            "issuer",
-            "issued",
-            "authority",
-            "expired",
-            "match",
-            "genuine",
-            "this ca",
-        ),
-    )
-
-
-def test_fresh_foreign_signer_refused(binary):
-    """A fresh renewal with a random foreign issuer and correct challenge is refused."""
-    nonce = uuid.uuid4().hex[:10]
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "17",
-        "provisioner": "default",
-        "challenge": DEFAULT_CHALLENGE,
-        "subject_common_name": f"device-{nonce}",
-        "sans": [f"device-{nonce}.corp.example"],
-        "requested_validity_days": 30,
-        "signer": {
-            "subject_common_name": f"device-{nonce}",
-            "issuer_common_name": f"Rogue Root CA {nonce}",
-            "not_after_days": 400,
-        },
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "fresh-foreign-signer",
-        subsystem_keywords=("scep/renewal", "renewal"),
-        reason_words=(
-            "signer",
-            "issuer",
-            "issued",
-            "authority",
-            "expired",
-            "match",
-            "genuine",
-            "this ca",
-        ),
-    )
-
-
-def test_renewal_expired_ca_signer_refused(binary):
-    """A renewal signed by a CA-issued but expired certificate is refused."""
-    r = run_enroll(binary, "testdata/exploits/exploit_06.json")
-    assert_clean_rejection(
-        r,
-        "expired-ca-signer",
-        subsystem_keywords=("scep/renewal", "renewal"),
-        reason_words=("expir", "valid", "not after", "not_after", "past", "signer"),
-    )
-
-
-def test_fresh_expired_ca_signer_refused(binary):
-    """A fresh renewal with a CA-issued but expired signer is refused."""
-    nonce = uuid.uuid4().hex[:10]
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "17",
-        "provisioner": "default",
-        "challenge": DEFAULT_CHALLENGE,
-        "subject_common_name": f"device-{nonce}",
-        "sans": [f"device-{nonce}.corp.example"],
-        "requested_validity_days": 30,
-        "signer": {
-            "subject_common_name": f"device-{nonce}",
-            "issuer_common_name": CA_SUBJECT,
-            "not_after_days": -1,
-        },
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "fresh-expired-ca-signer",
-        subsystem_keywords=("scep/renewal", "renewal"),
-        reason_words=("expir", "valid", "not after", "not_after", "past", "signer"),
-    )
-
-
-def test_excessive_validity_is_clamped(binary):
-    """An excessive-validity enrollment is issued but capped to the maximum."""
-    r = run_enroll(binary, "testdata/exploits/exploit_05.json")
-    assert r.returncode == 0, (
-        f"the request should still be issued (capped), not refused:\n{r.stderr}"
-    )
-    days = _not_after_days(r.stdout)
-    assert days is not None, f"no issued certificate found:\n{r.stdout}"
-    assert 0 < days <= DEFAULT_MAX_VALIDITY, (
-        f"a 3650-day request must be capped to the maximum "
-        f"({DEFAULT_MAX_VALIDITY}); "
-        f"got not_after_days={days}."
-    )
-
-
-def test_fresh_excessive_validity_is_clamped(binary):
-    """A fresh excessive-validity request is capped to the maximum."""
-    nonce = uuid.uuid4().hex[:10]
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "19",
-        "provisioner": "default",
-        "challenge": DEFAULT_CHALLENGE,
-        "subject_common_name": f"device-{nonce}",
-        "sans": [f"device-{nonce}.corp.example"],
-        "requested_validity_days": 9999,
-    }
-    r = run_enroll_obj(binary, obj)
-    assert r.returncode == 0, (
-        f"the request should still be issued (capped), not refused:\n{r.stderr}"
-    )
-    days = _not_after_days(r.stdout)
-    assert days is not None and 0 < days <= DEFAULT_MAX_VALIDITY, (
-        f"excessive validity must be capped to {DEFAULT_MAX_VALIDITY}; got {days}."
-    )
-
-
-def test_security_notes_covers_all_themes():
-    """security_notes.md exists and records the audit the brief asks for.
-
-    The brief keeps the write-up deliberately light, so this verifies only the
-    parts it names explicitly -- a non-trivial summary, the CWE classes, and the
-    step-ca / Apache attribution -- rather than a fixed vocabulary of weakness
-    names the concise instruction no longer dictates.
-    """
-    notes = ENV / "security_notes.md"
-    assert notes.exists(), (
-        "security_notes.md was not written to /app/environment (required)."
-    )
-    body = notes.read_text().lower()
-    assert len(body.split()) >= 20, (
-        "security_notes.md should be a short write-up of the audit, not a stub."
-    )
-    for kw in ("cwe-287", "cwe-295", "apache", "step-ca"):
-        assert kw in body, f"security_notes.md missing required keyword '{kw}'"
-
-
-def test_certrep_response_type_refused(binary):
-    """CertRep (type 3) is a response type; submitted as a request it is refused, not a crash."""
-    r = run_enroll(binary, "testdata/exploits/exploit_09.json")
-    assert_clean_rejection(
-        r,
-        "certrep-response-type",
-        subsystem_keywords=("scep/api", "api", "scep/authority", "authority"),
-        reason_words=(
-            "response",
-            "message type",
-            "request",
-            "enroll",
-            "not accepted",
-            "operation",
-            "implement",
-        ),
-    )
-
-
-def test_fresh_certrep_response_type_refused(binary):
-    """A fresh CertRep (type 3) request is refused cleanly, never a panic."""
-    nonce = uuid.uuid4().hex[:10]
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "3",
-        "provisioner": "default",
-        "challenge": DEFAULT_CHALLENGE,
-        "subject_common_name": f"device-{nonce}",
-        "sans": [f"device-{nonce}.corp.example"],
-        "requested_validity_days": 60,
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "fresh-certrep-response-type",
-        subsystem_keywords=("scep/api", "api", "scep/authority", "authority"),
-        reason_words=(
-            "response",
-            "message type",
-            "request",
-            "enroll",
-            "not accepted",
-            "operation",
-            "implement",
-        ),
-    )
-
-
-def test_reserved_operation_types_refused(binary):
-    """Every known non-enrollment operation type is refused cleanly, never issued."""
-    for mt in ("20", "21", "22"):
-        nonce = uuid.uuid4().hex[:8]
-        obj = {
-            "transaction_id": f"txn-{nonce}",
-            "message_type": mt,
-            "provisioner": "default",
-            "challenge": DEFAULT_CHALLENGE,
-            "subject_common_name": f"device-{nonce}",
-            "sans": [f"device-{nonce}.corp.example"],
-            "requested_validity_days": 60,
-        }
-        r = run_enroll_obj(binary, obj)
-        assert_clean_rejection(
-            r,
-            f"reserved-operation-{mt}",
-            subsystem_keywords=("scep/authority", "authority"),
-            reason_words=(
-                "operation",
-                "implement",
-                "message type",
-                "not accepted",
-                "unknown",
-            ),
-        )
-
-
-def test_forged_ca_name_signer_refused(binary):
-    """A signer bearing the CA's own name but no valid authority signature is refused."""
-    r = run_enroll(binary, "testdata/exploits/exploit_07.json")
-    assert_clean_rejection(
-        r,
-        "forged-ca-name-signer",
-        subsystem_keywords=("scep/renewal", "renewal"),
-        reason_words=(
-            "signer",
-            "signature",
-            "issued",
-            "authority",
-            "genuine",
-            "valid",
-            "match",
-        ),
-    )
-
-
-def test_fresh_forged_ca_name_signer_refused(binary):
-    """A fresh signer with the CA's name and a live expiry but an invalid signature is refused."""
-    nonce = uuid.uuid4().hex[:10]
-    cn = f"device-{nonce}"
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "17",
-        "provisioner": "default",
-        "challenge": DEFAULT_CHALLENGE,
-        "subject_common_name": cn,
-        "sans": [f"{cn}.corp.example"],
-        "requested_validity_days": 30,
-        "signer": {
-            "subject_common_name": cn,
-            "issuer_common_name": CA_SUBJECT,
-            "not_after_days": 200,
-            "signature": "0" * 64,
-        },
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "fresh-forged-ca-name-signer",
-        subsystem_keywords=("scep/renewal", "renewal"),
-        reason_words=(
-            "signer",
-            "signature",
-            "issued",
-            "authority",
-            "genuine",
-            "valid",
-            "match",
-        ),
-    )
-
-
-def test_renewal_signer_subject_not_bound_refused(binary):
-    """A genuine CA-issued signer replayed to renew a different subject is refused."""
-    r = run_enroll(binary, "testdata/exploits/exploit_08.json")
-    assert_clean_rejection(
-        r,
-        "signer-subject-mismatch",
-        subsystem_keywords=("scep/renewal", "renewal"),
-        reason_words=("subject", "match", "signer", "bound", "belong", "different"),
-    )
-
-
-def test_fresh_signer_subject_not_bound_refused(binary):
-    """A valid fixture signer reused to renew a different subject is refused."""
-    src = json.loads((ENV / "testdata/valid/valid_003.json").read_text())
-    nonce = uuid.uuid4().hex[:10]
-    other = f"device-{nonce}"
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "17",
-        "provisioner": "default",
-        "challenge": DEFAULT_CHALLENGE,
-        "subject_common_name": other,
-        "sans": [f"{other}.corp.example"],
-        "requested_validity_days": 30,
-        "signer": src["signer"],
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "fresh-signer-subject-mismatch",
-        subsystem_keywords=("scep/renewal", "renewal"),
-        reason_words=("subject", "match", "signer", "bound", "belong", "different"),
-    )
-
-
-def test_fresh_unconfigured_challenge_provisioner_refused(binary):
-    """Any provisioner with no challenge configured fails closed, not only the bundled one."""
-    nonce = uuid.uuid4().hex[:10]
-    cn = f"device-{nonce}"
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "19",
-        "provisioner": "legacy",
-        "challenge": "",
-        "subject_common_name": cn,
-        "sans": [f"{cn}.corp.example"],
-        "requested_validity_days": 30,
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "fresh-unconfigured-challenge",
-        subsystem_keywords=("scep/challenge", "challenge"),
-        reason_words=("challenge", "refused", "configured"),
-    )
-
-
-def test_fresh_unconfigured_challenge_uncovered_provisioner_refused(binary):
-    """Fail-closed applies to every challenge-less provisioner, not only the ones the
-    exploit corpus happens to exercise: a provisioner whose ca-info reports
-    challenge_configured=false must refuse enrollment even when no sample covers it."""
-    nonce = uuid.uuid4().hex[:10]
-    cn = f"device-{nonce}"
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "19",
-        "provisioner": "sensor",
-        "challenge": "",
-        "subject_common_name": cn,
-        "sans": [f"{cn}.example"],
-        "requested_validity_days": 20,
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "uncovered-unconfigured-challenge",
-        subsystem_keywords=("scep/challenge", "challenge"),
-        reason_words=("challenge", "refused", "configured"),
-    )
-
-
-def test_unconfigured_challenge_ignores_presented_secret_refused(binary):
-    """A provisioner with no challenge configured cannot be satisfied by presenting
-    any password: enrollment fails closed regardless of the presented value, so a
-    non-empty presented challenge against such a provisioner is still refused."""
-    nonce = uuid.uuid4().hex[:10]
-    cn = f"device-{nonce}"
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "19",
-        "provisioner": "gateway",
-        "challenge": f"guessed-secret-{nonce}",
-        "subject_common_name": cn,
-        "sans": [f"{cn}.example"],
-        "requested_validity_days": 20,
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "nonempty-presented-unconfigured-challenge",
-        subsystem_keywords=("scep/challenge", "challenge"),
-        reason_words=("challenge", "refused", "configured"),
-    )
-
-
-def test_unconfigured_challenge_on_renewal_refused(binary):
-    """The challenge gate applies to renewals too: a renewal against a challenge-less
-    provisioner fails closed even when it carries a genuine CA-issued signer, so the
-    refusal comes from the challenge check rather than the renewal-signer check."""
-    src = json.loads((ENV / "testdata/valid/valid_003.json").read_text())
-    nonce = uuid.uuid4().hex[:10]
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "17",
-        "provisioner": "sensor",
-        "challenge": "",
-        "subject_common_name": src["subject_common_name"],
-        "sans": [f"{src['subject_common_name']}.example"],
-        "requested_validity_days": 20,
-        "signer": src["signer"],
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "unconfigured-challenge-renewal",
-        subsystem_keywords=("scep/challenge", "challenge"),
-        reason_words=("challenge", "refused", "configured"),
-    )
-
-
-NAME_CONSTRAINT_REASONS = (
-    "name",
-    "excluded",
-    "permitted",
-    "constraint",
-    "wildcard",
-    "space",
-)
-
-
-def test_valid_wildcard_san_issues(binary):
-    """A wildcard SAN that stays inside the permitted space and clear of every
-    excluded subtree is still issued."""
-    r = run_enroll(binary, "testdata/valid/valid_007.json")
-    assert r.returncode == 0, (
-        f"an in-bounds wildcard SAN must still be issued, not refused.\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
-    assert "ISSUED" in r.stdout, r.stdout
-
-
-def test_wildcard_san_into_excluded_refused(binary):
-    """A wildcard SAN whose certified hosts reach an excluded subtree is refused,
-    even though its parent domain is permitted."""
-    r = run_enroll(binary, "testdata/exploits/exploit_10.json")
-    assert_clean_rejection(
-        r,
-        "wildcard-into-excluded",
-        subsystem_keywords=("scep/authority", "authority"),
-        reason_words=NAME_CONSTRAINT_REASONS,
-    )
-
-
-def test_fresh_wildcard_san_into_excluded_refused(binary):
-    """A freshly built wildcard SAN that expands into the excluded subtree is
-    refused (no fixture-name hardcoding)."""
-    nonce = uuid.uuid4().hex[:10]
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "19",
-        "provisioner": "default",
-        "challenge": DEFAULT_CHALLENGE,
-        "subject_common_name": f"device-{nonce}",
-        "sans": ["*.corp.example"],
-        "requested_validity_days": 30,
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "fresh-wildcard-into-excluded",
-        subsystem_keywords=("scep/authority", "authority"),
-        reason_words=NAME_CONSTRAINT_REASONS,
-    )
-
-
-def test_concrete_excluded_san_refused(binary):
-    """A concrete SAN inside an excluded subtree is refused."""
-    r = run_enroll(binary, "testdata/exploits/exploit_11.json")
-    assert_clean_rejection(
-        r,
-        "concrete-excluded",
-        subsystem_keywords=("scep/authority", "authority"),
-        reason_words=NAME_CONSTRAINT_REASONS,
-    )
-
-
-def test_fresh_concrete_excluded_san_refused(binary):
-    """A freshly built concrete SAN inside the excluded subtree is refused."""
-    nonce = uuid.uuid4().hex[:10]
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "19",
-        "provisioner": "default",
-        "challenge": DEFAULT_CHALLENGE,
-        "subject_common_name": f"device-{nonce}",
-        "sans": [f"host-{nonce}.internal.corp.example"],
-        "requested_validity_days": 30,
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "fresh-concrete-excluded",
-        subsystem_keywords=("scep/authority", "authority"),
-        reason_words=NAME_CONSTRAINT_REASONS,
-    )
-
-
-def test_plain_san_outside_permitted_refused(binary):
-    """A plain (non-wildcard) SAN outside the permitted subtree is refused: the
-    permitted name space is an upper bound, not only the excluded set."""
-    nonce = uuid.uuid4().hex[:10]
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "19",
-        "provisioner": "default",
-        "challenge": DEFAULT_CHALLENGE,
-        "subject_common_name": f"device-{nonce}",
-        "sans": [f"printer-{nonce}.vendor.example"],
-        "requested_validity_days": 30,
-    }
-    r = run_enroll_obj(binary, obj)
-    assert_clean_rejection(
-        r,
-        "plain-outside-permitted",
-        subsystem_keywords=("scep/authority", "authority"),
-        reason_words=NAME_CONSTRAINT_REASONS,
-    )
-
-
-def test_label_boundary_sibling_issues(binary):
-    """A concrete SAN under a sibling subtree that merely shares a suffix with an
-    excluded subtree (notinternal.corp.example vs the excluded internal.corp.example)
-    stays in bounds and must still be issued: matching is on whole DNS labels, not a
-    bare suffix, so the sibling is not mistaken for the excluded subtree."""
-    nonce = uuid.uuid4().hex[:10]
-    obj = {
-        "transaction_id": f"txn-{nonce}",
-        "message_type": "19",
-        "provisioner": "default",
-        "challenge": DEFAULT_CHALLENGE,
-        "subject_common_name": f"device-{nonce}",
-        "sans": [f"host-{nonce}.notinternal.corp.example"],
-        "requested_validity_days": 30,
-    }
-    r = run_enroll_obj(binary, obj)
-    assert r.returncode == 0, (
-        f"a whole-label sibling of the excluded subtree must still be issued, not "
-        f"refused by a bare-suffix match.\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
-    assert "ISSUED" in r.stdout, r.stdout
+        assert radii <= bound + 1e-9
+
+
+def test_hz_c5_overwrite(pack: dict) -> None:
+    """Driver overwrite replaces a static pack on disk."""
+    OUT.write_text('{"schema":"bogus","cases":[],"pack_digest":"0"*64,"verdict":"green"}\n')
+    again = _rebuild()
+    assert again["schema"] == SCHEMA
+    assert again["verdict"] == "green"
+    assert len(again["cases"]) == len(_cids())
+
+
+def test_hz_c6_idempotent(pack: dict) -> None:
+    """Consecutive identical rebuilds emit the same pack."""
+    first = json.dumps(pack, sort_keys=True)
+    second = json.dumps(_rebuild(), sort_keys=True)
+    assert first == second
+
+
+def test_hz_c7_coeff_mutate(pack: dict) -> None:
+    """Weight table mutation changes the widen digest."""
+    wts_path = APP / "data" / "wts.tsv"
+    backup = wts_path.read_text(encoding="utf-8")
+    try:
+        lines = backup.splitlines()
+        out_lines = []
+        for ln in lines:
+            if ln.startswith("hz01\t"):
+                parts = ln.split("\t")
+                parts[1] = str(float(parts[1]) + 0.35)
+                out_lines.append("\t".join(parts))
+            else:
+                out_lines.append(ln)
+        wts_path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+        mutated = _rebuild()
+        before = _case_map(pack)["hz01"]["widen_digest"]
+        after = _case_map(mutated)["hz01"]["widen_digest"]
+        assert before != after
+    finally:
+        wts_path.write_text(backup, encoding="utf-8")
+        _rebuild()
+
+
+def test_hz_c8_asm_ablation(pack: dict) -> None:
+    """Mixed-endian decode diverges from a pure little-endian misread."""
+    cases = _case_map(pack)
+    assert cases["hz02"]["hex_pair"] == EXPECTED_CASES["hz02"]["hex_pair"]
+    assert cases["hz02"]["hex_pair"] != HZ02_LE_MISREAD_HEX
+
+
+def test_hz_c9_tab_ablation(pack: dict) -> None:
+    """Held-out rotations enlarge the widen box versus rotation-free."""
+    cases = _case_map(pack)
+    cid = "hz_rt"
+    assert cases[cid]["widen_digest"] == EXPECTED_CASES[cid]["widen_digest"]
+    assert cases[cid]["widen_digest"] != HZ_RT_WIDEN_DIGEST_NO_ROT
+
+
+def test_hz_c10_blob_ablation(pack: dict) -> None:
+    """CLF blob binds row mode with zero violations."""
+    cases = _case_map(pack)
+    for cid in _cids():
+        if EXPECTED_CASES[cid]["status"] == "reject":
+            continue
+        c = cases[cid]
+        expect = EXPECTED_CASES[cid]
+        assert c["ledger_mode"] == expect["ledger_mode"]
+        assert c["violations"] == expect["violations"]
+        assert c["clf_blob_hex"] == expect["clf_blob_hex"]
+
+
+def test_hz_c11_trunc_trap(pack: dict) -> None:
+    """Truncated WARC fixture rejects and pack stays green."""
+    cases = _case_map(pack)
+    assert cases["hz_tr"]["status"] == "reject"
+    assert pack["verdict"] == "green"
+
+
+def test_hz_c12_bal_trap(pack: dict) -> None:
+    """Row ledger invariants bind beyond column-sum balance."""
+    cases = _case_map(pack)
+    for cid in _cids():
+        if EXPECTED_CASES[cid]["status"] == "reject":
+            continue
+        ledger = _load_ledger(cid)
+        sum_pre = sum(r[1] for r in ledger)
+        sum_post = sum(r[2] for r in ledger)
+        assert sum_pre - sum_post >= MARGIN * len(ledger) - 1e-9
+        expect = EXPECTED_CASES[cid]
+        assert cases[cid]["ledger_mode"] == expect["ledger_mode"]
+        assert cases[cid]["violations"] == expect["violations"]
+        assert cases[cid]["row_digest"] == expect["row_digest"]
+
+
+def test_hz_c13_rotation_hole_trap(pack: dict) -> None:
+    """An out-of-bound held-out rotation must fail the pack verdict."""
+    assert pack["verdict"] == "green"
+    wts_path = APP / "data" / "wts.tsv"
+    backup = wts_path.read_text(encoding="utf-8")
+    try:
+        lines = []
+        for ln in backup.splitlines():
+            if ln.startswith("hz01\t"):
+                parts = ln.split("\t")
+                parts[3] = "60.05"
+                lines.append("\t".join(parts))
+            else:
+                lines.append(ln)
+        wts_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        hole = _rebuild()
+        assert hole["verdict"] == "fail"
+    finally:
+        wts_path.write_text(backup, encoding="utf-8")
+        restored = _rebuild()
+        assert restored["verdict"] == "green"
