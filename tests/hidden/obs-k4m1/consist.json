@@ -1,0 +1,15 @@
+{
+  "train_id": "HEAVY-REAR-9901",
+  "cars": [
+    {"id": "HR-01", "destination": "A", "length_units": 12, "mass_t": 70.0},
+    {"id": "HR-02", "destination": "A", "length_units": 12, "mass_t": 72.0},
+    {"id": "HR-03", "destination": "A", "length_units": 12, "mass_t": 74.0},
+    {"id": "HR-04", "destination": "B", "length_units": 11, "mass_t": 68.0},
+    {"id": "HR-05", "destination": "B", "length_units": 11, "mass_t": 66.0},
+    {"id": "HR-06", "destination": "B", "length_units": 11, "mass_t": 65.0},
+    {"id": "HR-07", "destination": "C", "length_units": 10, "mass_t": 55.0},
+    {"id": "HR-08", "destination": "C", "length_units": 10, "mass_t": 54.0},
+    {"id": "HR-09", "destination": "C", "length_units": 10, "mass_t": 53.0},
+    {"id": "HR-10", "destination": "C", "length_units": 9, "mass_t": 50.0}
+  ]
+}

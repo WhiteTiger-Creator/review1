@@ -1,670 +1,622 @@
-"""SpanForge modal calibration verifier — exactly 36 top-level tests."""
-
-from __future__ import annotations
-
+import hashlib
 import json
-import math
-from pathlib import Path
+import os
+import shutil
+import subprocess
 
-from span_modal_lab import (
-    base_plan,
-    copy_sealed_triplet,
-    isolated_workdir,
-    parse_mcr,
-    run_calibrate,
-    run_spectrum,
-    stderr_code,
-    two_dof_analytic_model,
-    write_json,
-)
+import pytest
 
-
-def test_spanfit_spectrum_matches_two_dof_analytic_frequencies() -> None:
-    """Spectrum frequencies match the closed-form two-DOF generalized eigenvalues."""
-    with isolated_workdir() as td:
-        model = write_json(Path(td) / "model.json", two_dof_analytic_model())
-        proc = run_spectrum(model)
-        assert proc.returncode == 0, proc.stderr
-        data = json.loads(proc.stdout)
-        expect = [math.sqrt(1.2) / (2 * math.pi), math.sqrt(3.2) / (2 * math.pi)]
-        assert abs(data["frequencies_hz"][0] - expect[0]) < 1e-12
-        assert abs(data["frequencies_hz"][1] - expect[1]) < 1e-12
+BIN = "/app/bin/fyop-atlas"
+STATE = "/app/state"
+OUTPUT = "/app/output"
+YARD = "/app/yard-alpha"
+FIXTURES = "/opt/verifier-fixtures/hfsy"
+# Opaque hidden observation dirs (verify-only; never in agent image)
+TB3_OBS_K4M1 = os.environ.get("TB3_OBS_K4M1", os.path.join(FIXTURES, "obs-k4m1"))
+TB3_OBS_P9W2 = os.environ.get("TB3_OBS_P9W2", os.path.join(FIXTURES, "obs-p9w2"))
+TB3_OBS_R7N3 = os.environ.get("TB3_OBS_R7N3", os.path.join(FIXTURES, "obs-r7n3"))
 
 
-def test_spanfit_spectrum_is_invariant_to_eigenvector_sign() -> None:
-    """Mode-shape sign flips leave calibrated objective, MAC, and pairing unchanged."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        flipped = json.loads(survey.read_text())
-        for mode in flipped["modes"]:
-            mode["shape"] = [
-                (-v if v is not None else None) for v in mode["shape"]
-            ]
-        alt = write_json(Path(td) / "flipped.json", flipped)
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        assert run_calibrate(model, survey, plan, r1).returncode == 0
-        assert run_calibrate(model, alt, plan, r2).returncode == 0
-        a = parse_mcr(r1.read_text())
-        b = parse_mcr(r2.read_text())
-        assert abs(a["objective_total"] - b["objective_total"]) < 1e-12
-        assert [p["mac"] for p in a["pairs"]] == [p["mac"] for p in b["pairs"]]
-        assert [p["predicted"] for p in a["pairs"]] == [
-            p["predicted"] for p in b["pairs"]
-        ]
+def _run(cmd, env_override=None):
+    """Run fyop-atlas via subprocess."""
+    merged = dict(os.environ)
+    if env_override:
+        merged.update(env_override)
+    return subprocess.run(
+        [BIN, *cmd],
+        capture_output=True, text=True, env=merged, timeout=120,
+    )
 
 
-def test_spanfit_rejects_nonsymmetric_mass_matrix() -> None:
-    """Mass asymmetry beyond tolerance yields E_MATRIX_SYMMETRY."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        m["mass"] = [[1.0, 0.5], [0.0, 1.0]]
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MATRIX_SYMMETRY"
+def _clean():
+    for d in (STATE, OUTPUT):
+        if os.path.isdir(d):
+            shutil.rmtree(d)
 
 
-def test_spanfit_rejects_nonpositive_definite_mass_matrix() -> None:
-    """A singular or indefinite mass matrix yields E_MASS_PHYSICALITY."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        m["mass"] = [[1.0, 0.0], [0.0, 0.0]]
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MASS_PHYSICALITY"
+def _full_pipeline(env=None):
+    _clean()
+    r1 = _run(["ingest"], env)
+    assert r1.returncode == 0, f"ingest failed: {r1.stderr}"
+    r2 = _run(["optimize"], env)
+    assert r2.returncode == 0, f"optimize failed: {r2.stderr}"
+    r3 = _run(["export"], env)
+    assert r3.returncode == 0, f"export failed: {r3.stderr}"
 
 
-def test_spanfit_rejects_nonsymmetric_stiffness_contribution() -> None:
-    """Asymmetric group contribution is rejected before spectrum work."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        m["groups"][0]["contribution"] = [[0.2, 0.3], [0.0, 0.2]]
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MATRIX_SYMMETRY"
+def _load(path):
+    with open(path) as f:
+        return json.load(f)
 
 
-def test_spanfit_rejects_nonphysical_stiffness_box_corner() -> None:
-    """A nonphysical stiffness box corner yields E_STIFFNESS_BOX."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        m["fixed_stiffness"] = [[0.05, 0.0], [0.0, 0.05]]
-        m["groups"][0]["lower"] = -5.0
-        m["groups"][0]["upper"] = -0.1
-        m["groups"][0]["initial"] = -1.0
-        m["groups"][0]["reference"] = -1.0
-        m["groups"][0]["contribution"] = [[1.0, 0.0], [0.0, 1.0]]
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) in {"E_STIFFNESS_BOX", "E_MODEL_SCHEMA"}
+def _canonical(obj):
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
-def test_spanfit_rejects_duplicate_dof_identifier() -> None:
-    """Duplicate DOF identifiers are a model schema failure."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        m["dofs"] = ["D01", "D01"]
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MODEL_SCHEMA"
+def _sha256(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def test_spanfit_rejects_duplicate_group_identifier() -> None:
-    """Duplicate stiffness group identifiers are rejected."""
-    with isolated_workdir() as td:
-        m = two_dof_analytic_model()
-        g = dict(m["groups"][0])
-        g["group_id"] = "cable"
-        m["groups"] = [m["groups"][0], g]
-        # shrink contribution so box may still be ok; schema should fail first
-        proc = run_spectrum(write_json(Path(td) / "m.json", m))
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MODEL_SCHEMA"
+def _reference_staging_hash(yard_dir):
+    """Independent reference: compute correct staging_hash from raw inputs."""
+    topo = json.loads(open(os.path.join(yard_dir, "topology.json")).read())
+    consist = json.loads(open(os.path.join(yard_dir, "consist.json")).read())
+    plan = json.loads(open(os.path.join(yard_dir, "plan.json")).read())
+    fail_path = os.path.join(yard_dir, "failures.json")
+    fail = json.loads(open(fail_path).read()) if os.path.exists(fail_path) else {}
+    body = {
+        "train_id": consist["train_id"],
+        "topology": topo,
+        "consist": consist["cars"],
+        "plan": plan,
+        "failures": fail,
+    }
+    return _sha256(_canonical(body))
 
 
-def test_spanfit_rejects_unknown_sensor_dof() -> None:
-    """Survey sensors that are not model DOFs yield E_SURVEY_SCHEMA."""
-    with isolated_workdir() as td:
-        model, _, plan = copy_sealed_triplet("single_group", Path(td))
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["A", "ZZ"],
-            "modes": [
-                {"mode_id": "M1", "frequency_hz": 0.2, "weight": 1.0, "shape": [0.5, 0.5]},
-                {"mode_id": "M2", "frequency_hz": 0.3, "weight": 1.0, "shape": [0.4, 0.6]},
-            ],
-        }
-        sp = write_json(Path(td) / "survey.json", survey)
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(model, sp, plan, rep)
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_SURVEY_SCHEMA"
+def _reference_topo(yard_dir):
+    return json.loads(open(os.path.join(yard_dir, "topology.json")).read())
 
 
-def test_spanfit_rejects_mode_with_insufficient_observed_channels() -> None:
-    """A measured mode with fewer than two finite channels is rejected."""
-    with isolated_workdir() as td:
-        model, _, plan = copy_sealed_triplet("single_group", Path(td))
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["A", "B"],
-            "modes": [
-                {"mode_id": "M1", "frequency_hz": 0.2, "weight": 1.0, "shape": [0.5, None]},
-                {"mode_id": "M2", "frequency_hz": 0.3, "weight": 1.0, "shape": [0.4, 0.6]},
-            ],
-        }
-        proc = run_calibrate(
-            model,
-            write_json(Path(td) / "survey.json", survey),
-            plan,
-            Path(td) / "out.mcr",
+def _edge_length_lookup(topo):
+    """Undirected (from,to) -> length_m from topology switches."""
+    edges = {}
+    for s in topo["switches"]:
+        edges[(s["from_track"], s["to_track"])] = float(s["length_m"])
+        edges[(s["to_track"], s["from_track"])] = float(s["length_m"])
+    return edges
+
+
+def _reference_total_distance_m(seq, topo):
+    """Independent recomputation: sum length_m for each PUSH/PULL/MOVE_LOCO."""
+    edges = _edge_length_lookup(topo)
+    total = 0.0
+    for cmd in seq["commands"]:
+        if cmd["type"] not in ("PUSH", "PULL", "MOVE_LOCO"):
+            continue
+        key = (cmd["from_track"], cmd["to_track"])
+        assert key in edges, f"no topology edge for move {cmd['from_track']}->{cmd['to_track']}"
+        total += edges[key]
+    return total
+
+
+def _can_reach_lead(topo, failed_switches, start_track):
+    """BFS reachability from start_track to LEAD excluding failed switch ids."""
+    if start_track == "LEAD":
+        return True
+    failed = set(failed_switches or [])
+    adj = {}
+    for s in topo["switches"]:
+        if s["id"] in failed:
+            continue
+        adj.setdefault(s["from_track"], []).append(s["to_track"])
+        adj.setdefault(s["to_track"], []).append(s["from_track"])
+    seen = {start_track}
+    queue = [start_track]
+    while queue:
+        cur = queue.pop(0)
+        for nxt in adj.get(cur, []):
+            if nxt in seen:
+                continue
+            if nxt == "LEAD":
+                return True
+            seen.add(nxt)
+            queue.append(nxt)
+    return False
+
+
+def _independent_capacity_ok(seq, topo, consist):
+    """Replay PUSH/PULL and verify dual occupancy inequalities."""
+    track_limits = {t["id"]: t for t in topo["tracks"]}
+    car_map = {c["id"]: c for c in consist["cars"]}
+    track_cars = {t["id"]: [] for t in topo["tracks"]}
+    track_cars["LEAD"] = [c["id"] for c in consist["cars"]]
+    for cmd in seq["commands"]:
+        if cmd["type"] not in ("PUSH", "PULL"):
+            continue
+        fr = cmd["from_track"]
+        to = cmd["to_track"]
+        for cid in cmd.get("car_ids", []):
+            if cid in track_cars.get(fr, []):
+                track_cars[fr].remove(cid)
+            track_cars.setdefault(to, []).append(cid)
+        if to not in track_limits:
+            continue
+        lim = track_limits[to]
+        on_track = track_cars[to]
+        if len(on_track) > lim["max_cars"]:
+            return False
+        total_len = sum(car_map[c]["length_units"] for c in on_track if c in car_map)
+        if total_len > lim["max_length_units"]:
+            return False
+    return True
+
+
+def _assert_no_failed_throws(seq, failed):
+    failed = set(failed or [])
+    for cmd in seq["commands"]:
+        if cmd["type"] == "THROW_SWITCH":
+            assert cmd["switch_id"] not in failed, (
+                f"THROW_SWITCH on failed switch {cmd['switch_id']}"
+            )
+
+
+# ── 1. Build succeeds ──────────────────────────────────────────────────
+def test_build_binary_exists():
+    """fyop-atlas launcher must exist after build."""
+    assert os.path.isfile(BIN), f"{BIN} missing after build"
+
+
+# ── 2. Ingest creates staging and snapshot ─────────────────────────────
+def test_ingest_creates_staging_files():
+    """Ingest must produce /app/state/yard-staging.json and /app/state/ingest-snapshot.json."""
+    _clean()
+    r = _run(["ingest"])
+    assert r.returncode == 0
+    assert os.path.isfile("/app/state/yard-staging.json")
+    assert os.path.isfile("/app/state/ingest-snapshot.json")
+
+
+# ── 3. Staging schema has required keys ────────────────────────────────
+def test_staging_schema():
+    """yard-staging.json must contain train_id, topology, consist, plan, failures, staging_hash."""
+    _clean()
+    _run(["ingest"])
+    staging = _load("/app/state/yard-staging.json")
+    for key in ("train_id", "topology", "consist", "plan", "failures", "staging_hash"):
+        assert key in staging, f"staging missing key: {key}"
+
+
+# ── 4. Staging hash uses canonical sorted-key JSON ─────────────────────
+def test_staging_hash_canonical():
+    """staging_hash must equal SHA-256 of canonical compact JSON with sorted keys."""
+    _clean()
+    _run(["ingest"])
+    staging = _load(os.path.join(STATE, "yard-staging.json"))
+    ref_hash = _reference_staging_hash(YARD)
+    assert staging["staging_hash"] == ref_hash, (
+        f"staging_hash mismatch: got {staging['staging_hash']}, expected {ref_hash}"
+    )
+
+
+# ── 5. Ingest snapshot has correct car count ───────────────────────────
+def test_snapshot_car_count():
+    """ingest-snapshot.json car_count must match consist length."""
+    _clean()
+    _run(["ingest"])
+    snap = _load(os.path.join(STATE, "ingest-snapshot.json"))
+    consist = json.loads(open(os.path.join(YARD, "consist.json")).read())
+    assert snap["car_count"] == len(consist["cars"])
+
+
+# ── 6. Validate produces validated output ──────────────────────────────
+def test_validate_creates_validated():
+    """Validate must produce /app/state/shunting-validated.json."""
+    _full_pipeline()
+    assert os.path.isfile("/app/state/shunting-validated.json")
+    validated = _load("/app/state/shunting-validated.json")
+    assert "commands" in validated and "validation_seal" in validated
+
+
+# ── 7. Export produces sequence output ─────────────────────────────────
+def test_export_creates_output():
+    """Export must produce /app/output/shunting-sequence.json, /app/state/export-manifest.json, /app/state/export-ledger.json."""
+    _full_pipeline()
+    assert os.path.isfile("/app/output/shunting-sequence.json")
+    assert os.path.isfile("/app/state/export-manifest.json")
+    assert os.path.isfile("/app/state/export-ledger.json")
+    seq = _load("/app/output/shunting-sequence.json")
+    assert "commands" in seq and "total_distance_m" in seq
+    manifest = _load("/app/state/export-manifest.json")
+    assert "export_fingerprint" in manifest
+    ledger = _load("/app/state/export-ledger.json")
+    assert "exports" in ledger and len(ledger["exports"]) >= 1
+
+
+# ── 8. Distance metric uses meters, not hop count ─────────────────────
+def test_distance_is_meters_not_hops():
+    """total_distance_m must match independent length_m sum for this sequence.
+
+    Graded contract is geometric accounting on the emitted commands only.
+    This is not a check for globally shortest distance or minimal move count.
+    """
+    _full_pipeline()
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    dist = float(seq["total_distance_m"])
+    topo = _reference_topo(YARD)
+    ref = _reference_total_distance_m(seq, topo)
+    assert abs(dist - ref) < 1e-6, (
+        f"total_distance_m={dist} != independent length_m sum {ref} "
+        f"(accounting mismatch; not an optimality check)"
+    )
+    move_count = sum(
+        1 for c in seq["commands"] if c["type"] in ("PUSH", "PULL", "MOVE_LOCO")
+    )
+    assert dist != float(move_count), (
+        "total_distance_m equals hop count — must use edge.length_m accounting"
+    )
+    min_edge = min(s["length_m"] for s in topo["switches"])
+    assert dist >= min_edge, (
+        f"total_distance_m={dist} is smaller than min edge length_m={min_edge}"
+    )
+
+
+# ── 9. Destination blocks follow plan order ────────────────────────────
+def test_outbound_blocks_plan_order():
+    """Within each outbound track, blocks must follow destination_order from plan.json."""
+    _full_pipeline()
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    plan = json.loads(open(os.path.join(YARD, "plan.json")).read())
+    dest_order = plan["destination_order"]
+    for track_id, blocks in seq["outbound_blocks"].items():
+        dests_on_track = [b["destination"] for b in blocks]
+        order_indices = [dest_order.index(d) for d in dests_on_track if d in dest_order]
+        assert order_indices == sorted(order_indices), (
+            f"blocks on {track_id} not in destination_order: {dests_on_track}"
         )
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_SURVEY_SCHEMA"
 
 
-def test_spanfit_missing_sensor_values_are_not_zero_filled() -> None:
-    """Null survey channels remain evidence gaps and still allow successful pairing on commons."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        data = json.loads(survey.read_text())
-        # introduce a null on a non-critical extra would need 3 sensors; instead ensure calibrate
-        # of sealed case (no nulls) succeeds, and a variant with null on one mode's channel
-        # that still leaves >=2 commons across a singleton cluster succeeds.
-        data["modes"][0]["shape"] = [data["modes"][0]["shape"][0], None]
-        # insufficient for that mode alone — should fail schema
-        bad = write_json(Path(td) / "bad.json", data)
-        proc_bad = run_calibrate(model, bad, plan, Path(td) / "bad.mcr")
-        assert stderr_code(proc_bad) == "E_SURVEY_SCHEMA"
-        # sealed original succeeds without treating missing as zero
-        proc = run_calibrate(model, survey, plan, Path(td) / "ok.mcr")
-        assert proc.returncode == 0
-        assert "CALIBRATED" in proc.stdout
+# ── 10. Capacity never exceeded during sequence ───────────────────────
+def test_capacity_never_exceeded():
+    """Simulate the command sequence and verify dual occupancy inequalities."""
+    _full_pipeline()
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    validated = _load(os.path.join(STATE, "shunting-validated.json"))
+    topo = _reference_topo(YARD)
+    consist = json.loads(open(os.path.join(YARD, "consist.json")).read())
+    assert _independent_capacity_ok(seq, topo, consist), (
+        "emitted sequence violates n_cars or length_units capacity inequalities"
+    )
+    assert validated.get("capacity_verified") is True, (
+        "capacity_verified must be true when the dual inequalities hold"
+    )
 
 
-def test_spanfit_sensor_order_remap_preserves_calibration() -> None:
-    """Permuting survey sensor order yields identical report bytes."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        data = json.loads(survey.read_text())
-        # reverse sensors and each shape
-        data["sensors"] = list(reversed(data["sensors"]))
-        for mode in data["modes"]:
-            mode["shape"] = list(reversed(mode["shape"]))
-        alt = write_json(Path(td) / "survey_alt.json", data)
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        p1 = run_calibrate(model, survey, plan, r1)
-        p2 = run_calibrate(model, alt, plan, r2)
-        assert p1.returncode == 0 and p2.returncode == 0
-        assert r1.read_bytes() == r2.read_bytes()
+# ── 11. No THROW_SWITCH on a failed switch ────────────────────────────
+def test_no_throw_on_failed_switch():
+    """Sequence must never THROW_SWITCH a switch listed in failures.json."""
+    _full_pipeline()
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    fail = json.loads(open(os.path.join(YARD, "failures.json")).read())
+    _assert_no_failed_throws(seq, fail.get("failed_switches", []))
 
 
-def test_spanfit_group_order_preserves_report_bytes() -> None:
-    """Reordering model groups preserves calibrated report identity."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
-        data = json.loads(model.read_text())
-        data["groups"] = list(reversed(data["groups"]))
-        alt = write_json(Path(td) / "model_alt.json", data)
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        assert run_calibrate(model, survey, plan, r1).returncode == 0
-        assert run_calibrate(alt, survey, plan, r2).returncode == 0
-        assert r1.read_bytes() == r2.read_bytes()
+# ── 12. Export fingerprint is stable on re-export ─────────────────────
+def test_export_fingerprint_stable():
+    """Re-running export on unchanged validated data must yield same fingerprint."""
+    _full_pipeline()
+    m1 = _load(os.path.join(STATE, "export-manifest.json"))
+    fp1 = m1["export_fingerprint"]
+    _run(["export"])
+    m2 = _load(os.path.join(STATE, "export-manifest.json"))
+    fp2 = m2["export_fingerprint"]
+    assert fp1 == fp2, f"fingerprint changed: {fp1} -> {fp2}"
 
 
-def test_spanfit_mode_order_swap_preserves_cluster_pairing() -> None:
-    """Swapping measured mode declaration order preserves pairing outcomes."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        data = json.loads(survey.read_text())
-        data["modes"] = list(reversed(data["modes"]))
-        alt = write_json(Path(td) / "survey_alt.json", data)
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        assert run_calibrate(model, survey, plan, r1).returncode == 0
-        assert run_calibrate(model, alt, plan, r2).returncode == 0
-        a = parse_mcr(r1.read_text())
-        b = parse_mcr(r2.read_text())
-        assert a["pairs"] == b["pairs"]
-        assert a["model_sha256"] == b["model_sha256"]
+# ── 13. Staging hash stable on re-ingest ──────────────────────────────
+def test_staging_hash_stable_re_ingest():
+    """Re-running ingest with same inputs must produce same staging_hash."""
+    _clean()
+    _run(["ingest"])
+    s1 = _load(os.path.join(STATE, "yard-staging.json"))
+    h1 = s1["staging_hash"]
+    _run(["ingest"])
+    s2 = _load(os.path.join(STATE, "yard-staging.json"))
+    h2 = s2["staging_hash"]
+    assert h1 == h2, f"staging_hash changed on re-ingest: {h1} -> {h2}"
 
 
-def test_spanfit_exact_repeated_modes_use_subspace_mac() -> None:
-    """Exact repeated eigenvalues report subspace MAC of one plus frequency residual fields."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("repeated_modes", Path(td))
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(model, survey, plan, rep)
-        assert proc.returncode == 0, proc.stderr
-        raw = rep.read_text()
-        assert "PAIR " in raw
-        rec = parse_mcr(raw)
-        assert len(rec["pairs"]) == 1
-        pair = rec["pairs"][0]
-        assert abs(pair["mac"] - 1.0) < 1e-9
-        assert "freq_res" in pair and math.isfinite(pair["freq_res"])
-        assert abs(pair["freq_res"]) < 1e-9
-        assert "mac" in pair and 0.0 <= pair["mac"] <= 1.0
+# ── 14. HFSY_YARD_DIR override works for full pipeline ────────────────
+def test_hfsy_yard_dir_override():
+    """Pipeline with HFSY_YARD_DIR pointing to a hidden observation set must succeed."""
+    obs_dir = TB3_OBS_K4M1
+    if not os.path.isdir(obs_dir):
+        pytest.skip("obs-k4m1 fixture not found")
+    _full_pipeline(env={"HFSY_YARD_DIR": obs_dir})
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    assert seq["train_id"] == "HEAVY-REAR-9901"
 
 
-def test_spanfit_near_repeated_modes_follow_cluster_tolerance() -> None:
-    """Near-repeated measured frequencies merge under the plan cluster tolerance."""
-    with isolated_workdir() as td:
-        # Build isotropic-ish model and two measured modes within tolerance
-        model = {
-            "format": "bridge-modal-model-v1",
-            "dofs": ["X", "Y"],
-            "mass": [[1.0, 0.0], [0.0, 1.0]],
-            "fixed_stiffness": [[2.0, 0.0], [0.0, 2.0002]],
-            "groups": [
-                {
-                    "group_id": "k",
-                    "lower": 0.8,
-                    "upper": 1.2,
-                    "initial": 1.0,
-                    "reference": 1.0,
-                    "contribution": [[0.5, 0.0], [0.0, 0.5]],
-                }
-            ],
-        }
-        mp = write_json(Path(td) / "model.json", model)
-        spec = json.loads(run_spectrum(mp).stdout)
-        f0, f1 = spec["frequencies_hz"]
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["X", "Y"],
-            "modes": [
-                {"mode_id": "N1", "frequency_hz": f0, "weight": 1.0, "shape": [1.0, 0.0]},
-                {"mode_id": "N2", "frequency_hz": f1, "weight": 1.0, "shape": [0.0, 1.0]},
-            ],
-        }
-        plan = base_plan(
-            cluster_relative_tolerance=0.05,
-            shape_weight=0.2,
-            regularization_weight=0.0,
-            pairing_frequency_gate=0.5,
-            gradient_tolerance=1e-6,
+# ── 15. Hidden obs-k4m1: dual capacity inequalities under tight outbound ─
+def test_hidden_obs_k4m1_capacity():
+    """obs-k4m1 shares O1 across A+B so length_units pressure exceeds car-count pressure."""
+    obs_dir = TB3_OBS_K4M1
+    if not os.path.isdir(obs_dir):
+        pytest.skip("obs-k4m1 fixture not found")
+    _full_pipeline(env={"HFSY_YARD_DIR": obs_dir})
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    validated = _load(os.path.join(STATE, "shunting-validated.json"))
+    topo = json.loads(open(os.path.join(obs_dir, "topology.json")).read())
+    consist = json.loads(open(os.path.join(obs_dir, "consist.json")).read())
+    independent = _independent_capacity_ok(seq, topo, consist)
+    assert independent, (
+        "obs-k4m1 sequence violates max_cars or max_length_units"
+    )
+    # Never claim capacity_verified when the emitted sequence already breaches inequalities.
+    if validated.get("capacity_verified") is True:
+        assert independent
+
+
+# ── 16. Hidden obs-p9w2: failed switch lies on the short C2→O1 path ───
+def test_hidden_obs_p9w2_no_failed_throw():
+    """obs-p9w2 fails SW5 while destination B must leave C2 toward O1."""
+    obs_dir = TB3_OBS_P9W2
+    if not os.path.isdir(obs_dir):
+        pytest.skip("obs-p9w2 fixture not found")
+    _full_pipeline(env={"HFSY_YARD_DIR": obs_dir})
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    validated = _load(os.path.join(STATE, "shunting-validated.json"))
+    fail = json.loads(open(os.path.join(obs_dir, "failures.json")).read())
+    failed = set(fail.get("failed_switches", []))
+    assert "SW5" in failed
+    _assert_no_failed_throws(seq, failed)
+    assert validated.get("capacity_verified") is True
+
+
+# ── 17. Hidden obs-r7n3: closure is residual reachability, not end-on-LEAD ─
+def test_hidden_obs_r7n3_closure_reachability():
+    """obs-r7n3 leaves loco off LEAD; closure_verified requires residual BFS, not equality."""
+    obs_dir = TB3_OBS_R7N3
+    if not os.path.isdir(obs_dir):
+        pytest.skip("obs-r7n3 fixture not found")
+    _full_pipeline(env={"HFSY_YARD_DIR": obs_dir})
+    validated = _load(os.path.join(STATE, "shunting-validated.json"))
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    topo = json.loads(open(os.path.join(obs_dir, "topology.json")).read())
+    fail = json.loads(open(os.path.join(obs_dir, "failures.json")).read())
+    loco = seq["loco_end_track"]
+    assert loco != "LEAD", (
+        "obs-r7n3 must leave loco_end_track off LEAD so reachability (not equality) is graded"
+    )
+    assert validated.get("closure_verified") is True, "closure_verified must be true"
+    assert _can_reach_lead(topo, fail.get("failed_switches", []), loco), (
+        f"loco_end_track={loco} has no non-failed path to LEAD "
+        f"(reachability required; ending on LEAD is not required)"
+    )
+
+
+# ── 18. Full pipeline emits a non-empty command list ──────────────────
+def test_pipeline_emits_commands():
+    """End-to-end ingest/validate/export must emit at least one shunting command."""
+    _full_pipeline()
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    assert "commands" in seq
+    assert len(seq["commands"]) > 0
+
+
+# ── 19. NOP: missing staging means validate and export fail ───────────
+def test_nop_no_staging_fails():
+    """Without ingest, validate must fail (no staging file)."""
+    _clean()
+    r = _run(["optimize"])
+    assert r.returncode != 0 or not os.path.isfile(
+        os.path.join(STATE, "shunting-validated.json")
+    )
+
+
+# ── 20. Export reads from validated, not raw yard ─────────────────────
+def test_export_reads_validated_not_raw():
+    """Export output must match validated data, not re-derive from raw yard."""
+    _full_pipeline()
+    validated = _load(os.path.join(STATE, "shunting-validated.json"))
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    assert seq["total_distance_m"] == validated["total_distance_m"]
+    assert seq["loco_end_track"] == validated["loco_end_track"]
+    assert seq["train_id"] == validated["train_id"]
+
+
+# ── 21. Loco closure: able to reach LEAD (not required to end on LEAD) ─
+def test_loco_closure_can_reach_lead():
+    """Closure requires a non-failed path from loco_end_track to LEAD.
+
+    Docs and grading agree: LEAD is a reachability target, not a required end track.
+    loco_end_track may differ from LEAD when a path still exists.
+    """
+    _full_pipeline()
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    validated = _load(os.path.join(STATE, "shunting-validated.json"))
+    topo = _reference_topo(YARD)
+    fail = json.loads(open(os.path.join(YARD, "failures.json")).read())
+    loco = seq["loco_end_track"]
+    assert validated.get("closure_verified") is True, "closure_verified must be true"
+    assert _can_reach_lead(topo, fail.get("failed_switches", []), loco), (
+        f"loco_end_track={loco} has no non-failed path to LEAD"
+    )
+    # Fairness: ending on LEAD is sufficient but not required by the contract.
+    assert "loco_end_track" in seq
+
+
+# ── 22. Cars preserve relative inbound order within destination block ─
+def test_cars_stable_sort_within_block():
+    """Within each destination block, car order must match inbound consist order."""
+    _full_pipeline()
+    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
+    consist = json.loads(open(os.path.join(YARD, "consist.json")).read())
+    inbound_order = [c["id"] for c in consist["cars"]]
+    for track_id, blocks in seq["outbound_blocks"].items():
+        for block in blocks:
+            car_ids = block["car_ids"]
+            indices = [inbound_order.index(cid) for cid in car_ids]
+            assert indices == sorted(indices), (
+                f"cars in block {block['destination']} on {track_id} not in consist order"
+            )
+
+
+# ── 23. Cross-run export-ledger accumulates entries ───────────────────
+def test_cross_run_ledger():
+    """Running full pipeline twice should create two ledger entries."""
+    _full_pipeline()
+    _run(["export"])
+    ledger = _load(os.path.join(STATE, "export-ledger.json"))
+    assert len(ledger["exports"]) >= 2
+
+
+# ── 24. Agent staging_hash for hidden observation differs from default ─
+def test_hidden_fixture_staging_hash_differs():
+    """Agent fyop-atlas ingest must seal distinct staging_hash for obs-k4m1 vs yard-alpha."""
+    assert os.path.isfile(BIN), f"missing agent binary: {BIN}"
+    obs_dir = TB3_OBS_K4M1
+    if not os.path.isdir(obs_dir):
+        pytest.skip("obs-k4m1 fixture not found")
+
+    _clean()
+    r_alpha = _run(["ingest"])
+    assert r_alpha.returncode == 0, f"default ingest failed: {r_alpha.stderr}"
+    staging_alpha = os.path.join(STATE, "yard-staging.json")
+    assert os.path.isfile(staging_alpha), "agent did not write yard-staging.json for yard-alpha"
+    hash_alpha = _load(staging_alpha)["staging_hash"]
+    assert isinstance(hash_alpha, str) and len(hash_alpha) == 64
+
+    _clean()
+    r_obs = _run(["ingest"], env_override={"HFSY_YARD_DIR": obs_dir})
+    assert r_obs.returncode == 0, f"hidden ingest failed: {r_obs.stderr}"
+    staging_obs = os.path.join(STATE, "yard-staging.json")
+    assert os.path.isfile(staging_obs), "agent did not write yard-staging.json for hidden obs"
+    hash_obs = _load(staging_obs)["staging_hash"]
+    assert isinstance(hash_obs, str) and len(hash_obs) == 64
+
+    assert hash_alpha != hash_obs
+    assert hash_alpha == _reference_staging_hash(YARD)
+    assert hash_obs == _reference_staging_hash(obs_dir)
+
+
+# ── 25. OccupancyGuard must enforce max_length_units, not car-count alone ─
+def test_occupancy_guard_enforces_length_units():
+    """Direct contract: can_push rejects length overflow even when max_cars still has slack."""
+    from fyop.consist.cars import FreightCar
+    from fyop.occupancy.guard import OccupancyGuard, TrackState
+    from fyop.topology.graph import TrackNode
+
+    track = TrackNode(id="T1", type="classification", max_cars=4, max_length_units=20)
+    state = TrackState("T1")
+    state.add_car(FreightCar(id="A", destination="X", length_units=12, mass_t=10.0))
+    incoming = FreightCar(id="B", destination="X", length_units=10, mass_t=10.0)
+    # car-count allows (2 <= 4) but length 22 > 20
+    assert OccupancyGuard.can_push(track, state, incoming) is False
+
+
+# ── 26. Residual reachability is BFS, not loco_end_track == LEAD ───────
+def test_reachability_helper_is_bfs_not_equality():
+    """Direct contract: loco off LEAD with a residual path must still close."""
+    from fyop.residual.reach import can_loco_reach_lead
+    from fyop.topology.graph import SwitchEdge, TrackNode, YardGraph
+
+    tracks = {
+        "LEAD": TrackNode(id="LEAD", type="lead", max_cars=10, max_length_units=100),
+        "C1": TrackNode(id="C1", type="classification", max_cars=4, max_length_units=40),
+        "DEAD": TrackNode(id="DEAD", type="classification", max_cars=2, max_length_units=20),
+    }
+    edges = [
+        SwitchEdge(id="SW1", from_track="LEAD", to_track="C1", length_m=100.0),
+        SwitchEdge(id="SWX", from_track="LEAD", to_track="DEAD", length_m=50.0),
+    ]
+    graph = YardGraph(tracks, edges)
+    assert can_loco_reach_lead(graph, "C1", set()) is True
+    assert can_loco_reach_lead(graph, "DEAD", {"SWX"}) is False
+    assert can_loco_reach_lead(graph, "LEAD", set()) is True
+
+
+# ── 27. Optimize capacity replay must enforce length_units ─────────────
+def test_optimize_simulate_capacity_enforces_length():
+    """Direct contract: optimize-stage replay rejects length overflow with car-count slack."""
+    from fyop.consist.cars import FreightCar
+    from fyop.residual.physics_gate import _simulate_capacity
+    from fyop.topology.graph import SwitchEdge, TrackNode, YardGraph
+    from fyop.trajectory.solver import TrajectoryCommand
+
+    tracks = {
+        "LEAD": TrackNode(id="LEAD", type="lead", max_cars=10, max_length_units=100),
+        "O1": TrackNode(id="O1", type="outbound", max_cars=4, max_length_units=20),
+    }
+    edges = [SwitchEdge(id="SW1", from_track="LEAD", to_track="O1", length_m=100.0)]
+    graph = YardGraph(tracks, edges)
+    cars = [
+        FreightCar(id="A", destination="X", length_units=12, mass_t=10.0),
+        FreightCar(id="B", destination="X", length_units=10, mass_t=10.0),
+    ]
+    commands = [
+        TrajectoryCommand.push("LEAD", "O1", ["A"]),
+        TrajectoryCommand.push("LEAD", "O1", ["B"]),
+    ]
+    assert _simulate_capacity(graph, cars, commands) is False
+
+
+# ── 28. Optimize stage must fail capacity when THROW hits a failed switch ─
+def test_optimize_flags_throw_on_failed_switch():
+    """Direct contract: capacity_verified is false when commands THROW a failed switch."""
+    from pathlib import Path
+
+    from fyop.residual.physics_gate import optimize
+    from fyop.trajectory.solver import OccupancyTrajectory, TrajectoryCommand
+
+    obs_dir = TB3_OBS_P9W2
+    if not os.path.isdir(obs_dir):
+        pytest.skip("obs-p9w2 fixture not found")
+
+    original = OccupancyTrajectory.sequence
+
+    def _inject_failed_throw(self):
+        self._commands = [TrajectoryCommand.throw_switch("SW5")]
+        self._loco_track = "LEAD"
+        self._capacity_ok = True
+        self._total_distance_m = 0.0
+
+    OccupancyTrajectory.sequence = _inject_failed_throw
+    try:
+        _clean()
+        r1 = _run(["ingest"], env_override={"HFSY_YARD_DIR": obs_dir})
+        assert r1.returncode == 0, r1.stderr
+        # Call optimize in-process so the trajectory monkeypatch applies.
+        optimize(Path(STATE), Path(obs_dir))
+        validated = _load(os.path.join(STATE, "shunting-validated.json"))
+        assert validated.get("capacity_verified") is False, (
+            "optimize must set capacity_verified false when THROW_SWITCH targets a failed switch"
         )
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(mp, write_json(Path(td) / "s.json", survey), write_json(Path(td) / "p.json", plan), rep)
-        assert proc.returncode == 0, proc.stderr
-        rec = parse_mcr(rep.read_text())
-        # With loose tolerance, measured modes must merge into exactly one cluster pair.
-        assert len(rec["pairs"]) == 1
-        merged = rec["pairs"][0]
-        assert "," in merged["measured"]
-        assert set(merged["measured"].split(",")) == {"N1", "N2"}
+    finally:
+        OccupancyTrajectory.sequence = original
 
 
-def test_spanfit_subspace_mac_is_invariant_to_cluster_basis_rotation() -> None:
-    """Rotating the measured repeated-mode basis leaves subspace MAC unchanged."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("repeated_modes", Path(td))
-        data = json.loads(survey.read_text())
-        # additional 45-degree rotation of the two shapes
-        a = data["modes"][0]["shape"]
-        b = data["modes"][1]["shape"]
-        c = math.cos(0.4)
-        s = math.sin(0.4)
-        data["modes"][0]["shape"] = [c * a[0] + s * b[0], c * a[1] + s * b[1]]
-        data["modes"][1]["shape"] = [-s * a[0] + c * b[0], -s * a[1] + c * b[1]]
-        alt = write_json(Path(td) / "rot.json", data)
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        assert run_calibrate(model, survey, plan, r1).returncode == 0
-        assert run_calibrate(model, alt, plan, r2).returncode == 0
-        m1 = parse_mcr(r1.read_text())["pairs"][0]["mac"]
-        m2 = parse_mcr(r2.read_text())["pairs"][0]["mac"]
-        assert abs(m1 - m2) < 1e-9
-        assert abs(m1 - 1.0) < 1e-9
+# ── 29. Path search must skip failed switch edges ─────────────────────
+def test_path_search_skips_failed_switches():
+    """Direct contract: trajectory path finder must not traverse failed switch ids."""
+    from fyop.consist.cars import FreightCar
+    from fyop.topology.graph import SwitchEdge, TrackNode, YardGraph
+    from fyop.trajectory.solver import OccupancyTrajectory
 
-
-def test_spanfit_global_pairing_beats_greedy_frequency_pairing() -> None:
-    """Global assignment prefers the shape-consistent pairing over nearest-frequency greed."""
-    with isolated_workdir() as td:
-        # Two well-separated modes; crossed frequency proximity with swapped shapes.
-        model = {
-            "format": "bridge-modal-model-v1",
-            "dofs": ["D1", "D2"],
-            "mass": [[1.0, 0.0], [0.0, 1.0]],
-            "fixed_stiffness": [[4.0, 0.0], [0.0, 9.0]],
-            "groups": [
-                {
-                    "group_id": "g",
-                    "lower": 0.9,
-                    "upper": 1.1,
-                    "initial": 1.0,
-                    "reference": 1.0,
-                    "contribution": [[0.1, 0.0], [0.0, 0.1]],
-                }
-            ],
-        }
-        mp = write_json(Path(td) / "m.json", model)
-        spec = json.loads(run_spectrum(mp).stdout)
-        f0, f1 = spec["frequencies_hz"]
-        # Measured freqs near model, but shapes intentionally match opposite modes if greed by freq alone with perturbation:
-        # Place measured mode A slightly closer in frequency to predicted mode 1 but with shape of mode 0.
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["D1", "D2"],
-            "modes": [
-                {
-                    "mode_id": "A",
-                    "frequency_hz": f1 * 0.98,
-                    "weight": 1.0,
-                    "shape": [1.0, 0.0],
-                },
-                {
-                    "mode_id": "B",
-                    "frequency_hz": f0 * 1.02,
-                    "weight": 1.0,
-                    "shape": [0.0, 1.0],
-                },
-            ],
-        }
-        plan = base_plan(
-            frequency_weight=0.05,
-            shape_weight=5.0,
-            regularization_weight=0.0,
-            pairing_frequency_gate=0.5,
-            gradient_tolerance=1e-5,
-            max_iterations=40,
-        )
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(mp, write_json(Path(td) / "s.json", survey), write_json(Path(td) / "p.json", plan), rep)
-        assert proc.returncode == 0, proc.stderr
-        rec = parse_mcr(rep.read_text())
-        # Shape-weighted global assignment should pair A->mode0 and B->mode1
-        by_id = {p["measured"]: p["predicted"] for p in rec["pairs"]}
-        assert by_id["A"] == "0"
-        assert by_id["B"] == "1"
-
-
-def test_spanfit_frequency_gate_rejects_unmatchable_cluster() -> None:
-    """Clusters beyond the pairing frequency gate produce E_MODAL_PAIRING."""
-    with isolated_workdir() as td:
-        model, _, plan = copy_sealed_triplet("single_group", Path(td))
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["A", "B"],
-            "modes": [
-                {"mode_id": "M1", "frequency_hz": 50.0, "weight": 1.0, "shape": [0.7, 0.3]},
-                {"mode_id": "M2", "frequency_hz": 60.0, "weight": 1.0, "shape": [0.2, 0.8]},
-            ],
-        }
-        pdata = json.loads(plan.read_text())
-        pdata["pairing_frequency_gate"] = 0.05
-        proc = run_calibrate(
-            model,
-            write_json(Path(td) / "s.json", survey),
-            write_json(Path(td) / "p.json", pdata),
-            Path(td) / "out.mcr",
-        )
-        assert proc.returncode != 0
-        assert stderr_code(proc) == "E_MODAL_PAIRING"
-
-
-def test_spanfit_recovers_single_group_stiffness_multiplier() -> None:
-    """Bounded calibration recovers a sealed single-group truth multiplier."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        meta = json.loads((Path(__file__).parent / "sealed_modal_cases/single_group/meta.json").read_text())
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(model, survey, plan, rep)
-        assert proc.returncode == 0, proc.stderr
-        rec = parse_mcr(rep.read_text())
-        theta = rec["groups"][0]["theta"]
-        assert abs(theta - meta["truth_theta"]) < meta["tol"]
-        assert rec["confidence"] == "IDENTIFIABLE"
-        assert math.isfinite(rec["objective_total"])
-        assert len(rec["pairs"]) >= 1
-
-
-def test_spanfit_recovers_two_independent_group_multipliers() -> None:
-    """Two independent diagonal groups recover sealed truth multipliers."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
-        meta = json.loads((Path(__file__).parent / "sealed_modal_cases/two_groups/meta.json").read_text())
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        thetas = {g["id"]: g["theta"] for g in rec["groups"]}
-        assert abs(thetas["ga"] - meta["truth"][0]) < meta["tol"]
-        assert abs(thetas["gb"] - meta["truth"][1]) < meta["tol"]
-        assert rec["confidence"] == "IDENTIFIABLE"
-        assert math.isfinite(rec["objective_total"])
-
-
-def test_spanfit_unequal_modal_weights_scale_objective_contributions() -> None:
-    """Unequal mode weights change the modal objective relative to equal weights."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        s = json.loads(survey.read_text())
-        # Keep a shared nonzero residual so weights actually scale the modal term.
-        s["modes"][0]["frequency_hz"] *= 1.08
-        s["modes"][1]["frequency_hz"] *= 0.94
-        s_unequal = json.loads(json.dumps(s))
-        s_unequal["modes"][0]["weight"] = 5.0
-        s_unequal["modes"][1]["weight"] = 0.2
-        s_equal = json.loads(json.dumps(s))
-        s_equal["modes"][0]["weight"] = 1.0
-        s_equal["modes"][1]["weight"] = 1.0
-        m = json.loads(model.read_text())
-        m["groups"][0]["initial"] = 0.85
-        p = json.loads(plan.read_text())
-        p["regularization_weight"] = 0.0
-        p["max_iterations"] = 120
-        p["gradient_tolerance"] = 1e-6
-        rep_a = Path(td) / "a.mcr"
-        rep_b = Path(td) / "b.mcr"
-        pa = run_calibrate(
-            write_json(Path(td) / "m.json", m),
-            write_json(Path(td) / "su.json", s_unequal),
-            write_json(Path(td) / "p.json", p),
-            rep_a,
-        )
-        pb = run_calibrate(
-            write_json(Path(td) / "m2.json", m),
-            write_json(Path(td) / "se.json", s_equal),
-            write_json(Path(td) / "p2.json", p),
-            rep_b,
-        )
-        assert pa.returncode == 0, pa.stderr
-        assert pb.returncode == 0, pb.stderr
-        assert rep_a.exists() and rep_b.exists()
-        a = parse_mcr(rep_a.read_text())
-        b = parse_mcr(rep_b.read_text())
-        assert a["objective_modal"] != b["objective_modal"]
-
-
-def test_spanfit_regularization_pulls_weak_parameter_toward_reference() -> None:
-    """Strong regularization keeps a weakly observed parameter near its reference."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("rank_deficient", Path(td))
-        p = json.loads(plan.read_text())
-        p["regularization_weight"] = 5.0
-        p["frequency_weight"] = 0.01
-        p["shape_weight"] = 0.01
-        rep = Path(td) / "out.mcr"
-        proc = run_calibrate(model, survey, write_json(Path(td) / "p.json", p), rep)
-        assert proc.returncode == 0, proc.stderr
-        rec = parse_mcr(rep.read_text())
-        for g in rec["groups"]:
-            assert abs(g["theta"] - g["reference"]) < 0.15
-
-
-def test_spanfit_lower_bound_active_solution_is_reported() -> None:
-    """When the optimum sits on the lower bound, BOUND_ACTIVE and LOWER are reported."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("lower_bound", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        assert rec["confidence"] == "BOUND_ACTIVE"
-        assert rec["groups"][0]["bound"] == "LOWER"
-        assert abs(rec["groups"][0]["theta"] - rec["groups"][0]["lower"]) < 1e-8
-        assert math.isfinite(rec["objective_total"])
-
-
-def test_spanfit_upper_bound_active_solution_is_reported() -> None:
-    """When the optimum sits on the upper bound, BOUND_ACTIVE and UPPER are reported."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("upper_bound", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        assert rec["confidence"] == "BOUND_ACTIVE"
-        assert rec["groups"][0]["bound"] == "UPPER"
-        assert abs(rec["groups"][0]["theta"] - rec["groups"][0]["upper"]) < 1e-8
-        assert math.isfinite(rec["objective_total"])
-
-
-def test_spanfit_projected_step_never_leaves_parameter_box() -> None:
-    """Reported group factors always lie inside declared lower/upper bounds."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        for g in parse_mcr(rep.read_text())["groups"]:
-            assert g["lower"] <= g["theta"] <= g["upper"]
-
-
-def test_spanfit_objective_terms_sum_to_reported_total() -> None:
-    """OBJECTIVE terms sum, and each PAIR carries frequency and MAC residual fields."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        raw = rep.read_text()
-        assert raw.startswith("MCR 1\n")
-        assert "OBJECTIVE " in raw
-        assert "GROUP " in raw
-        assert "PAIR " in raw
-        rec = parse_mcr(raw)
-        assert abs(rec["objective_total"] - (rec["objective_modal"] + rec["objective_reg"])) < 1e-15
-        assert len(rec["pairs"]) >= 1
-        for pair in rec["pairs"]:
-            assert math.isfinite(pair["freq_res"])
-            assert math.isfinite(pair["mac"])
-            assert 0.0 <= pair["mac"] <= 1.0
-            assert math.isfinite(pair["cost"])
-
-
-def test_spanfit_converged_solution_meets_gradient_budget() -> None:
-    """A successful calibration reports projected gradient within the plan budget."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        pdata = json.loads(plan.read_text())
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        assert rec["projected_gradient_inf"] <= pdata["gradient_tolerance"] * 10
-
-
-def test_spanfit_sensitivity_ranking_uses_documented_norm() -> None:
-    """Sensitivity ranks are a permutation of 1..G with higher score ranked first."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        groups = parse_mcr(rep.read_text())["groups"]
-        ranks = sorted(g["rank"] for g in groups)
-        assert ranks == list(range(1, len(groups) + 1))
-        by_rank = sorted(groups, key=lambda g: g["rank"])
-        assert by_rank[0]["score"] >= by_rank[-1]["score"] - 1e-15
-
-
-def test_spanfit_sensitivity_tie_uses_group_identifier() -> None:
-    """Equal sensitivity scores resolve rank ties by ascending group identifier."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("rank_deficient", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        groups = parse_mcr(rep.read_text())["groups"]
-        # identical contributions => equal scores; dup-a before dup-b at better rank
-        scores = {g["id"]: g["score"] for g in groups}
-        assert abs(scores["dup-a"] - scores["dup-b"]) < 1e-9
-        ranks = {g["id"]: g["rank"] for g in groups}
-        assert ranks["dup-a"] < ranks["dup-b"]
-
-
-def test_spanfit_rank_deficiency_sets_weak_confidence() -> None:
-    """Collinear group contributions yield numerical rank below G and WEAK confidence."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("rank_deficient", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        assert rec["numerical_rank"] < rec["group_count"]
-        assert rec["confidence"] == "WEAK"
-        assert math.isfinite(rec["objective_total"])
-
-
-def test_spanfit_full_rank_free_solution_sets_identifiable_confidence() -> None:
-    """A free full-rank solution is labeled IDENTIFIABLE."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        rec = parse_mcr(rep.read_text())
-        assert rec["numerical_rank"] == rec["group_count"]
-        assert rec["confidence"] == "IDENTIFIABLE"
-        assert all(g["bound"] == "FREE" for g in rec["groups"])
-
-
-def test_spanfit_bound_active_confidence_has_precedence() -> None:
-    """BOUND_ACTIVE takes precedence over WEAK or IDENTIFIABLE labels."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("lower_bound", Path(td))
-        rep = Path(td) / "out.mcr"
-        assert run_calibrate(model, survey, plan, rep).returncode == 0
-        assert parse_mcr(rep.read_text())["confidence"] == "BOUND_ACTIVE"
-
-
-def test_spanfit_repeated_run_is_byte_deterministic() -> None:
-    """Two independent calibrations of the same inputs produce identical MCR bytes."""
-    with isolated_workdir() as td:
-        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
-        r1 = Path(td) / "a.mcr"
-        r2 = Path(td) / "b.mcr"
-        assert run_calibrate(model, survey, plan, r1).returncode == 0
-        assert run_calibrate(model, survey, plan, r2).returncode == 0
-        assert r1.read_bytes() == r2.read_bytes()
-
-
-def test_spanfit_rejected_calibration_preserves_existing_report() -> None:
-    """A rejected calibrate leaves a pre-existing report byte-for-byte intact."""
-    with isolated_workdir() as td:
-        model, _, plan = copy_sealed_triplet("single_group", Path(td))
-        rep = Path(td) / "out.mcr"
-        marker = b"PRIOR-REPORT-BYTES-9f3a\n"
-        rep.write_bytes(marker)
-        survey = {
-            "format": "bridge-modal-survey-v1",
-            "sensors": ["A", "B"],
-            "modes": [
-                {"mode_id": "M1", "frequency_hz": 99.0, "weight": 1.0, "shape": [0.5, 0.5]},
-                {"mode_id": "M2", "frequency_hz": 100.0, "weight": 1.0, "shape": [0.4, 0.6]},
-            ],
-        }
-        proc = run_calibrate(model, write_json(Path(td) / "s.json", survey), plan, rep)
-        assert proc.returncode != 0
-        assert rep.read_bytes() == marker
-
-
-def test_spanfit_independent_processes_do_not_share_optimizer_state() -> None:
-    """Sequential calibrations in one process context do not leak parameter state."""
-    with isolated_workdir() as td:
-        m1, s1, p1 = copy_sealed_triplet("single_group", Path(td) / "c1")
-        m2, s2, p2 = copy_sealed_triplet("two_groups", Path(td) / "c2")
-        r1 = Path(td) / "one.mcr"
-        r2 = Path(td) / "two.mcr"
-        assert run_calibrate(m1, s1, p1, r1).returncode == 0
-        assert run_calibrate(m2, s2, p2, r2).returncode == 0
-        a = parse_mcr(r1.read_text())
-        b = parse_mcr(r2.read_text())
-        assert a["group_count"] == 1
-        assert b["group_count"] == 2
-        assert a["model_sha256"] != b["model_sha256"]
+    tracks = {
+        "LEAD": TrackNode(id="LEAD", type="lead", max_cars=10, max_length_units=100),
+        "C1": TrackNode(id="C1", type="classification", max_cars=4, max_length_units=40),
+        "O1": TrackNode(id="O1", type="outbound", max_cars=4, max_length_units=40),
+    }
+    edges = [
+        SwitchEdge(id="SW_BAD", from_track="C1", to_track="O1", length_m=50.0),
+        SwitchEdge(id="SW_OK1", from_track="C1", to_track="LEAD", length_m=100.0),
+        SwitchEdge(id="SW_OK2", from_track="LEAD", to_track="O1", length_m=100.0),
+    ]
+    graph = YardGraph(tracks, edges)
+    cars = [FreightCar(id="A", destination="X", length_units=5, mass_t=10.0)]
+    traj = OccupancyTrajectory(graph, cars, ["X"], {"X": "O1"}, {"SW_BAD"})
+    path = traj._find_path("C1", "O1")
+    assert path is not None, "alternate residual path via LEAD must exist"
+    assert all(e.id != "SW_BAD" for e in path), "failed switch SW_BAD must be skipped"
+    assert [e.id for e in path] == ["SW_OK1", "SW_OK2"]

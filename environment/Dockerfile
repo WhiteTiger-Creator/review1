@@ -1,43 +1,29 @@
-FROM public.ecr.aws/docker/library/rust:1.85-slim-bookworm@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
+FROM --platform=linux/amd64 public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
-ENV PATH="/usr/local/cargo/bin:/usr/local/rustup/bin:${PATH}"
-ENV CARGO_HOME=/usr/local/cargo
-ENV RUSTUP_HOME=/usr/local/rustup
+WORKDIR /app
 
-# Layer 1: operating packages
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        patch \
-        python3 \
-        python3-pip \
-        python3-venv \
-        tmux \
-        build-essential \
-    && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends \
+      asciinema \
+      ca-certificates \
+      python3-venv \
+      tmux \
+ && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt
+COPY requirements.lock /tmp/requirements.lock
+RUN python3 -m venv /opt/runtime-venv \
+ && /opt/runtime-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock
 
-# Layer 2: verifier wheelhouse and lock (installed only by tests/test.sh)
-COPY requirements.lock /opt/verifier-requirements.lock
-COPY verifier-wheels /verifier-wheels
+ENV PATH="/opt/runtime-venv/bin:${PATH}"
+ENV PYTHONPATH="/app"
 
-# Layer 3: Rust manifest, lockfile, Cargo source replacement, and vendored dependencies
-COPY spanforge/Cargo.toml spanforge/Cargo.lock /opt/spanforge/
-COPY spanforge/.cargo /opt/spanforge/.cargo
-COPY spanforge/vendor /opt/spanforge/vendor
+COPY --chown=65534:65534 fyop/ /app/fyop/
+COPY --chown=65534:65534 docs/ /app/docs/
+COPY --chown=65534:65534 yard-alpha/ /app/yard-alpha/
+COPY --chown=65534:65534 scripts/ /app/scripts/
 
-# Layer 4: Rust source, modal-code documents, wrapper, build script, and examples
-COPY spanforge/src /opt/spanforge/src
-COPY spanforge/modal-code /opt/spanforge/modal-code
-COPY spanforge/examples /opt/spanforge/examples
-COPY spanforge/build-modal-reconciler.sh /opt/spanforge/build-modal-reconciler.sh
-COPY spanforge/bin /opt/spanforge/bin
-RUN chmod +x /opt/spanforge/build-modal-reconciler.sh /opt/spanforge/bin/modal-reconciler \
-    && mkdir -p /opt/spanforge/libexec
+RUN mkdir -p /app/bin /app/state /app/output \
+ && chown 65534:65534 /app /app/bin /app/state /app/output \
+ && bash /app/scripts/build.sh
 
-# Layer 5: application build
-RUN /opt/spanforge/build-modal-reconciler.sh
-
-WORKDIR /workspace
+WORKDIR /app

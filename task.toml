@@ -7,14 +7,9 @@ difficulty = "hard"
 category = "scientific-computing"
 subcategories = []
 number_of_milestones = 0
-codebase_size = "large"
-languages = ["rust"]
-tags = [
-    "bridge-modal-calibration",
-    "eigenmode-pairing-analysis",
-    "bounded-stiffness-inversion",
-    "mac-objective-qualification"
-]
+codebase_size = "small"
+languages = ["python"]
+tags = ["yod-model", "discrete-dynamical-systems", "graph-occupancy-physics", "path-integral-measure", "residual-graph-closure", "capacity-inequalities"]
 expert_time_estimate_min = 180
 junior_time_estimate_min = 360
 
@@ -23,13 +18,12 @@ timeout_sec = 900.0
 
 [agent]
 timeout_sec = 1800.0
+user = 65534
 
 [environment]
-build_timeout_sec = 600.0
-docker_flags = []
-cpus = 1
-memory_mb = 2048
-storage_mb = 10240
-gpus = 0
-gpu_types = []
 allow_internet = false
+build_timeout_sec = 900.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+workdir = "/app"
