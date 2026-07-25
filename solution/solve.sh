@@ -1,13 +1,228 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
-cat > /app/main.go <<'GO'
-package main
-import("encoding/json";"errors";"fmt";"os";"path/filepath";"sort";"strings")
-type Site struct{ID string `json:"id"`;Species string `json:"species"`;C []int `json:"coordinate"`};type Op struct{ID string `json:"id"`;M [][]int `json:"matrix"`;S []int `json:"shift"`};type In struct{D int `json:"denominator"`;Sites []Site `json:"sites"`;Ops []Op `json:"operations"`}
-func clean(p string){if p!=""{os.Remove(p);os.Remove(p+".tmp")}};func die(p string,e error){clean(p);fmt.Fprintln(os.Stderr,e);os.Exit(2)};func det(m [][]int)int{return m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])-m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])+m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0])};func mod(x,d int)int{x%=d;if x<0{x+=d};return x};func apply(c []int,o Op,d int)[3]int{var z [3]int;for i:=0;i<3;i++{z[i]=mod(o.S[i]+o.M[i][0]*c[0]+o.M[i][1]*c[1]+o.M[i][2]*c[2],d)};return z};func ck(a [3]int)string{return fmt.Sprintf("%03d,%03d,%03d",a[0],a[1],a[2])};func ps(a [3]int,d int)string{return fmt.Sprintf("%d/%d,%d/%d,%d/%d",a[0],d,a[1],d,a[2],d)}
-func main(){out:="";for i:=1;i+1<len(os.Args);i++{if os.Args[i]=="--output"&&filepath.IsAbs(os.Args[i+1]){out=os.Args[i+1]}};if len(os.Args)!=5||os.Args[1]!="--input"||os.Args[3]!="--output"||!filepath.IsAbs(os.Args[2])||!filepath.IsAbs(os.Args[4]){die(out,errors.New("arguments"))};out=os.Args[4];b,e:=os.ReadFile(os.Args[2]);if e!=nil{die(out,e)};var x In;d:=json.NewDecoder(strings.NewReader(string(b)));d.DisallowUnknownFields();if d.Decode(&x)!=nil||func()bool{e:=d.Decode(&struct{}{});return e==nil||e.Error()!="EOF"}()||x.D<2||x.D>96||len(x.Sites)<1||len(x.Sites)>40||len(x.Ops)<1||len(x.Ops)>192{die(out,errors.New("input"))};sid:=map[string]bool{};for _,s:=range x.Sites{if s.ID==""||sid[s.ID]||len(s.Species)<1||len(s.Species)>12||len(s.C)!=3{die(out,errors.New("site"))};sid[s.ID]=true;for _,v:=range s.C{if v<0||v>=x.D{die(out,errors.New("coord"))}}};oid:=map[string]bool{};forms:=map[string]bool{};identity:=false;for _,o:=range x.Ops{if o.ID==""||oid[o.ID]||len(o.M)!=3||len(o.S)!=3{die(out,errors.New("operation"))};oid[o.ID]=true;flat:="";id:=true;for i:=0;i<3;i++{if len(o.M[i])!=3{die(out,errors.New("matrix"))};for j:=0;j<3;j++{v:=o.M[i][j];if v < -1||v>1{die(out,errors.New("matrix"))};flat+=fmt.Sprintf("%d,",v);if v!=map[bool]int{true:1,false:0}[i==j]{id=false}};if o.S[i]<0||o.S[i]>=x.D{die(out,errors.New("shift"))};flat+=fmt.Sprintf("s%d,",o.S[i]);if o.S[i]!=0{id=false}};if q:=det(o.M);q!=1&&q!=-1{die(out,errors.New("determinant"))};if forms[flat]{die(out,errors.New("duplicate transform"))};forms[flat]=true;if id{identity=true}};if !identity{die(out,errors.New("identity"))}
- type SR struct{ID string `json:"id"`;Species string `json:"species"`;Mult int `json:"multiplicity"`;Stab int `json:"stabilizer"`;Pos []string `json:"positions"`};rows:=[]SR{};occ:=map[string]map[string]bool{};coords:=map[string][3]int{};sort.Slice(x.Sites,func(i,j int)bool{return x.Sites[i].ID<x.Sites[j].ID});for _,s:=range x.Sites{set:=map[string][3]int{};stab:=0;orig:=[3]int{s.C[0],s.C[1],s.C[2]};for _,o:=range x.Ops{z:=apply(s.C,o,x.D);set[ck(z)]=z;if z==orig{stab++}};keys:=make([]string,0,len(set));for k,z:=range set{keys=append(keys,k);coords[k]=z;if occ[k]==nil{occ[k]=map[string]bool{}};occ[k][s.ID]=true};sort.Strings(keys);pp:=make([]string,len(keys));for i,k:=range keys{pp[i]=ps(set[k],x.D)};rows=append(rows,SR{s.ID,s.Species,len(keys),stab,pp})};type CR struct{Position string `json:"position"`;IDs []string `json:"site_ids"`};cols:=[]CR{};keys:=[]string{};for k,v:=range occ{if len(v)>1{keys=append(keys,k)}};sort.Strings(keys);for _,k:=range keys{ids:=[]string{};for id:=range occ[k]{ids=append(ids,id)};sort.Strings(ids);cols=append(cols,CR{ps(coords[k],x.D),ids})};res:=struct{Sites []SR `json:"sites"`;Collisions []CR `json:"collisions"`;Count int `json:"operation_count"`}{rows,cols,len(x.Ops)};data,_:=json.Marshal(res);data=append(data,'\n');if e=os.MkdirAll(filepath.Dir(out),0755);e==nil{e=os.WriteFile(out+".tmp",data,0644)};if e==nil{e=os.Rename(out+".tmp",out)};if e!=nil{die(out,e)}}
-GO
-mkdir -p /app/bin
-go build -trimpath -ldflags=-buildid= -o /app/bin/crystal-symmetry-orbit-inventory /app/main.go
-/app/bin/crystal-symmetry-orbit-inventory --input /app/task_file/case.json --output /app/task_file/output/result.json
+
+# Reconstruct the Dropforge engine: connected-group gravity with cascades,
+# and the house payout - a stepped row table, a doubling cascade multiplier,
+# a level that climbs with the rows cleared so far, and a bonus for emptying
+# the well. All of it recovered from the recorded games.
+
+cat > /app/engine.js <<'JS'
+'use strict';
+
+// Dropforge replay engine: script -> final well + score.
+//
+// House conventions recovered from the recorded games:
+//  - Sticky gravity: after a clear, each 4-connected group of filled cells
+//    falls independently until it rests, and rows completed by the settling
+//    clear again as a cascade. This loop takes the bottom-most group first,
+//    but the recordings play out the same whatever order it picks.
+//  - Row table: 1/2/3/4 rows at once are worth 10/30/50/80 before any
+//    multiplier.
+//  - Cascade: step c of a chain doubles, so it pays its base times
+//    2^(c-1). The chain count restarts with each piece.
+//  - Level: every 5 rows cleared over the game lifts the level by one. The
+//    level is read once at the start of each piece, from the rows cleared
+//    before it, and a clear pays its points times that level.
+//  - Perfect clear: a piece that leaves the well completely empty pays 200.
+//  - Overflow: cells resting above the top edge are discarded and play
+//    continues with the rest of the piece.
+//  - Wall rotation: a rotation overlapping the right wall is kicked inward.
+
+const fs = require('fs');
+
+const WIDTH = 9;
+const HEIGHT = 16;
+
+const SHAPES = {
+  I: [[[0, 0], [0, 1], [0, 2], [0, 3]],
+      [[0, 0], [1, 0], [2, 0], [3, 0]]],
+  O: [[[0, 0], [0, 1], [1, 0], [1, 1]]],
+  L: [[[0, 0], [1, 0], [2, 0], [2, 1]],
+      [[0, 0], [0, 1], [0, 2], [1, 0]],
+      [[0, 0], [0, 1], [1, 1], [2, 1]],
+      [[1, 0], [1, 1], [1, 2], [0, 2]]],
+  S: [[[0, 1], [0, 2], [1, 0], [1, 1]],
+      [[0, 0], [1, 0], [1, 1], [2, 1]]],
+  T: [[[0, 0], [0, 1], [0, 2], [1, 1]],
+      [[0, 1], [1, 0], [1, 1], [2, 1]],
+      [[1, 0], [1, 1], [1, 2], [0, 1]],
+      [[0, 0], [1, 0], [2, 0], [1, 1]]],
+};
+
+const BASE_SCORE = { 1: 10, 2: 30, 3: 50, 4: 80 };
+const LEVEL_STEP = 5;
+const PERFECT_BONUS = 200;
+
+function makeWell() {
+  return {
+    grid: Array.from({ length: HEIGHT }, () => new Array(WIDTH).fill(0)),
+    score: 0,
+    rowsDone: 0,   // rows cleared so far, which drives the level
+  };
+}
+
+function shapeCells(piece, rot, col) {
+  const cells = SHAPES[piece][rot % SHAPES[piece].length];
+  const w = Math.max(...cells.map(rc => rc[1])) + 1;
+  if (col + w > WIDTH) col = WIDTH - w;      // wall kick inward
+  return [cells, col];
+}
+
+function collides(well, cells, top, col) {
+  for (const [r, c] of cells) {
+    const rr = top + r;
+    if (rr >= HEIGHT) return true;
+    if (rr >= 0 && well.grid[rr][col + c] !== 0) return true;
+  }
+  return false;
+}
+
+function fullRows(well) {
+  const out = [];
+  for (let i = 0; i < HEIGHT; i++) {
+    if (well.grid[i].every(v => v !== 0)) out.push(i);
+  }
+  return out;
+}
+
+function components(well) {
+  const seen = Array.from({ length: HEIGHT }, () => new Array(WIDTH).fill(false));
+  const comps = [];
+  for (let r = 0; r < HEIGHT; r++) {
+    for (let c = 0; c < WIDTH; c++) {
+      if (well.grid[r][c] !== 0 && !seen[r][c]) {
+        const stack = [[r, c]];
+        const comp = [];
+        seen[r][c] = true;
+        while (stack.length) {
+          const [rr, cc] = stack.pop();
+          comp.push([rr, cc]);
+          for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nr = rr + dr, nc = cc + dc;
+            if (nr >= 0 && nr < HEIGHT && nc >= 0 && nc < WIDTH &&
+                well.grid[nr][nc] !== 0 && !seen[nr][nc]) {
+              seen[nr][nc] = true;
+              stack.push([nr, nc]);
+            }
+          }
+        }
+        comps.push(comp);
+      }
+    }
+  }
+  return comps;
+}
+
+function dropDistance(well, comp) {
+  const inComp = new Set(comp.map(([r, c]) => r * WIDTH + c));
+  let d = 0;
+  for (;;) {
+    const nd = d + 1;
+    let ok = true;
+    for (const [r, c] of comp) {
+      const nr = r + nd;
+      if (nr >= HEIGHT) { ok = false; break; }
+      if (!inComp.has(nr * WIDTH + c) && well.grid[nr][c] !== 0) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) return d;
+    d = nd;
+  }
+}
+
+function settle(well) {
+  for (;;) {
+    const comps = components(well);
+    comps.sort((a, b) => {
+      const maxA = Math.max(...a.map(rc => rc[0]));
+      const maxB = Math.max(...b.map(rc => rc[0]));
+      if (maxA !== maxB) return maxB - maxA;
+      return Math.min(...a.map(rc => rc[1])) - Math.min(...b.map(rc => rc[1]));
+    });
+    let moved = false;
+    for (const comp of comps) {
+      const d = dropDistance(well, comp);
+      if (d > 0) {
+        const vals = comp.map(([r, c]) => well.grid[r][c]);
+        for (const [r, c] of comp) well.grid[r][c] = 0;
+        comp.forEach(([r, c], i) => { well.grid[r + d][c] = vals[i]; });
+        moved = true;
+        break;
+      }
+    }
+    if (!moved) return;
+  }
+}
+
+function resolveClears(well, level) {
+  let chain = 0;
+  for (;;) {
+    const rows = fullRows(well);
+    if (!rows.length) break;
+    chain += 1;
+    const k = Math.min(rows.length, 4);
+    well.score += BASE_SCORE[k] * Math.pow(2, chain - 1) * level;
+    well.rowsDone += rows.length;
+    for (const i of rows) well.grid[i] = new Array(WIDTH).fill(0);
+    settle(well);
+  }
+  return chain > 0;
+}
+
+function isEmpty(well) {
+  return well.grid.every(row => row.every(v => v === 0));
+}
+
+function dropPiece(well, pid, piece, rot, col) {
+  const [cells, c0] = shapeCells(piece, rot, col);
+  const h = Math.max(...cells.map(rc => rc[0])) + 1;
+  let top = -h;
+  for (;;) {
+    const nxt = top + 1;
+    if (collides(well, cells, nxt, c0)) break;
+    top = nxt;
+  }
+  const placed = cells
+    .map(([r, c]) => [top + r, c0 + c])
+    .filter(([r]) => r >= 0);              // overflow cells are clipped
+  for (const [r, c] of placed) well.grid[r][c] = pid;
+
+  // The level is fixed for the whole piece, read from the rows cleared
+  // before it; a piece that empties the well pays the perfect-clear bonus.
+  const level = 1 + Math.floor(well.rowsDone / LEVEL_STEP);
+  const cleared = resolveClears(well, level);
+  if (cleared && isEmpty(well)) well.score += PERFECT_BONUS;
+}
+
+function main() {
+  const path = process.argv[2];
+  if (!path) {
+    process.stderr.write('usage: node engine.js <game.json>\n');
+    process.exit(2);
+  }
+  const game = JSON.parse(fs.readFileSync(path, 'utf8'));
+  const well = makeWell();
+  game.script.forEach((e, i) => dropPiece(well, i + 1, e.piece, e.rot, e.col));
+  process.stdout.write(JSON.stringify({ well: well.grid, score: well.score }) + '\n');
+}
+
+main();
+JS
+
+# Smoke check: replay every shipped recording and match its final state.
+node - <<'CHECK'
+const fs = require('fs');
+const { execFileSync } = require('child_process');
+for (const f of fs.readdirSync('/app/games')) {
+  const blob = JSON.parse(fs.readFileSync('/app/games/' + f, 'utf8'));
+  fs.writeFileSync('/tmp/g.json', JSON.stringify({ script: blob.script }));
+  const got = JSON.parse(execFileSync('node', ['/app/engine.js', '/tmp/g.json'], { encoding: 'utf8' }));
+  if (JSON.stringify(got) !== JSON.stringify(blob.final)) {
+    console.error('mismatch on ' + f);
+    process.exit(1);
+  }
+}
+console.log('all shipped recordings reproduced');
+CHECK
