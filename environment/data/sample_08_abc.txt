@@ -1,0 +1,4 @@
+PATTERN: ^abc$
+SUBJECT: xabc
+EXPECTED:
+NOMATCH

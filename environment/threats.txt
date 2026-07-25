@@ -1,3 +1,0 @@
-Threat lanes and contact kinds
-
-Incursion contacts advance along declared lanes each round at their speed. When a lane ends without capture the threat breaks through and damages infrastructure. False contacts look similar until a confirming scan lands on their sector; intercepting a false contact counts as a false alarm. Some threats branch at a declared index onto an alternate lane using deterministic engine rules. The agent observation never includes the full wave schedule, only currently visible local contacts with kind guesses after confirmation. Partner private contacts stay private unless the agent also sees them.

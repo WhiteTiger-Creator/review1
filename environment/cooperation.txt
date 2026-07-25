@@ -1,3 +1,0 @@
-Cooperation goals
-
-Two posts defend together under asymmetric observation. Civilian corridors need shields when an incursion occupies them. Synchronized captures require both posts to intercept the designated contact in the same round after a prior SYNC_CAPTURE signal. Avoid redundant interception when partner_public_sector and delayed COVER or WARN messages show the partner already owns a contact. Adapt when the partner doctrine is power conservative by taking more scan duty yourself while leaving generator capacity free. Team score blends infrastructure, civilians, false alarm penalties, sync bonuses, breakthrough penalties, and generator integrity.

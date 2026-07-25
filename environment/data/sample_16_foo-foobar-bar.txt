@@ -1,0 +1,6 @@
+PATTERN: (foo|foobar)(bar)?
+SUBJECT: foobar
+EXPECTED:
+MATCH 0 6
+GROUP 1 0 3
+GROUP 2 3 6

@@ -1,0 +1,4 @@
+PATTERN: a|ab
+SUBJECT: abc
+EXPECTED:
+MATCH 0 2

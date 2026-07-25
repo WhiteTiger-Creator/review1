@@ -1,3 +1,0 @@
-Examples of legal orders
-
-A conservative round might move toward a visible contact, scan its sector, and hold spare actions. A signaling round might emit WARN_LANE with sector and contact fields after confirming an incursion the partner cannot see, then later ACK a delayed partner warning found in signals_in. When a shared generator has capacity three, avoid issuing both scan and shield unless battery reserve covers one of them. For a sync capture, send SYNC_CAPTURE one round before both posts intercept the named boss contact. If a contact is confirmed false, prefer hold or move instead of intercept to avoid false alarm cost.

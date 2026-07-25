@@ -2,45 +2,30 @@ FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36a
 
 WORKDIR /app
 
+ENV GOFLAGS=-mod=mod \
+    GOTOOLCHAIN=local \
+    CGO_ENABLED=0 \
+    PATH=/usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# A login shell sources /etc/profile, which overwrites PATH and drops
+# /usr/local/go/bin, so the ENV above is not enough on its own.
+RUN printf '%s\n' 'export PATH=/usr/local/go/bin:/go/bin:$PATH' \
+        > /etc/profile.d/golang.sh \
+    && chmod 0644 /etc/profile.d/golang.sh
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-venv \
-    tmux \
-    asciinema \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/python3 /usr/bin/python \
-    && pip3 install --break-system-packages --no-cache-dir \
-    pytest==8.3.5 \
-    pytest-json-ctrf==0.3.5
+        tmux \
+        asciinema \
+        python3 \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY movement.txt threats.txt signaling.txt power.txt cooperation.txt protocol.txt scoring.txt examples.txt /app/
+RUN pip3 install --no-cache-dir --break-system-packages pytest==8.2.0
 
-COPY engine/ /tmp/engine-src/
-WORKDIR /tmp/engine-src
-RUN CGO_ENABLED=0 go build -o /opt/signal-defense/bin/defensematch ./cmd/defensematch \
-    && mkdir -p /opt/signal-defense/contracts \
-        /opt/signal-defense/grids \
-        /opt/signal-defense/waves \
-        /opt/signal-defense/partners \
-        /opt/signal-defense/integrity \
-        /app/output/generations \
-        /logs/verifier \
-    && cp -a contracts/. /opt/signal-defense/contracts/ \
-    && cp -a grids/. /opt/signal-defense/grids/ \
-    && cp -a waves/. /opt/signal-defense/waves/ \
-    && cp -a partners/. /opt/signal-defense/partners/ \
-    && /opt/signal-defense/bin/defensematch -build-manifest -assets /opt/signal-defense \
-    && rm -rf /tmp/engine-src \
-    && test -x /opt/signal-defense/bin/defensematch \
-    && chmod 755 /opt/signal-defense/bin/defensematch \
-    && ln -sf /opt/signal-defense/bin/defensematch /usr/local/bin/defensematch \
-    && ln -sf /usr/local/go/bin/go /usr/local/bin/go
+COPY go.mod /app/go.mod
+COPY src/ /app/src/
+COPY docs/ /app/docs/
+COPY data/ /app/data/
+COPY README.md /app/README.md
 
-COPY work/defensebot/ /app/work/defensebot/
-WORKDIR /app
-
-ENV PATH="/usr/local/go/bin:/opt/signal-defense/bin:${PATH}"
-
-CMD ["/bin/bash"]
+RUN go build -o /app/posixmatch ./src

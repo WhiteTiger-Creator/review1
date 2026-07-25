@@ -1,0 +1,7 @@
+PATTERN: (a|ab)(c|bcd)(d*)
+SUBJECT: abcd
+EXPECTED:
+MATCH 0 4
+GROUP 1 0 1
+GROUP 2 1 4
+GROUP 3 4 4
