@@ -5,26 +5,23 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "security"
-tags = ["trust", "revocation", "authorization", "federation", "cutover", "go"]
-languages = ["go", "bash"]
-codebase_size = "small"
-number_of_milestones = 0
 subcategories = []
-expert_time_estimate_min = 90
-junior_time_estimate_min = 300
-
-[agent]
-timeout_sec = 1800
+number_of_milestones = 0
+codebase_size = "small"
+languages = ["go"]
+tags = ["security", "authorization", "privilege-escalation", "signed-manifests", "privileged-helpers", "audit-integrity"]
+expert_time_estimate_min = 360
+junior_time_estimate_min = 720
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 600.0
+
+[agent]
+timeout_sec = 1500.0
 
 [environment]
-allow_internet = false
-build_timeout_sec = 600
-docker_flags = []
+build_timeout_sec = 600.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-gpus = 0
-gpu_types = []
+allow_internet = false

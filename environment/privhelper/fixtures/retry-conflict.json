@@ -1,0 +1,6 @@
+{
+  "request_id": "rq-7f3a91c2",
+  "principal": "ops.owner",
+  "action": "seal_unit",
+  "unit": "crane-delta-99"
+}

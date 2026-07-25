@@ -13,7 +13,6 @@
 **/venv/
 .env
 *.log
+jobs/
 solution/
 tests/
-bin/
-output/
