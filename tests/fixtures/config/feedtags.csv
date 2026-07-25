@@ -1,0 +1,11 @@
+name,expected_tag
+ledger-core,nupkg
+ledger-utils,nupkg
+ledger-gateway,nupkg
+ledger-metrics,nupkg
+legacy-nuget,any
+tainted,any
+blocked,any
+quarantine,any
+alt-a,any
+alt-b,any

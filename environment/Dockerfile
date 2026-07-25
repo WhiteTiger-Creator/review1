@@ -1,18 +1,25 @@
-FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV OAT_PATH="/opt/venv/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ENV PATH="${OAT_PATH}"
+ENV BASH_ENV=/etc/profile.d/oat-path.sh
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        asciinema=2.2.0-1 \
+        ca-certificates=20230311+deb12u1 \
+        python3-venv=3.11.2-1+b1 \
+        tmux=3.3a-3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && printf 'export PATH="%s"\n' "$OAT_PATH" > /etc/profile.d/oat-path.sh \
+    && printf 'export PATH="%s"\n' "$OAT_PATH" >> /etc/bash.bashrc
+
+COPY requirements.lock /tmp/requirements.lock
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/python -m pip install --no-cache-dir --disable-pip-version-check \
+        --require-hashes --no-deps -r /tmp/requirements.lock \
+    && rm /tmp/requirements.lock
+
+ENV PATH="/opt/venv/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 WORKDIR /app
-
-COPY requirements.txt /tmp/requirements.txt
-
-RUN apt-get update && apt-get install -y --no-install-recommends tmux asciinema python3 python3-venv make binutils util-linux ca-certificates && python3 -m venv /opt/pytools && /opt/pytools/bin/pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/requirements.txt && rm -rf /var/lib/apt/lists/* /tmp/requirements.txt
-
-ENV PATH="/opt/pytools/bin:${PATH}"
-
-COPY Makefile /app/Makefile
-COPY src/ /app/src/
-COPY --chmod=755 bin/ /app/bin/
-COPY --chmod=755 harness/ /app/harness/
-COPY inputs/ /app/inputs/
-COPY docs/ /app/docs/
+COPY app/ /app/

@@ -1,22 +1,7 @@
-The question here is a timing one. Given a clock, a set of deadlines armed
-against it, and a stream of advances, which deadlines come due at which tick,
-and in what order are they reported when several come due during one advance.
-The only surviving evidence is a stripped x86-64 executable at /app/bin/timers,
-optimized and carrying no symbols. Its source is gone, so the discipline it
-settled on has to be recovered by analysing it and running it on traces of your
-choosing.
+The .NET Ledger solution under `/app` is half-broken — `/app/src/Ledger/packages.lock.json` disagrees with `/app/nuget-cache`, packages/graphs are stale, and Rust `nugetfix` plus `/app/scripts/release.sh` are unfinished. Simulate NuGet offline (no real `dotnet`). Leave `/app/fixtures/bad-lock` unrepaired. Read `/app/docs/nuget-contract.md`, `/app/docs/audit-contract.md`, `/app/docs/data-dictionary.md`, and `/app/docs/release-contract.md`.
 
-The framing is settled in /app/docs/io-contract.txt: an ASCII trace that sets a
-starting clock and then arms, cancels and advances, answered by one due line
-and one live count per advance and closed by a digest. That document gives
-every field range, every output line, and every error token.
+**NuGet / cache** — Propagate placeholder digests from `/app/nuget-cache/index.csv` into NuGet JSON `packages.lock.json` `contentHash` fields and `/app/config/packages.csv` (never recompute nupkg SHA256). Lock package keys and `Directory.Packages.props` PackageVersion `Include=` values must be MSBuild PascalCase **`Ledger.Core` / `Ledger.Utils` / `Ledger.Gateway` / `Ledger.Metrics`** at Version **`1.2.0`** (never kebab-case `ledger-core` in those XML/JSON surfaces — CSV coords stay `pkg:ledger-*`). Mirror repaired lock/props under `/app/packages.lock.json` and `/app/src/Ledger/`. Point `/app/nuget.config` at the local `/app/nuget-cache` feed only. Use `nupkg` tags/basenames for primaries. Rewrite `size_bytes` per nuget-contract (edge `pkg:ledger-metrics`→3000; keep `pkg:blocked`/`pkg:quarantine`). Keep `/app/constraints.txt`. Empty `/app/legacy-nuget-notes.txt` to `# emptied for nuget` plus one LF. Emit `/app/dist/nuget-report.json` (`format_version` 1, `package_count` 4, `offline_ci` true, **`legacy_cleared` re-read from on-disk notes every `release.sh` run**, `nuget_dir` `/app/nuget-cache`, `platform_tag` `nupkg`), `/app/dist/ledger-check.txt` (`restore-ok:ledger-core|ledger-utils|ledger-gateway|ledger-metrics`), `/app/dist/ledger` (`publish-ready\n`), and exact three-line `/app/dist/nuget-guard.txt` per nuget-contract. Preserve ban/advisory/packagerefdrift/xor residuals.
 
-Nothing about the internal timing is written down. How the executable treats
-each operation it accepts, and how it decides which deadlines come due and in
-what order, are deterministic, and the executable is their only account.
+**Graphs / audit** — Repair `/app/data/graphs/{edges,artifacts}.csv` and `/app/config/release_matrix.csv` to edge=`32`, core=`1`, gate=`3`. Named hard spine starts `svc:app→mid:bridge` through `mid:apex`, interleaved `via|fork|wing|yoke|arch` fan into `mid:link`, soft decoys before link residuals (including `spur→fen`, `holt→vale`, **`glen→mesa`**, **`ford→ledge`**), artifact `mid:fen`, four soft traces. Finish `nugetfix` so `--version` is `nugetfix 1.74.0`. Audit preview keys only `lane`/`retention_hops`/`artifacts`/`totals`; artifacts sorted by `coordinate`; plural totals keys; holds are plain strings; cascade form `cascade:<origin>:<hold>` with xor `|` join (see audit-contract). Cascade only ban/xor/packagerefdrift. Link-child edge order `blocked→legacy-nuget→quarantine→tainted`; artifacts residual order `legacy-nuget→tainted→blocked→quarantine`.
 
-/app/harness/run.sh feeds a trace in, /app/harness/diff.py compares the two,
-and /app/inputs holds examples that do not reach everywhere the grading traces
-reach. Write the recovered C to /app/src/recovered.c; running make from /app
-compiles it to /app/build/recovered. Grading recompiles that source alone,
-where no copy of the executable exists.
+**Release** — Finish `/app/scripts/release.sh` so every preflight abort message contains literal `fail-closed` **before** wiping `/app/dist`. Re-validate at packaging time: matrix hops, spine root, soft decoys/order, fan interleave, `mid:link`/`mid:fen` artifacts, gate topology, `nuget.config` local feed, Directory.Packages.props pins, workspace version `1.74.0`, cargo offline. Leave live `/app/dist/bundles/nugetfix-<lane>/` and dist-root `/app/dist/nugetfix-<lane>-linux-x86_64.tar.gz`. Stamp `/app/.release-tmp/packaging.ok`=`ok\n` (temps only under `/app/.release-tmp`). Smoke must accept spaced outfile paths, default rewrite share audit, and pass `--cache`/`--feedtags`/`--peers`. Write `/app/dist/release-manifest.json` (`package.name`=`nugetfix-cli`, digest keys `archive_sha256`/`binary_sha256`/`policy_sha256`/`audit_preview_sha256`) and path-sorted bare `/app/dist/checksums.sha256`.
