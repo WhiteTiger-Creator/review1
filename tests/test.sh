@@ -1,24 +1,19 @@
-#!/usr/bin/env bash
+#!/bin/bash
+
+# Verifier dependencies are installed in environment/Dockerfile.
+# Add task-specific verifier-only Python packages there, not here.
+
 mkdir -p /logs/verifier
-rm -f /logs/verifier/ctrf.json
-printf '%s\n' '{"results":{"tool":{"name":"precondition"},"summary":{"tests":1,"passed":0,"failed":1,"pending":0,"skipped":0,"other":0},"tests":[{"name":"verifier-precondition","status":"failed","duration":0}]}}' > /logs/verifier/ctrf.json
 
 if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set."
-    printf '%s\n' '{"results":{"tool":{"name":"precondition"},"summary":{"tests":1,"passed":0,"failed":1,"pending":0,"skipped":0,"other":0},"tests":[{"name":"verifier-precondition","status":"failed","duration":0}]}}' > /logs/verifier/ctrf.json
-    false
-else
-    cd /tests && python3 -m pytest -rA -p no:cacheprovider \
-      --confcutdir=/tests -c /tests/pytest.ini \
-      --ctrf /logs/verifier/ctrf.json test_outputs.py
-    pytest_status=$?
-    if [ ! -s /logs/verifier/ctrf.json ]; then
-        printf '%s\n' '{"results":{"tool":{"name":"precondition"},"summary":{"tests":1,"passed":0,"failed":1,"pending":0,"skipped":0,"other":0},"tests":[{"name":"verifier-precondition","status":"failed","duration":0}]}}' > /logs/verifier/ctrf.json
-    fi
-    test "$pytest_status" -eq 0
+    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile before running this script."
+    exit 1
 fi
-status=$?
-if [ "$status" -eq 0 ]; then
+
+python -m pytest -o cache_dir=/tmp/pytest_cache \
+  --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+
+if [ $? -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt

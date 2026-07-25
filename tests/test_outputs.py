@@ -1,339 +1,201 @@
-"""Validate robust minimum-cycle policy safety on protected surfaces."""
+"""Verifier for federation consumer-trust cutover authorization."""
 
 from __future__ import annotations
 
-import csv
-import math
-import os
-import re
+import hashlib
+import json
 import shutil
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-SURFACES = (
-    "public",
-    "hidden-a",
-    "hidden-b",
-    "hidden-c",
-    "hidden-d",
-    "ratio-scaled",
-)
-INPUT_FILES = (
-    "cases.csv",
-    "states.csv",
-    "priors.csv",
-    "regularizers.csv",
-    "records.csv",
-)
-HEADER = (
-    "case_id",
-    "selected_lambda",
-    "selected_policy",
-    "feasible_count",
-    "policy_score",
-    "robust_policy_return",
-    "minimum_cycle_mean",
-    "critical_cycle",
-    "effective_sample_size",
-    "cv_loss",
-    "deletion_code",
-    "deletion_change_count",
-    "worst_deletion_safety",
-    "worst_deletion_scenario_code",
-    "stability_checksum",
-    "audit_signature",
-)
-FLOAT_FIELDS = (
-    "policy_score",
-    "robust_policy_return",
-    "minimum_cycle_mean",
-    "effective_sample_size",
-    "cv_loss",
-    "worst_deletion_safety",
-    "stability_checksum",
-)
-INT_FIELDS = (
-    "feasible_count",
-    "deletion_change_count",
-    "worst_deletion_scenario_code",
-)
-ABS_TOLERANCE = 3e-8
-CANDIDATE_UID = 65534
-CANDIDATE_GID = 65534
-CANDIDATE_ROOT = Path("/dev/shm/bank-cycle-candidate-runs")
-GENERATED_ROOT = Path("/tmp/bank-cycle-verifier-surfaces")
-LANDLOCK = Path("/tests/landlock_exec.py")
+APP = Path("/app")
+OUT = APP / "output" / "trust_report.json"
+BUILD = APP / "scripts" / "build.sh"
+BIN = APP / "bin" / "trust_desk"
+PACK = APP / "data" / "scenario_pack.json"
+PROBE = APP / "scripts" / "local_probe.sh"
+PAIR_INDEX = APP / "data" / "corpus" / "pair_index.json"
+WINDOW_TABLE = APP / "data" / "anchors" / "window_table.json"
+REVOKE_LEDGER = APP / "data" / "anchors" / "revoke_ledger.json"
+GRACE_TABLE = APP / "data" / "cache" / "grace_table.json"
+
+EXPECTED_OUTCOME = {
+    "m_alpha": "allow",
+    "m_beta": "deny",
+    "m_gamma": "deny",
+    "m_delta": "allow",
+    "m_epsilon": "deny",
+    "m_zeta": "allow",
+}
 
 
-@dataclass(frozen=True)
-class CandidateResult:
-    header: tuple[str, ...]
-    rows: tuple[dict[str, str], ...]
-    raw: bytes
+def digest_for(scenario_id: str, outcome: str) -> str:
+    payload = f"{scenario_id}|{outcome}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def surface_root(surface: str) -> Path:
-    if surface == "public":
-        return Path("/app/data")
-    return Path("/tests/fixtures") / surface
-
-
-def read_csv(path: Path) -> tuple[tuple[str, ...], list[dict[str, str]]]:
-    with path.open(newline="", encoding="utf-8-sig") as stream:
-        reader = csv.DictReader(stream)
-        return tuple(reader.fieldnames or ()), list(reader)
-
-
-def expected_rows(surface: str) -> tuple[dict[str, str], ...]:
-    header, rows = read_csv(Path("/tests/golden") / f"{surface}.csv")
-    assert header == HEADER
-    return tuple(rows)
-
-
-EXPECTED = {surface: expected_rows(surface) for surface in SURFACES}
-CASE_PARAMETERS = tuple(
-    (surface, row["case_id"])
-    for surface in SURFACES
-    for row in EXPECTED[surface]
-)
-RUN_CACHE: dict[str, CandidateResult] = {}
-
-
-def make_writable(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    os.chown(path, CANDIDATE_UID, CANDIDATE_GID)
-    path.chmod(0o700)
-
-
-def sandbox_command(
-    write_root: Path,
-    command: list[str],
-    *,
-    timeout: int = 240,
-) -> subprocess.CompletedProcess[str]:
-    temporary = write_root / "tmp"
-    make_writable(temporary)
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "HOME": str(write_root),
-            "TMPDIR": str(temporary),
-            "LC_ALL": "C",
-        }
-    )
-    return subprocess.run(
-        [
-            "python3",
-            str(LANDLOCK),
-            "--write",
-            str(write_root),
-            "--uid",
-            str(CANDIDATE_UID),
-            "--gid",
-            str(CANDIDATE_GID),
-            "--",
-            *command,
-        ],
-        cwd="/app",
-        env=environment,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        check=False,
-    )
-
-
-def run_candidate(data_root: Path, cache_key: str) -> CandidateResult:
-    cached = RUN_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    run_root = CANDIDATE_ROOT / cache_key
-    if run_root.exists():
-        shutil.rmtree(run_root)
-    make_writable(run_root)
-    copied_data = run_root / "data"
-    shutil.copytree(data_root, copied_data)
-    output = run_root / "results.csv"
-    completed = sandbox_command(
-        run_root,
-        ["/app/run.sh", str(copied_data), str(output)],
-    )
-    assert completed.returncode == 0, (
-        f"candidate failed on {cache_key}: "
-        f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
-    )
-    assert output.is_file(), f"candidate did not create output for {cache_key}"
-    raw = output.read_bytes()
-    header, rows = read_csv(output)
-    result = CandidateResult(header, tuple(rows), raw)
-    RUN_CACHE[cache_key] = result
+def run_checked(cmd: list[str], *, timeout: int = 180) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=False)
+    if result.returncode != 0:
+        raise AssertionError(
+            f"command failed: {' '.join(cmd)}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
     return result
 
 
-def assert_scalar(actual: str, expected: str, field: str) -> None:
-    if field in FLOAT_FIELDS:
-        value = float(actual)
-        target = float(expected)
-        assert math.isfinite(value), f"{field} must be finite"
-        assert value == pytest.approx(target, abs=ABS_TOLERANCE, rel=0)
-    elif field in INT_FIELDS:
-        assert re.fullmatch(r"-?[0-9]+", actual), (
-            f"{field} must be a base-10 integer"
-        )
-        assert int(actual) == int(expected)
-    else:
-        assert actual == expected
+def rebuild_and_run() -> dict:
+    run_checked(["bash", str(BUILD)], timeout=180)
+    out_dir = APP / "output"
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run_checked(
+        [str(BIN), "--pack", str(PACK), "--out", str(out_dir), "--root", str(APP)],
+        timeout=120,
+    )
+    return json.loads(OUT.read_text(encoding="utf-8"))
 
 
-def assert_semantic_rows(
-    actual: tuple[dict[str, str], ...],
-    expected: tuple[dict[str, str], ...],
-) -> None:
-    assert len(actual) == len(expected)
-    for actual_row, expected_row in zip(actual, expected, strict=True):
-        for field in HEADER:
-            assert_scalar(actual_row[field], expected_row[field], field)
+def assert_row(doc: dict, sid: str) -> None:
+    row = doc["scenarios"][sid]
+    want_outcome = EXPECTED_OUTCOME[sid]
+    want_digest = digest_for(sid, want_outcome)
+    assert row["outcome"] == want_outcome, sid
+    assert row["matrix_digest"] == want_digest, sid
 
 
-def build_row_header_permutation() -> Path:
-    destination = GENERATED_ROOT / "row-header-permutation"
-    if destination.exists():
-        shutil.rmtree(destination)
-    shutil.copytree(surface_root("hidden-b"), destination)
-    for name in INPUT_FILES:
-        header, rows = read_csv(destination / name)
-        reversed_header = tuple(reversed(header))
-        with (destination / name).open("w", newline="", encoding="utf-8") as stream:
-            writer = csv.DictWriter(
-                stream,
-                fieldnames=reversed_header,
-                lineterminator="\n",
+def assert_full_matrix(doc: dict) -> None:
+    for sid in EXPECTED_OUTCOME:
+        assert_row(doc, sid)
+
+
+@pytest.fixture(scope="session")
+def matrix() -> dict:
+    return rebuild_and_run()
+
+
+def test_m_alpha_fields(matrix: dict) -> None:
+    """m_alpha mid-rollover pairing is authorized allow with matching digest."""
+    assert_row(matrix, "m_alpha")
+
+
+def test_m_beta_fields(matrix: dict) -> None:
+    """m_beta digest-without-parent bait stays refused with matching digest."""
+    assert_row(matrix, "m_beta")
+
+
+def test_m_gamma_fields(matrix: dict) -> None:
+    """m_gamma post-cutover revoke stays refused with matching digest."""
+    assert_row(matrix, "m_gamma")
+
+
+def test_m_delta_fields(matrix: dict) -> None:
+    """m_delta dual-generation mid-window stays authorized allow with matching digest."""
+    assert_row(matrix, "m_delta")
+
+
+def test_m_epsilon_fields(matrix: dict) -> None:
+    """m_epsilon clock-grace stickiness keeps refuse with matching digest."""
+    assert_row(matrix, "m_epsilon")
+
+
+def test_m_zeta_fields(matrix: dict) -> None:
+    """m_zeta past-grace freshness yields authorized allow with matching digest."""
+    assert_row(matrix, "m_zeta")
+
+
+def test_shape_contract(matrix: dict) -> None:
+    """schema_version and required keys hold; signer-view probe stays clean."""
+    assert matrix["schema_version"] == "2"
+    assert set(matrix["scenarios"]) == set(EXPECTED_OUTCOME)
+    for sid, row in matrix["scenarios"].items():
+        assert set(row) == {"outcome", "matrix_digest"}
+        assert row["outcome"] in ("allow", "deny")
+        assert len(row["matrix_digest"]) == 16
+        assert_row(matrix, sid)
+    probe = run_checked(["bash", str(PROBE)], timeout=30)
+    assert "PROBE ok" in probe.stdout
+
+
+def test_ablation_pairing_surface(matrix: dict) -> None:
+    """Corrupting pair bindings regresses pairing rows; other surfaces stay authorized."""
+    assert_full_matrix(matrix)
+    backup = PAIR_INDEX.read_bytes()
+    try:
+        PAIR_INDEX.write_text(
+            json.dumps(
+                {
+                    "pairs": {
+                        "r_old": "p_old",
+                        "r_new": "WRONG",
+                        "r_bait": "",
+                        "p_g": "p_g",
+                        "p_d": "p_d",
+                        "p_e": "p_e",
+                        "p_z": "p_z",
+                    }
+                }
             )
-            writer.writeheader()
-            writer.writerows(reversed(rows))
-    return destination
+            + "\n",
+            encoding="utf-8",
+        )
+        doc = rebuild_and_run()
+        assert doc["scenarios"]["m_alpha"]["outcome"] != EXPECTED_OUTCOME["m_alpha"]
+        assert_row(doc, "m_beta")
+        assert_row(doc, "m_gamma")
+        assert_row(doc, "m_delta")
+        assert_row(doc, "m_epsilon")
+        assert_row(doc, "m_zeta")
+    finally:
+        PAIR_INDEX.write_bytes(backup)
+        rebuild_and_run()
 
 
-@pytest.fixture(scope="session", autouse=True)
-def clean_candidate_area():
-    """Reset private writable areas before and after verifier execution."""
-    for root in (CANDIDATE_ROOT, GENERATED_ROOT):
-        if root.exists():
-            shutil.rmtree(root)
-        root.mkdir(parents=True)
-    yield
-    for root in (CANDIDATE_ROOT, GENERATED_ROOT):
-        shutil.rmtree(root, ignore_errors=True)
+def test_ablation_generation_surface(matrix: dict) -> None:
+    """Corrupting window/revoke tables regresses generation rows; other surfaces stay authorized."""
+    assert_full_matrix(matrix)
+    win_backup = WINDOW_TABLE.read_bytes()
+    rev_backup = REVOKE_LEDGER.read_bytes()
+    try:
+        wins = json.loads(win_backup)
+        wins["slots"]["p_d"] = {"legacy": 1, "tip": 3, "dual": True, "a": 9, "b": 9}
+        wins["slots"]["p_g"] = {"legacy": 3, "tip": 3, "dual": False, "a": 0, "b": 0}
+        WINDOW_TABLE.write_text(json.dumps(wins) + "\n", encoding="utf-8")
+        rev = json.loads(rev_backup)
+        rev["gone"]["p_g"] = {}
+        REVOKE_LEDGER.write_text(json.dumps(rev) + "\n", encoding="utf-8")
+        doc = rebuild_and_run()
+        assert doc["scenarios"]["m_gamma"]["outcome"] != EXPECTED_OUTCOME["m_gamma"]
+        assert doc["scenarios"]["m_delta"]["outcome"] != EXPECTED_OUTCOME["m_delta"]
+        assert_row(doc, "m_alpha")
+        assert_row(doc, "m_beta")
+        assert_row(doc, "m_epsilon")
+        assert_row(doc, "m_zeta")
+    finally:
+        WINDOW_TABLE.write_bytes(win_backup)
+        REVOKE_LEDGER.write_bytes(rev_backup)
+        rebuild_and_run()
 
 
-@pytest.mark.parametrize("surface,case_id", CASE_PARAMETERS)
-def test_case_semantics(surface: str, case_id: str):
-    """Match every protected case field to its independent golden result."""
-    result = run_candidate(surface_root(surface), surface)
-    actual_by_id = {row["case_id"]: row for row in result.rows}
-    expected_by_id = {row["case_id"]: row for row in EXPECTED[surface]}
-    assert case_id in actual_by_id
-    actual = actual_by_id[case_id]
-    expected = expected_by_id[case_id]
-    assert set(actual) == set(HEADER)
-    for field in HEADER:
-        assert_scalar(actual[field], expected[field], field)
-
-
-@pytest.mark.parametrize("surface", SURFACES)
-def test_surface_schema_and_cardinality(surface: str):
-    """Require the exact compact schema and one row per expected case."""
-    result = run_candidate(surface_root(surface), surface)
-    assert result.header == HEADER
-    assert len(result.rows) == len(EXPECTED[surface])
-    assert b'"' not in result.raw
-    assert all(
-        re.fullmatch(r"[0-9a-f]{8}", row["audit_signature"])
-        for row in result.rows
-    )
-
-
-@pytest.mark.parametrize("surface", SURFACES)
-def test_case_order_is_canonical(surface: str):
-    """Require unique case rows in canonical identifier order."""
-    result = run_candidate(surface_root(surface), surface)
-    case_ids = [row["case_id"] for row in result.rows]
-    assert case_ids == sorted(case_ids)
-    assert len(case_ids) == len(set(case_ids))
-
-
-def test_row_and_header_order_invariance():
-    """Preserve semantic graph results after all relations are reversed."""
-    permuted = run_candidate(
-        build_row_header_permutation(),
-        "row-header-permutation",
-    )
-    assert permuted.header == HEADER
-    assert_semantic_rows(permuted.rows, EXPECTED["hidden-b"])
-
-
-def test_ratio_and_affine_invariance():
-    """Preserve results under ratio scaling and a reward-cost shift."""
-    original = run_candidate(surface_root("hidden-a"), "hidden-a")
-    transformed = run_candidate(surface_root("ratio-scaled"), "ratio-scaled")
-    assert original.header == transformed.header == HEADER
-    assert_semantic_rows(transformed.rows, original.rows)
-
-
-def test_default_invocation_is_byte_deterministic():
-    """Honor invocation defaults and reproduce identical output bytes."""
-    output_root = Path("/app/outputs")
-    output_root.chmod(0o777)
-    temporary = output_root / "tmp"
-    if temporary.exists():
-        shutil.rmtree(temporary)
-    make_writable(temporary)
-    output = output_root / "results.csv"
-    snapshots = []
-    for _ in range(2):
-        output.unlink(missing_ok=True)
-        completed = sandbox_command(output_root, ["/app/run.sh"])
-        assert completed.returncode == 0, completed.stderr
-        snapshots.append(output.read_bytes())
-    assert snapshots[0] == snapshots[1]
-    header, rows = read_csv(output)
-    assert header == HEADER
-    assert_semantic_rows(tuple(rows), EXPECTED["public"])
-
-
-def test_candidate_cannot_read_protected_verifier_paths():
-    """Deny candidate access to goldens, verifier code, solution, and reward."""
-    write_root = CANDIDATE_ROOT / "sandbox-probe"
-    make_writable(write_root)
-    completed = sandbox_command(
-        write_root,
-        [
-            "/bin/sh",
-            "-c",
-            (
-                "! /bin/cat /tests/golden/public.csv >/dev/null 2>&1 && "
-                "! /bin/cat /tests/test_outputs.py >/dev/null 2>&1 && "
-                "! /bin/cat /solution/estimate.R >/dev/null 2>&1 && "
-                "! printf x >>/logs/verifier/reward.txt 2>/dev/null"
-            ),
-        ],
-    )
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_golden_surfaces_are_load_bearing():
-    """Ensure hidden graphs exercise distinct models, cycles, and refits."""
-    rows = [row for surface in SURFACES[:-1] for row in EXPECTED[surface]]
-    assert len(rows) == 70
-    assert len({row["selected_lambda"] for row in rows}) >= 4
-    assert len({row["selected_policy"] for row in rows}) >= 8
-    assert len({row["critical_cycle"] for row in rows}) >= 55
-    assert sum(int(row["deletion_change_count"]) for row in rows) >= 275
-    assert len({row["audit_signature"] for row in rows}) == len(rows)
-    assert any(
-        int(row["deletion_change_count"]) >= 10
-        for row in EXPECTED["hidden-d"]
-    )
+def test_ablation_polarity_surface(matrix: dict) -> None:
+    """Corrupting grace polarity regresses grace rows; other surfaces stay authorized."""
+    assert_full_matrix(matrix)
+    backup = GRACE_TABLE.read_bytes()
+    try:
+        grace = json.loads(backup)
+        for sid in ("m_epsilon", "m_zeta"):
+            row = grace["rows"][sid]
+            row["held"], row["next"] = row["next"], row["held"]
+        GRACE_TABLE.write_text(json.dumps(grace) + "\n", encoding="utf-8")
+        doc = rebuild_and_run()
+        assert doc["scenarios"]["m_epsilon"]["outcome"] != EXPECTED_OUTCOME["m_epsilon"]
+        assert doc["scenarios"]["m_zeta"]["outcome"] != EXPECTED_OUTCOME["m_zeta"]
+        assert_row(doc, "m_alpha")
+        assert_row(doc, "m_beta")
+        assert_row(doc, "m_gamma")
+        assert_row(doc, "m_delta")
+    finally:
+        GRACE_TABLE.write_bytes(backup)
+        rebuild_and_run()

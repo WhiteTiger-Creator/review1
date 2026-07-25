@@ -1,0 +1,13 @@
+{
+  "scenario_id": "m_gamma",
+  "rows": [
+    {"id": "p_g", "seq": 1, "mark": true}
+  ],
+  "peers": [
+    {"id": "p_g", "key": "p_g"}
+  ],
+  "gen": 3,
+  "stamp": 400,
+  "epoch": 30,
+  "probe_ok": true
+}

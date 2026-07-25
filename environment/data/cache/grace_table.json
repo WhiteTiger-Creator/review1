@@ -1,0 +1,10 @@
+{
+  "rows": {
+    "m_alpha": {"deadline": 100, "skew": 5, "held": "pos", "next": "pos"},
+    "m_beta": {"deadline": 100, "skew": 5, "held": "pos", "next": "pos"},
+    "m_gamma": {"deadline": 100, "skew": 5, "held": "pos", "next": "pos"},
+    "m_delta": {"deadline": 100, "skew": 5, "held": "pos", "next": "pos"},
+    "m_epsilon": {"deadline": 120, "skew": 10, "held": "neg", "next": "pos"},
+    "m_zeta": {"deadline": 120, "skew": 10, "held": "neg", "next": "pos"}
+  }
+}

@@ -15,7 +15,5 @@
 *.log
 solution/
 tests/
-CLAUDE.md
-AGENTS.md
-skills.md
-.cursor/
+bin/
+output/
