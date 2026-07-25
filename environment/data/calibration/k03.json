@@ -1,0 +1,13 @@
+{
+  "campaign_id": "K-A3",
+  "cell_id": "C03",
+  "basin_id": "GW-Basin-12",
+  "period_days": 30.0,
+  "precip_mm": 46.0,
+  "pet_mm": 138.0,
+  "head_start_m": 23.8,
+  "head_end_m": 22.9,
+  "hydraulic_gradient": 0.0031,
+  "pump_m3": 139297.63058884416,
+  "qualified": true
+}

@@ -1,0 +1,32 @@
+# GW-Basin-12 scalar profile — seasonal campaign vector under change control.
+# The integrity stamp embedded in the runtime covers every scalar in the
+# [depth], [stress_envelope] and [mode] sections of this file.
+
+[depth]
+mm_to_m_divisor = 100.0
+
+[stress_envelope]
+wilt_head_m = 10.0
+field_head_m = 25.0
+
+[mode]
+use_steady_state = true
+storage_scale = 0.8
+apply_packing = true
+prefer_certificate = true
+campaign_tolerance_m3 = 250000.0
+
+# Property certificate issued with the 2024 seasonal campaign package.
+[certificate]
+recharge_efficiency = 0.28
+crop_factor = 0.75
+
+[certificate.conductivity]
+C01 = 4.0
+C02 = 2.8
+C03 = 5.76
+
+[certificate.specific_yield]
+C01 = 0.176
+C02 = 0.144
+C03 = 0.200

@@ -1,0 +1,30 @@
+{
+  "cell_id": "C03",
+  "basin_id": "GW-Basin-12",
+  "records": [
+    {
+      "injected_volume_m3": 30625.0,
+      "head_rise_m": 0.1004
+    },
+    {
+      "injected_volume_m3": 61250.0,
+      "head_rise_m": 0.1994
+    },
+    {
+      "injected_volume_m3": 91875.0,
+      "head_rise_m": 0.3006
+    },
+    {
+      "injected_volume_m3": 122500.0,
+      "head_rise_m": 0.398
+    },
+    {
+      "injected_volume_m3": 153125.0,
+      "head_rise_m": 0.5005
+    },
+    {
+      "injected_volume_m3": 183750.0,
+      "head_rise_m": 0.5988
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "cell_id": "C02",
+  "basin_id": "GW-Basin-12",
+  "discharge_m3_per_d": 1500.0,
+  "samples": [
+    {
+      "elapsed_min": 2.0,
+      "drawdown_m": 0.766,
+      "in_straight_line_window": false
+    },
+    {
+      "elapsed_min": 5.0,
+      "drawdown_m": 1.779,
+      "in_straight_line_window": false
+    },
+    {
+      "elapsed_min": 12.0,
+      "drawdown_m": 2.747,
+      "in_straight_line_window": false
+    },
+    {
+      "elapsed_min": 40.0,
+      "drawdown_m": 4.428,
+      "in_straight_line_window": true
+    },
+    {
+      "elapsed_min": 60.0,
+      "drawdown_m": 4.876,
+      "in_straight_line_window": true
+    },
+    {
+      "elapsed_min": 90.0,
+      "drawdown_m": 5.324,
+      "in_straight_line_window": true
+    },
+    {
+      "elapsed_min": 120.0,
+      "drawdown_m": 5.642,
+      "in_straight_line_window": true
+    },
+    {
+      "elapsed_min": 180.0,
+      "drawdown_m": 6.091,
+      "in_straight_line_window": true
+    },
+    {
+      "elapsed_min": 240.0,
+      "drawdown_m": 6.409,
+      "in_straight_line_window": true
+    },
+    {
+      "elapsed_min": 360.0,
+      "drawdown_m": 6.857,
+      "in_straight_line_window": true
+    },
+    {
+      "elapsed_min": 480.0,
+      "drawdown_m": 7.175,
+      "in_straight_line_window": true
+    }
+  ]
+}

@@ -1,522 +1,299 @@
+"""Verification of the GW-Basin-12 volumetric mass-conservation diagnostics.
+
+Every expected quantity in this module is recomputed from the read-only evidence
+set under /app/data using the staged evaluation of the mass-conservation
+contract. No expected value is taken from the emitted document, from the scalar
+profile, or from any property certificate.
+"""
+
+from __future__ import annotations
+
+import hashlib
 import json
-import os
-import shutil
-import subprocess
-import tempfile
+import math
 from pathlib import Path
 
-OUT = Path("/app/output/graph_probe.json")
-NEST = Path("/app/environment/nest")
-VAR = Path("/app/environment/var")
-LEDGER = VAR / "ledger.jsonl"
-SNAP = VAR / "snapshot.json"
-SHADOW = VAR / "shadow.json"
-STUB = Path("/app/environment/seed/stub_trace.json")
-G1 = Path("/app/environment/seed/tile_g1.json")
-G2 = Path("/app/environment/seed/tile_g2.json")
-G1X = Path("/app/environment/seed/tile_g1_x2.json")
-G2X = Path("/app/environment/seed/tile_g2_x2.json")
-E1 = Path("/app/environment/seed/tile_e1.json")
-E2 = Path("/app/environment/seed/tile_e2.json")
-SCRAPS = "/app/environment/seed/scrap_old.txt,/app/environment/seed/scrap_new.txt"
-TRIAD = (
-    "/app/environment/seed/scrap_old.txt,"
-    "/app/environment/seed/scrap_mid.txt,"
-    "/app/environment/seed/scrap_new.txt"
-)
-REV_TRIAD = (
-    "/app/environment/seed/scrap_mid.txt,"
-    "/app/environment/seed/scrap_old.txt,"
-    "/app/environment/seed/scrap_new.txt"
-)
-SUM = Path("/app/environment/seed/sum_partial.txt")
-SUM_EQ = Path("/app/environment/seed/sum_equal.txt")
+APP = Path("/app")
+DATA = APP / "data"
+REPORT = APP / "output" / "water_budget_report.json"
 
-NEED_DUAL = {"root", "bind", "sys", "prop"}
-NEED_A7 = {"root", "bind", "prop"}
+DEPTH_DIVISOR = 1000.0
+WILT_HEAD_M = 10.0
+FIELD_HEAD_M = 25.0
+COOPER_JACOB = 2.303
+CLOSURE_TOL = 1e-6
 
 
-def build() -> None:
-    subprocess.run(
-        ["bash", "/app/environment/tools/mk_all.sh"],
-        cwd="/app",
-        check=True,
-        text=True,
-        capture_output=True,
-    )
+def load_json(path: Path):
+    with path.open() as handle:
+        return json.load(handle)
 
 
-def fresh() -> None:
-    VAR.mkdir(parents=True, exist_ok=True)
-    for p in (LEDGER, SNAP, SHADOW):
-        if p.exists():
-            p.unlink()
-    if OUT.exists():
-        OUT.unlink()
-    (NEST / "go.mod").write_text("module example.com/nest\n\ngo 1.22\n")
-    (NEST / "go.sum").write_text("")
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def run_cmd(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["/app/bin/gm_infer", *args],
-        cwd="/app",
-        check=check,
-        text=True,
-        capture_output=True,
-    )
+def evidence_fingerprints() -> dict[str, str]:
+    return {
+        str(p.relative_to(DATA)): sha256_file(p)
+        for p in sorted(DATA.rglob("*"))
+        if p.is_file()
+    }
 
 
-def settle(
-    g1: Path,
-    g2: Path,
-    *,
-    arms: str = "a7,b2",
-    scraps: str = SCRAPS,
-    sum_path: Path = SUM,
-    out: Path = OUT,
-) -> dict:
-    out.parent.mkdir(parents=True, exist_ok=True)
-    run_cmd(
-        [
-            "settle",
-            "--g1",
-            str(g1),
-            "--g2",
-            str(g2),
-            "--scraps",
-            scraps,
-            "--sum",
-            str(sum_path),
-            "--arms",
-            arms,
-            "--nest",
-            str(NEST),
-            "--var",
-            str(VAR),
-            "--out",
-            str(out),
-        ]
-    )
-    return json.loads(out.read_text())
+EVIDENCE_AT_IMPORT = evidence_fingerprints()
 
 
-def recover() -> dict:
-    run_cmd(
-        [
-            "recover",
-            "--nest",
-            str(NEST),
-            "--var",
-            str(VAR),
-            "--out",
-            str(OUT),
-        ]
-    )
-    return json.loads(OUT.read_text()) if OUT.exists() else {}
+def read_dir(sub: str) -> list[dict]:
+    return [load_json(p) for p in sorted((DATA / sub).glob("*.json"))]
 
 
-def status() -> dict:
-    proc = run_cmd(["status", "--nest", str(NEST), "--var", str(VAR), "--out", str(OUT)])
-    return json.loads(proc.stdout.strip())
+def mesh_cells() -> dict[str, dict]:
+    return {c["cell_id"]: c for c in read_dir("mesh")}
 
 
-def compact() -> None:
-    run_cmd(["compact", "--var", str(VAR)])
+def ols_slope(xs: list[float], ys: list[float]) -> float:
+    """Ordinary least-squares slope with an intercept term."""
+    n = float(len(xs))
+    sx = sum(xs)
+    sy = sum(ys)
+    sxy = sum(x * y for x, y in zip(xs, ys, strict=True))
+    sxx = sum(x * x for x in xs)
+    return (n * sxy - sx * sy) / (n * sxx - sx * sx)
 
 
-def offline_build(pkg: str) -> None:
-    subprocess.run(
-        ["go", "build", "-o", f"/tmp/{pkg}.bin", f"./{pkg}"],
-        cwd=str(NEST),
-        check=True,
-        text=True,
-        capture_output=True,
-        env={
-            **os.environ,
-            "GOPROXY": "off",
-            "GOSUMDB": "off",
-        },
-    )
+def origin_slope(xs: list[float], ys: list[float]) -> float:
+    """Least-squares slope of a strictly proportional relation."""
+    sxy = sum(x * y for x, y in zip(xs, ys, strict=True))
+    sxx = sum(x * x for x in xs)
+    return sxy / sxx
 
 
-def view_digest(edges: list) -> str:
-    payload = json.dumps({"edges": edges})
-    proc = subprocess.run(
-        ["python3", "/app/environment/tools/view_sum.py"],
-        input=payload,
-        cwd="/app",
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-    return proc.stdout.strip()
-
-
-def auth_sums(g1: Path, g2: Path, sum_path: Path = SUM) -> dict[tuple[str, str], str]:
-    t1 = json.loads(g1.read_text())
-    t2 = json.loads(g2.read_text())
-    pins: dict[tuple[str, str], str] = {}
-    for line in sum_path.read_text().splitlines():
-        fields = line.split()
-        if len(fields) >= 3:
-            pins[(fields[0], fields[1])] = fields[2]
-
-    by_key: dict[tuple[str, str], list[tuple[int, str, int]]] = {}
-    for idx, tile in enumerate((t1, t2)):
-        gen = int(tile.get("gen", 0))
-        for e in tile["entries"]:
-            k = (e["module_path"], e["version"])
-            by_key.setdefault(k, []).append((gen, e["sum"], idx))
-
-    out: dict[tuple[str, str], str] = {}
-    for k, opts in by_key.items():
-        sums_present = {s for _, s, _ in opts}
-        pin = pins.get(k)
-        if pin and pin in sums_present:
-            out[k] = pin
-            continue
-        if len(opts) == 1:
-            out[k] = opts[0][1]
-            continue
-        opts_sorted = sorted(opts, key=lambda p: (p[0], p[2]))
-        out[k] = opts_sorted[0][1]
+def identified_conductivity() -> dict[str, float]:
+    """Stage B: Cooper-Jacob conductivity per cell from admitted drawdown samples."""
+    cells = mesh_cells()
+    out = {}
+    for test in read_dir("aquifer_tests"):
+        admitted = [s for s in test["samples"] if s["in_straight_line_window"]]
+        xs = [math.log10(s["elapsed_min"]) for s in admitted]
+        ys = [s["drawdown_m"] for s in admitted]
+        slope = ols_slope(xs, ys)
+        transmissivity = COOPER_JACOB * test["discharge_m3_per_d"] / (4.0 * math.pi * slope)
+        out[test["cell_id"]] = transmissivity / cells[test["cell_id"]]["sat_thickness_m"]
     return out
 
 
-def assert_probe(doc: dict, need: set[str], g1: Path, g2: Path, sum_path: Path = SUM) -> None:
-    assert isinstance(doc["edges"], list)
-    assert doc["edge_count"] == len(doc["edges"])
-    assert doc["edges"], "settled report must include edges"
-    assert view_digest(doc["edges"]) == doc["view_digest"]
-    assert len(doc["view_digest"]) == 64
-    assert doc["view_digest"] != "0" * 64
-    classes = {e["cls"] for e in doc["edges"]}
-    assert need <= classes
-    sums = auth_sums(g1, g2, sum_path)
-    for e in doc["edges"]:
-        assert e["module_path"]
-        assert e["version"]
-        assert "replace_to" in e
-        assert e["cls"]
-        assert e["sum"] == sums[(e["module_path"], e["version"])]
-
-
-def nest_text() -> str:
-    return (NEST / "go.mod").read_text()
-
-
-def gosum_text() -> str:
-    return (NEST / "go.sum").read_text()
-
-
-def ledger_lines() -> list[str]:
-    if not LEDGER.exists():
-        return []
-    return [ln for ln in LEDGER.read_text().splitlines() if ln.strip()]
-
-
-def committed_epochs() -> list[int]:
-    out = []
-    for ln in ledger_lines():
-        row = json.loads(ln)
-        if row.get("kind") == "commit" and not row.get("soft"):
-            out.append(int(row["epoch"]))
+def identified_specific_yield() -> dict[str, float]:
+    """Stage C: proportional storage-response specific yield per cell."""
+    cells = mesh_cells()
+    out = {}
+    for response in read_dir("storage_response"):
+        area = cells[response["cell_id"]]["area_m2"]
+        xs = [r["injected_volume_m3"] / area for r in response["records"]]
+        ys = [r["head_rise_m"] for r in response["records"]]
+        out[response["cell_id"]] = 1.0 / origin_slope(xs, ys)
     return out
 
 
-def tip_epoch() -> int:
-    epochs = committed_epochs()
-    return epochs[-1] if epochs else 0
+def stress_factor(head_start: float, head_end: float) -> float:
+    """Stage D: mid-period average-head evapotranspiration stress factor."""
+    reference = 0.5 * (head_start + head_end)
+    raw = (reference - WILT_HEAD_M) / (FIELD_HEAD_M - WILT_HEAD_M)
+    return max(0.0, min(1.0, raw))
 
 
-class TestQuarantineLedger:
-    def test_dual_offline_settled_coherent(self) -> None:
-        """Dual settle builds both packages offline with settled coherence."""
-        build()
-        fresh()
-        doc = settle(G1, G2)
-        assert_probe(doc, NEED_DUAL, G1, G2)
-        offline_build("a7")
-        offline_build("b2")
-        assert status()["state"] == "settled"
-        assert tip_epoch() >= 1
-        assert "example.com/lib/legacy/v2" in nest_text()
-        assert not SHADOW.exists()
+def budget_terms(row: dict, cell: dict, k: float, sy: float) -> dict:
+    stress = stress_factor(row["head_start_m"], row["head_end_m"])
+    return {
+        "recharge_driver": (row["precip_mm"] / DEPTH_DIVISOR) * cell["area_m2"],
+        "et_driver": (row["pet_mm"] / DEPTH_DIVISOR) * cell["area_m2"] * stress,
+        "lateral_m3": k * cell["face_area_m2"] * row["hydraulic_gradient"] * row["period_days"],
+        "storage_m3": sy * cell["area_m2"] * (row["head_end_m"] - row["head_start_m"]),
+        "stress": stress,
+    }
 
-    def test_soft_quarantine_blocks_until_recover(self) -> None:
-        """Soft after hard leaves quarantine; recover restores settled tip."""
-        build()
-        fresh()
-        first = settle(G1, G2)
-        digest = first["view_digest"]
-        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
-        assert SHADOW.exists() or status()["state"] == "pending"
-        assert status()["state"] == "pending"
-        recovered = recover()
-        assert recovered["view_digest"] == digest
-        assert status()["state"] == "settled"
-        assert not SHADOW.exists()
-        assert_probe(recovered, NEED_DUAL, G1, G2)
-        offline_build("a7")
-        offline_build("b2")
 
-    def test_cache_hit_clears_quarantine_restores_nest(self) -> None:
-        """Identical settle after soft restores nest, clears shadow, keeps epoch."""
-        build()
-        fresh()
-        first = settle(G1, G2)
-        e1 = tip_epoch()
-        n1 = len(ledger_lines())
-        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
-        (NEST / "go.mod").write_text(nest_text() + "\nrequire example.com/lib/extra v9.9.9\n")
-        second = settle(G1, G2)
-        assert second["view_digest"] == first["view_digest"]
-        assert tip_epoch() == e1
-        assert "example.com/lib/extra" not in nest_text()
-        assert not SHADOW.exists()
-        assert status()["state"] == "settled"
-        assert_probe(second, NEED_DUAL, G1, G2)
-        offline_build("a7")
-        offline_build("b2")
-        # soft row stripped on cache-hit; no new committed epoch row
-        assert tip_epoch() == e1
-        assert len(ledger_lines()) <= n1 + 1
+def identified_pair() -> tuple[float, float]:
+    """Stage E: recharge efficiency and crop factor by mass-balance inversion."""
+    cells = mesh_cells()
+    k_map = identified_conductivity()
+    sy_map = identified_specific_yield()
+    aa = ab = bb = ra = rb = 0.0
+    for record in read_dir("calibration"):
+        if not record["qualified"]:
+            continue
+        cell = cells[record["cell_id"]]
+        t = budget_terms(record, cell, k_map[record["cell_id"]], sy_map[record["cell_id"]])
+        col_a = t["recharge_driver"]
+        col_b = -t["et_driver"]
+        rhs = record["pump_m3"] + t["storage_m3"] - t["lateral_m3"]
+        aa += col_a * col_a
+        ab += col_a * col_b
+        bb += col_b * col_b
+        ra += col_a * rhs
+        rb += col_b * rhs
+    det = aa * bb - ab * ab
+    return (ra * bb - ab * rb) / det, (aa * rb - ra * ab) / det
 
-    def test_arm_cut_restore_trims_and_advances(self) -> None:
-        """Dual → a7 → dual trims nest, omits sys, advances epochs on arm change."""
-        build()
-        fresh()
-        settle(G1, G2, arms="a7,b2")
-        e0 = tip_epoch()
-        assert "example.com/lib/b2x" in nest_text()
-        cut = settle(G1, G2, arms="a7")
-        assert tip_epoch() > e0
-        classes = {e["cls"] for e in cut["edges"]}
-        assert "sys" not in classes
-        assert NEED_A7 <= classes
-        assert "example.com/lib/b2x" not in nest_text()
-        assert "example.com/lib/a7x" in nest_text()
-        e1 = tip_epoch()
-        restored = settle(G1, G2, arms="a7,b2")
-        assert tip_epoch() > e1
-        assert_probe(restored, NEED_DUAL, G1, G2)
-        offline_build("b2")
 
-    def test_scrap_flow_order_forces_new_epoch(self) -> None:
-        """Triad then reverse triad flips replace polarity and advances epoch."""
-        build()
-        fresh()
-        cleared = settle(G1, G2, scraps=TRIAD)
-        e1 = tip_epoch()
-        assert not any(e.get("replace_to") for e in cleared["edges"])
-        assert "prop" not in {e["cls"] for e in cleared["edges"]}
-        kept = settle(G1, G2, scraps=REV_TRIAD)
-        assert tip_epoch() > e1
-        assert any(e.get("replace_to") for e in kept["edges"])
-        assert "prop" in {e["cls"] for e in kept["edges"]}
+def expected_periods() -> list[dict]:
+    """Stage F: expected period rows in ascending period_id order."""
+    cells = mesh_cells()
+    k_map = identified_conductivity()
+    sy_map = identified_specific_yield()
+    eta, crop = identified_pair()
+    rows = []
+    for obs in read_dir("observations"):
+        cell = cells[obs["cell_id"]]
+        k = k_map[obs["cell_id"]]
+        sy = sy_map[obs["cell_id"]]
+        t = budget_terms(obs, cell, k, sy)
+        recharge = t["recharge_driver"] * eta
+        et = t["et_driver"] * crop
+        residual = recharge + t["lateral_m3"] - et - obs["pump_m3"] - t["storage_m3"]
+        rows.append({
+            "period_id": obs["period_id"],
+            "cell_id": obs["cell_id"],
+            "period_days": obs["period_days"],
+            "head_start_m": obs["head_start_m"],
+            "head_end_m": obs["head_end_m"],
+            "recharge_m3": recharge,
+            "et_m3": et,
+            "lateral_m3": t["lateral_m3"],
+            "pump_m3": obs["pump_m3"],
+            "storage_change_m3": t["storage_m3"],
+            "balance_residual_m3": residual,
+            "et_stress": t["stress"],
+            "k_m_per_d": k,
+            "sy": sy,
+        })
+    rows.sort(key=lambda r: r["period_id"])
+    return rows
 
-    def test_whitespace_scraps_keep_identity(self) -> None:
-        """Whitespace/comment-only scrap edits do not append a new commit."""
-        build()
-        fresh()
-        settle(G1, G2)
-        e1 = tip_epoch()
-        n1 = len(ledger_lines())
-        with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / "scrap_ws.txt"
-            raw = Path("/app/environment/seed/scrap_old.txt").read_text()
-            p.write_text("\n\n" + raw.replace("\t", "  ") + "\n// pad\n")
-            scraps = f"{p},/app/environment/seed/scrap_new.txt"
-            settle(G1, G2, scraps=scraps)
-        assert tip_epoch() == e1
-        assert len(ledger_lines()) == n1
 
-    def test_pin_provenance_equal_gen_bind(self) -> None:
-        """Pins need observed provenance; equal-gen bind uses applicable pin."""
-        build()
-        fresh()
-        doc = settle(E1, E2, sum_path=SUM_EQ)
-        assert_probe(doc, NEED_DUAL, E1, E2, sum_path=SUM_EQ)
-        bind = [e for e in doc["edges"] if e["module_path"] == "example.com/lib/bind"]
-        assert bind
-        expected = None
-        for line in SUM_EQ.read_text().splitlines():
-            fields = line.split()
-            if len(fields) >= 3 and fields[0] == "example.com/lib/bind":
-                expected = fields[2]
-                break
-        assert expected and bind[0]["sum"] == expected
-        root = settle(G1, G2)
-        sums = auth_sums(G1, G2)
-        for e in root["edges"]:
-            if e["module_path"] == "example.com/lib/root":
-                assert e["sum"] == sums[("example.com/lib/root", "v1.0.0")]
-        offline_build("a7")
-        offline_build("b2")
+def report() -> dict:
+    assert REPORT.exists(), "missing /app/output/water_budget_report.json"
+    return load_json(REPORT)
 
-    def test_replace_checksum_and_gosum_alignment(self) -> None:
-        """Replace keeps original-module checksum; go.sum carries that sum line."""
-        build()
-        fresh()
-        doc = settle(G1, G2)
-        sums = auth_sums(G1, G2)
-        legacy = [e for e in doc["edges"] if e["module_path"] == "example.com/lib/legacy"]
-        assert legacy and legacy[0].get("replace_to")
-        assert legacy[0]["cls"] == "prop"
-        assert legacy[0]["sum"] == sums[("example.com/lib/legacy", "v1.0.0")]
-        v2_sum = sums[("example.com/lib/legacy/v2", "v2.0.0")]
-        assert legacy[0]["sum"] != v2_sum
-        assert "example.com/lib/legacy/v2" in nest_text()
-        assert sums[("example.com/lib/legacy", "v1.0.0")] in gosum_text()
 
-    def test_torn_ledger_after_soft_recovers_tip(self) -> None:
-        """Torn ledger after soft truncates; tip digest and settled status return."""
-        build()
-        fresh()
-        first = settle(G1, G2)
-        e1 = tip_epoch()
-        digest = first["view_digest"]
-        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
-        with LEDGER.open("a") as fh:
-            fh.write("{not-json\n")
-            fh.write(
-                json.dumps(
-                    {
-                        "seq": 99,
-                        "parent_seal": "deadbeef",
-                        "finger": "x" * 64,
-                        "plan": {"edges": []},
-                        "soft": False,
-                        "epoch": e1 + 50,
-                        "nest_seal": "y" * 64,
-                        "plan_digest": "z" * 64,
-                        "kind": "commit",
-                    }
-                )
-                + "\n"
-            )
-        recovered = recover()
-        assert recovered["view_digest"] == digest
-        assert tip_epoch() == e1
-        assert status()["state"] == "settled"
-        assert not SHADOW.exists()
-        assert_probe(recovered, NEED_DUAL, G1, G2)
-        offline_build("a7")
+def close(actual: float, expected: float, rel: float = 1e-9, floor: float = 1e-7) -> bool:
+    return abs(actual - expected) <= max(floor, rel * max(abs(expected), abs(actual), 1.0))
 
-    def test_snapshot_and_nest_staleness_pending(self) -> None:
-        """Corrupt snapshot or nest alone flips pending until recover/cache-hit."""
-        build()
-        fresh()
-        first = settle(G1, G2)
-        assert status()["state"] == "settled"
-        snap = json.loads(SNAP.read_text())
-        snap["seal"] = "0" * 64
-        SNAP.write_text(json.dumps(snap))
-        assert status()["state"] == "pending"
-        recover()
-        assert status()["state"] == "settled"
-        text = nest_text()
-        (NEST / "go.mod").write_text(text + "\n// stale\n")
-        assert status()["state"] == "pending"
-        again = settle(G1, G2)
-        assert again["view_digest"] == first["view_digest"]
-        assert status()["state"] == "settled"
-        OUT.write_text(json.dumps({"edges": [], "edge_count": 0, "view_digest": "0" * 64}))
-        assert status()["state"] == "pending"
 
-    def test_compact_preserves_epochs_after_quarantine(self) -> None:
-        """Compact after multi-epoch+soft keeps tip digest/epoch; settle stays no-op."""
-        build()
-        fresh()
-        settle(G1, G2, arms="a7")
-        dual = settle(G1, G2, arms="a7,b2")
-        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
-        e_before = tip_epoch()
-        digest = dual["view_digest"]
-        compact()
-        assert not SHADOW.exists()
-        recovered = recover()
-        assert recovered["view_digest"] == digest
-        assert tip_epoch() == e_before
-        n = len(ledger_lines())
-        again = settle(G1, G2, arms="a7,b2")
-        assert again["view_digest"] == digest
-        assert tip_epoch() == e_before
-        assert len(ledger_lines()) == n
-        offline_build("a7")
-        offline_build("b2")
+def test_evidence_files_unchanged():
+    """Every file under /app/data keeps the content it was delivered with."""
+    assert evidence_fingerprints() == EVIDENCE_AT_IMPORT
 
-    def test_probe_shadow_status_matrix(self) -> None:
-        """Probe-only staleness and shadow presence both report pending."""
-        build()
-        fresh()
-        settle(G1, G2)
-        assert status()["state"] == "settled"
-        shutil.copy(STUB, OUT)
-        assert status()["state"] == "pending"
-        recover()
-        assert status()["state"] == "settled"
-        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
-        assert status()["state"] == "pending"
-        assert SHADOW.exists() or True
 
-    def test_cross_command_arm_change_after_soft(self) -> None:
-        """Soft quarantine, then different arms hard settle, compact, recover."""
-        build()
-        fresh()
-        settle(G1, G2, arms="a7,b2")
-        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
-        assert status()["state"] == "pending"
-        cut = settle(G1, G2, arms="a7")
-        assert status()["state"] == "settled"
-        assert "sys" not in {e["cls"] for e in cut["edges"]}
-        compact()
-        recovered = recover()
-        assert recovered["view_digest"] == cut["view_digest"]
-        assert status()["state"] == "settled"
-        offline_build("a7")
+def test_document_identity_fields():
+    """The document reports schema_version 1.0 and the basin identifier of the evidence set."""
+    data = report()
+    assert data["schema_version"] == "1.0"
+    assert data["basin_id"] == "GW-Basin-12"
 
-    def test_long_quarantine_tear_heldout_lineage(self) -> None:
-        """Arm cut, soft, torn ledger, recover, compact, held-out settle lineage."""
-        build()
-        fresh()
-        settle(G1, G2, arms="a7")
-        e_a = tip_epoch()
-        settle(G1, G2, arms="a7,b2")
-        e_b = tip_epoch()
-        assert e_b > e_a
-        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
-        with LEDGER.open("a") as fh:
-            fh.write("CORRUPT\n")
-        recover()
-        compact()
-        held = settle(G1X, G2X)
-        e_c = tip_epoch()
-        assert e_c > e_b
-        assert_probe(held, NEED_DUAL, G1X, G2X)
-        assert any(e.get("replace_to") for e in held["edges"])
-        assert status()["state"] == "settled"
-        assert not SHADOW.exists()
-        epochs = committed_epochs()
-        assert epochs == sorted(epochs)
-        offline_build("a7")
-        offline_build("b2")
 
-    def test_idempotent_after_materialization_corruption(self) -> None:
-        """Corrupt nest+probe between runs; identical settle rematerializes no-op."""
-        build()
-        fresh()
-        first = settle(G1, G2)
-        e1 = tip_epoch()
-        (NEST / "go.mod").write_text("module example.com/nest\ngo 1.22\n")
-        (NEST / "go.sum").write_text("")
-        shutil.copy(STUB, OUT)
-        assert status()["state"] == "pending"
-        second = settle(G1, G2)
-        assert second["view_digest"] == first["view_digest"]
-        assert tip_epoch() == e1
-        assert_probe(second, NEED_DUAL, G1, G2)
-        assert status()["state"] == "settled"
-        offline_build("a7")
-        offline_build("b2")
+def test_calibration_source_is_profile_path():
+    """calibration_source is the absolute path of the scalar profile in force."""
+    assert report()["calibration_source"] == "/app/config/basin-profile.toml"
+
+
+def test_period_ordering_and_count():
+    """Periods form a flat array in ascending period_id order with a matching period_count."""
+    data = report()
+    ids = [p["period_id"] for p in data["periods"]]
+    expected_ids = [r["period_id"] for r in expected_periods()]
+    assert ids == sorted(ids)
+    assert ids == expected_ids
+    assert data["summary"]["period_count"] == len(expected_ids)
+
+
+def test_identified_conductivity_on_period_rows():
+    """Each period row reports the Cooper-Jacob conductivity identified for its cell."""
+    got = report()["periods"]
+    for row, exp in zip(got, expected_periods(), strict=True):
+        assert close(row["k_m_per_d"], exp["k_m_per_d"], rel=1e-9, floor=1e-9), row["period_id"]
+
+
+def test_identified_specific_yield_on_period_rows():
+    """Each period row reports the proportional storage-response specific yield of its cell."""
+    got = report()["periods"]
+    for row, exp in zip(got, expected_periods(), strict=True):
+        assert close(row["sy"], exp["sy"], rel=1e-9, floor=1e-12), row["period_id"]
+
+
+def test_identified_pair_reported_in_summary():
+    """Summary recharge_efficiency and crop_factor equal the mass-balance inversion result."""
+    eta, crop = identified_pair()
+    summary = report()["summary"]
+    assert close(summary["recharge_efficiency"], eta, rel=1e-9, floor=1e-9)
+    assert close(summary["crop_factor"], crop, rel=1e-9, floor=1e-9)
+
+
+def test_evapotranspiration_stress_factor():
+    """Each period row reports the mid-period average-head stress factor."""
+    got = report()["periods"]
+    for row, exp in zip(got, expected_periods(), strict=True):
+        assert close(row["et_stress"], exp["et_stress"], rel=1e-10, floor=1e-12), row["period_id"]
+
+
+def test_recharge_and_evapotranspiration_volumes():
+    """Recharge and evapotranspiration volumes match the staged evaluation."""
+    got = report()["periods"]
+    for row, exp in zip(got, expected_periods(), strict=True):
+        assert close(row["recharge_m3"], exp["recharge_m3"]), row["period_id"]
+        assert close(row["et_m3"], exp["et_m3"]), row["period_id"]
+
+
+def test_lateral_pump_and_storage_volumes():
+    """Lateral exchange, abstraction and full elastic storage volumes match the staged evaluation."""
+    got = report()["periods"]
+    for row, exp in zip(got, expected_periods(), strict=True):
+        assert close(row["lateral_m3"], exp["lateral_m3"]), row["period_id"]
+        assert close(row["pump_m3"], exp["pump_m3"]), row["period_id"]
+        assert close(row["storage_change_m3"], exp["storage_change_m3"]), row["period_id"]
+
+
+def test_residual_closure_within_contract_tolerance():
+    """Every period residual is within 1e-6 and flagged closure_compliant against that tolerance."""
+    data = report()
+    for row in data["periods"]:
+        assert abs(row["balance_residual_m3"]) <= CLOSURE_TOL, row["period_id"]
+        assert row["closure_compliant"] is True, row["period_id"]
+    assert data["summary"]["max_balance_residual_m3"] <= CLOSURE_TOL
+    assert data["summary"]["periods_compliant"] == data["summary"]["period_count"]
+
+
+def test_max_residual_is_maximum_absolute_period_residual():
+    """max_balance_residual_m3 is the maximum absolute period residual of the document."""
+    data = report()
+    expected = max(abs(row["balance_residual_m3"]) for row in data["periods"])
+    assert close(data["summary"]["max_balance_residual_m3"], expected, floor=1e-9)
+
+
+def test_summary_totals_are_arithmetic_sums_of_period_rows():
+    """Summary flux totals equal the arithmetic sums of the emitted period fields."""
+    data = report()
+    summary = data["summary"]
+    rows = data["periods"]
+    for total_key, row_key in (
+        ("total_recharge_m3", "recharge_m3"),
+        ("total_et_m3", "et_m3"),
+        ("total_lateral_m3", "lateral_m3"),
+        ("total_pump_m3", "pump_m3"),
+        ("total_storage_change_m3", "storage_change_m3"),
+    ):
+        assert close(summary[total_key], sum(r[row_key] for r in rows)), total_key
+
+
+def test_summary_totals_match_independent_evaluation():
+    """Summary flux totals also equal the sums recomputed from the evidence set."""
+    summary = report()["summary"]
+    rows = expected_periods()
+    for total_key, row_key in (
+        ("total_recharge_m3", "recharge_m3"),
+        ("total_et_m3", "et_m3"),
+        ("total_lateral_m3", "lateral_m3"),
+        ("total_pump_m3", "pump_m3"),
+        ("total_storage_change_m3", "storage_change_m3"),
+    ):
+        assert close(summary[total_key], sum(r[row_key] for r in rows)), total_key

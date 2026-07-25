@@ -1,0 +1,12 @@
+{
+  "period_id": "P003",
+  "cell_id": "C03",
+  "basin_id": "GW-Basin-12",
+  "period_days": 15.0,
+  "precip_mm": 120.0,
+  "pet_mm": 90.0,
+  "head_start_m": 23.2,
+  "head_end_m": 23.7,
+  "hydraulic_gradient": -0.0012,
+  "pump_m3": -203432.99486259813
+}
