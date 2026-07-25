@@ -1,0 +1,1 @@
+{"type":"object","properties":{"tenant":{"type":"string"},"effective_caps":{"type":"array"}}}

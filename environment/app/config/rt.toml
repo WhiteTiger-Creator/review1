@@ -1,0 +1,4 @@
+policy_socket = "/app/state/rules.sock"
+wasm_socket = "/app/state/rt.sock"
+audit_log = "/var/log/rt-daemon/audit.log"
+clock = "/app/config/clock"

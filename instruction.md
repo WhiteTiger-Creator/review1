@@ -1,34 +1,23 @@
-Our CMake superbuild lost its configure environment, but the bounded evidence
-under `/app/data` is still here: FetchContent declarations, find_package
-requests, provider responses, source-dir overrides, package-config candidates,
-target dependency metadata, prior resolution-lock sections, and four configure
-requests. We need a native reconciler that reconstructs which source would
-satisfy each request and whether prior lock sections can be reused.
+# Isolate runtime authority across cache reuse
 
-Finish the unfinished reconciler in `/app`. Binary name is `cmake-reconciler`.
-Keep the existing `reconcile` entrypoint. Canonical invocation reads `/app/data`
-(or another `--data-dir`) and writes `/app/output/resolution_report.json` (or
-`--report-out`). This is a bounded CMake-inspired dependency-provider and
-FetchContent reconciliation profile — not full CMake compatibility. Do not run
-CMake, download anything, or substitute Python/shell dumps for the native
-binary. The crate is vendored for offline Cargo builds.
+Harden the module execution service under `/app` while preserving `/app/bin/rt-run`, `/app/bin/rulesctl`, the documented ABI, and cache statistics.
 
-Rules live in `/app/docs/cmake_dependency_profile.md`, `/app/docs/input_schema.md`,
-`/app/docs/precedence.md`, `/app/docs/lock_profile.md`, and
-`/app/docs/report_schema.md`. Arguments are declared in `/app/src/cli.rs`.
+Every run must honor only the intersection of capabilities in the module's valid signed document, the requesting tenant's active rules snapshot, and any reductions in the run request. A request cannot add authority.
 
-On success write the report atomically and exit zero. On a whole-run fatal,
-delete the requested report plus temp siblings, print a stderr line that starts
-with `<reason_token>:`, and exit nonzero.
+Module bytes must remain bound to the requesting tenant, signed document, ABI version, rules context, request reductions, limits, and resource namespace used for execution. Cache hits, restart, document replacement, rules refresh, run order, or concurrent runs must not transfer authority between contexts.
 
-## Report bytes are part of the contract
+Reusable compiled artifacts and attachment plans must be keyed so equivalent security contexts share reuse while differing contexts do not. Each run receives fresh mutable service state and fresh instruction, memory, output, and call budgets.
 
-On success, the report must be schema version 1. The top-level JSON object must
-contain exactly these keys, in this order: `schema_version`, `request_rows`,
-`declaration_rows`, `provider_rows`, `package_selection_rows`, `target_rows`,
-`lock_section_rows`, `rejection_rows`, `summary`. No additional top-level key is
-allowed. Encode the report as UTF-8 JSON using exactly two spaces per indentation
-level. Use the row-array orders published in `/app/docs/report_schema.md`. End
-the file with exactly one LF byte. Write successfully through a temporary sibling
-followed by atomic replacement. On whole-run fatal, remove both the requested
-report and its temporary sibling.
+`/app/bin/rulesctl reload` publishes an immutable rules snapshot. Revoked capabilities are unavailable to every run that starts after a successful reload, including cache hits and restart. An active run may retain only the immutable authority snapshot captured when it started.
+
+Signed documents must bind tenant identity, module digest, ABI version, capabilities, limits, and validity. Replacing bound fields without a valid signature is rejected.
+
+Preserve ABI v1 compatibility and documented legacy defaults. ABI v2 omission means denial. Neither version may bypass current tenant rules, request reductions, namespaces, or metering.
+
+Denied operations return documented errors such as `capability-denied` and `host-call-budget-exhausted`. They produce no external effect. Module-supplied paths, keys, names, and endpoints cannot escape the tenant namespace.
+
+Store run results beneath `/output/rt-runs` and JSONL audit events in `/var/log/rt-daemon/audit.log`. Each run directory holds result.json naming tenant, module_digest, cache, effective_caps, and result. Audit lines name tenant, policy_digest, effective_caps, and cache. Results and audits report digests, ABI, cache outcome, and budgets consumed without secret environment values, file or KV contents, signing keys, or cache payloads.
+
+Use `/app/config/clock` as authoritative time. Cache and state live under `/app/state`, tenant resources under `/data/tenants`, and rules or signed documents under `/app/config`. Unix socket requests use a 4-byte big-endian length prefix. Tenant KV stores use the `sqlite3` CLI layout under `/data/tenants`.
+
+Modify source only in `/app`. Do not edit `/tests`, `/data`, signing material, or verifier-supplied artifacts. Do not contact external services.

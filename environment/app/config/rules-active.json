@@ -1,0 +1,13 @@
+{
+  "generation": 1,
+  "tenants": {
+    "tenant-a": {
+      "capabilities": ["fs.read", "fs.write", "env.read", "clock.read", "kv.read", "kv.write"],
+      "limits": {"fuel": 1000000, "host_calls": 64, "output_bytes": 4096, "memory_pages": 16}
+    },
+    "tenant-b": {
+      "capabilities": ["fs.read", "env.read", "clock.read", "kv.read"],
+      "limits": {"fuel": 500000, "host_calls": 32, "output_bytes": 2048, "memory_pages": 8}
+    }
+  }
+}
