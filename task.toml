@@ -3,30 +3,28 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-category = "scientific-computing"
-subcategories = []
 difficulty = "hard"
-codebase_size = "small"
+category = "system-administration"
+subcategories = ["tool_specific"]
 number_of_milestones = 0
-languages = ["cpp"]
-tags = ["matrix-square-root", "denman-beavers", "determinant-scaling", "numerical-linear-algebra", "iterative-methods"]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 540
+codebase_size = "small"
+languages = ["bash", "go"]
+tags = ["sparse-hole", "block-mirror", "inplace-transfer", "hole-ledger", "content-catchup", "sysadmin"]
+expert_time_estimate_min = 60
+junior_time_estimate_min = 150
+difficulty_explanation = "Inplace block-mirror maintenance after a network drop requires dual-axis settlement: hole-ledger debt clearance and content-generation catchup must both complete before verified bytes catch synced presentation bytes. Rank/seal, destination-leg hold, catalog/probe digest authority, append-resume floors, and idempotent reruns interact so fixing presentation staging alone greens the liveness probe while convergence, leg-b quiescence, or digest authorities still disagree. Operators must trace repro_mirror.sh through mirctl and viewctl into the blkmir controller."
+solution_explanation = "Run bash /app/environment/scripts/repro_mirror.sh with OUTPUT_DIR=/app/output and compare push_trace.json, rolling_digest.json, progress_trace.jsonl, and convergence_report.json across maintenance windows. Repair the blkmir controller so PresentMark stages without closing, HoleClearMark and ContentMark jointly close the pipe, rank and sealed generation track verified==synced catchup, digests keep catalog and probe epochs separate while hole debt remains, leg-b advances only after both axes and destination IO, append resume rebuilds floors from fixtures, and idempotent reruns skip already-settled cycles. Rebuild mirctl and viewctl into /app/bin/."
+verification_explanation = "The verifier rebuilds mirctl and viewctl from submitted Go sources into verifier-owned paths, deletes agent /app/bin copies, runs the replay driver unprivileged via runuser, and asserts through pytest cases covering unfinished dual-axis settlement, holes-only and content-only isolation, both-axes-plus-io leg-b advance, append resume without poisoned floors, idempotent mirctl reruns, delayed window settlement after both axes, dual-authority digests, probe tally authority, cross-artifact coherence, and rank/seal coupling. After a two-cycle replay, cycle-one verified_bytes must remain below synced_bytes while cycle-two verified_bytes equals synced_bytes; delayed cluster sums must converge without backfilling earlier cycle rows."
 
 [verifier]
-timeout_sec = 1800
-user = "root"
+timeout_sec = 1250
 
 [agent]
 timeout_sec = 1800
-user = "agent"
 
 [environment]
-build_timeout_sec = 1800
+allow_internet = false
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-allow_internet = false
-docker_flags = []
-gpus = 0
-gpu_types = []

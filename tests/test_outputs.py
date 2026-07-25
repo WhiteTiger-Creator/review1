@@ -1,597 +1,474 @@
-"""Behavioral verifier for denman-beavers-matrix-square-root.
-
-Pure Python only (no numpy or any numerical library).  The task pins a concrete
-computation: the determinantally scaled coupled (Denman-Beavers) iteration for
-the principal square root of a symmetric positive-definite A,
-
-    Y_0 = A,  W_0 = I,
-    mu_k = |det(Y_k) det(W_k)|^(-1/(2n)),
-    Y_{k+1} = 0.5 (mu_k Y_k + mu_k^{-1} W_k^{-1}),
-    W_{k+1} = 0.5 (mu_k W_k + mu_k^{-1} Y_k^{-1}),
-
-run for K = 24 steps.  The graded answer is X = Y_K, Z = W_K and the scale trace
-mu_0 .. mu_{K-1}.
-
-The verifier builds the candidate binary from a frozen, root-owned copy of the
-fixed sources (/opt/fixed) plus the agent's src/matsqrt_impl.cpp, with a
-hardcoded g++ command, so only src/matsqrt_impl.cpp can influence behavior.  For
-each case it fixes a real positive spectrum, builds A = Q D Q^T with an integer
-orthogonal Q (so A is exactly symmetric positive definite and its square root is
-known by construction), and grades:
-
-  (a) well-formedness: finite numbers and correct shapes;
-  (b) symmetry and positive definiteness of X and Z;
-  (c) ||X X - A||_F / ||A||_F within tolerance;
-  (d) max entry magnitude of X Z - I within tolerance;
-  (e) mu_0 against the certified anchor (prod|lambda|)^{-1/(2n)} computed in the
-      log domain from the exact spectrum;
-  (f) the full scale trace against an independent LU-based recomputation whose
-      inverse and log-determinant use a different elimination than the oracle.
-
-The graded matrices span a wide range of eigenvalue magnitudes: |det A| routinely
-lies far outside the range of a double, so the scale factors must be formed
-without ever materializing that determinant.  A handful of small example case
-files are shipped under environment/data/ for development; none of them is used
-for grading, and no reference X, Z, or trace is shipped.
-"""
-
-from __future__ import annotations
-
-import math
-import pathlib
-import random
+import json
+import os
+import shutil
 import subprocess
-from fractions import Fraction as F
+import tempfile
+from pathlib import Path
 
 import pytest
 
-ENV = pathlib.Path("/app/environment")
-AGENT_IMPL = ENV / "src" / "matsqrt_impl.cpp"
-FIXED = pathlib.Path("/opt/fixed")
-BIN = pathlib.Path("/tmp/verify_matsqrt")
-CASE_FILE = pathlib.Path("/tmp/verify_case.txt")
-OUT_FILE = pathlib.Path("/tmp/verify_out.txt")
-
-K = 24  # pinned iteration count (MATSQRT_ITERS)
-TOL_X2A = 1e-7
-TOL_XZ = 1e-7
-TOL_SYM = 1e-7
-SCALE_TOL = 1e-6
-
-# --------------------------------------------------------------------------
-# pure-python dense linear algebra (row-major list-of-lists)
-# --------------------------------------------------------------------------
+OUTPUT = Path("/app/output")
+ENV = Path("/app/environment")
+FIXTURES = ENV / "fixtures"
+PAYLOAD = ENV / "data/seed_payload.bin"
+DEFAULT_CYCLES = 2
+LOGICAL_PATH = "mir-blk"
+CONFIG_HOLD_MS = 1200
+VERIFIER_BIN = Path(os.environ.get("VERIFIER_BIN", "/tmp/verifier-bin"))
+VERIFIER_RUN_USER = os.environ.get("VERIFIER_RUN_USER", "mirrun")
+REBUILD = ["bash", "/tests/rebuild_task_binaries.sh"]
+VERIFIER_CYCLE = ["bash", "/tests/run_verifier_cycle.sh"]
 
 
-def zeros(n):
-    return [[0.0] * n for _ in range(n)]
+def _rebuild_from_submitted_sources() -> None:
+    subprocess.run(["bash", "/tests/verify_infra.sh"], check=True)
 
 
-def ident(n):
-    m = zeros(n)
-    for i in range(n):
-        m[i][i] = 1.0
-    return m
+@pytest.fixture(scope="session", autouse=True)
+def _session_rebuild() -> None:
+    _rebuild_from_submitted_sources()
 
 
-def matmul(A, B, n):
-    C = zeros(n)
-    for i in range(n):
-        Ai, Ci = A[i], C[i]
-        for k in range(n):
-            a = Ai[k]
-            if a == 0.0:
-                continue
-            Bk = B[k]
-            for j in range(n):
-                Ci[j] += a * Bk[j]
-    return C
+def _mirctl() -> Path:
+    return VERIFIER_BIN / "mirctl"
 
 
-def fro(A, n):
-    s = 0.0
-    for i in range(n):
-        for j in range(n):
-            v = A[i][j]
-            s += v * v
-    return math.inf if not math.isfinite(s) else math.sqrt(s)
-
-
-def rel_resid(XX, A, n):
-    num = 0.0
-    den = 0.0
-    for i in range(n):
-        for j in range(n):
-            d = XX[i][j] - A[i][j]
-            num += d * d
-            den += A[i][j] * A[i][j]
-    if not math.isfinite(num) or not math.isfinite(den):
-        return math.inf
-    return math.sqrt(num) / max(math.sqrt(den), 1e-300)
-
-
-def max_off_identity(M, n):
-    return max(
-        abs(M[i][j] - (1.0 if i == j else 0.0)) for i in range(n) for j in range(n)
-    )
-
-
-def max_asym(M, n):
-    return max(
-        (abs(M[i][j] - M[j][i]) for i in range(n) for j in range(n)), default=0.0
-    )
-
-
-def is_pd(M, n):
-    L = zeros(n)
-    for i in range(n):
-        for j in range(i + 1):
-            s = M[i][j] - sum(L[i][k] * L[j][k] for k in range(j))
-            if i == j:
-                if not (s > 0.0):
-                    return False
-                L[i][j] = math.sqrt(s)
-            else:
-                if L[j][j] == 0.0:
-                    return False
-                L[i][j] = s / L[j][j]
-    return True
-
-
-# ----- independent LU-based inverse and log|det| (verifier reference) ------
-
-
-def lu_decompose(A, n):
-    M = [row[:] for row in A]
-    for c in range(n):
-        p = max(range(c, n), key=lambda r: abs(M[r][c]))
-        if M[p][c] == 0.0:
-            return None
-        if p != c:
-            M[c], M[p] = M[p], M[c]
-        for r in range(c + 1, n):
-            M[r][c] /= M[c][c]
-            f = M[r][c]
-            if f != 0.0:
-                for j in range(c + 1, n):
-                    M[r][j] -= f * M[c][j]
-    return M
-
-
-def gj_inverse(A, n):
-    """Gauss-Jordan inverse with partial pivoting (distinct code path)."""
-    M = [row[:] + [1.0 if i == j else 0.0 for j in range(n)] for i, row in enumerate(A)]
-    for c in range(n):
-        p = max(range(c, n), key=lambda r: abs(M[r][c]))
-        if M[p][c] == 0.0:
-            return None
-        M[c], M[p] = M[p], M[c]
-        piv = M[c][c]
-        inv = 1.0 / piv
-        M[c] = [v * inv for v in M[c]]
-        for r in range(n):
-            if r == c:
-                continue
-            f = M[r][c]
-            if f != 0.0:
-                M[r] = [a - f * b for a, b in zip(M[r], M[c])]
-    return [row[n:] for row in M]
-
-
-def lu_logabsdet(A, n):
-    M = lu_decompose(A, n)
-    if M is None:
-        return None
-    return sum(math.log(abs(M[i][i])) for i in range(n))
-
-
-def ref_trace(A, n):
-    """Independent recomputation of the pinned iteration's scale trace and
-    final iterates, using LU log-determinants and Gauss-Jordan inverses."""
-    Y = [row[:] for row in A]
-    W = ident(n)
-    gs = []
-    for _k in range(K):
-        ldy = lu_logabsdet(Y, n)
-        ldw = lu_logabsdet(W, n)
-        if ldy is None or ldw is None:
-            return None
-        g = math.exp(-(ldy + ldw) / (2 * n))
-        Yi = gj_inverse(Y, n)
-        Wi = gj_inverse(W, n)
-        if Yi is None or Wi is None:
-            return None
-        gs.append(g)
-        ig = 1.0 / g
-        Yn = [[0.5 * (g * Y[i][j] + ig * Wi[i][j]) for j in range(n)] for i in range(n)]
-        Wn = [[0.5 * (g * W[i][j] + ig * Yi[i][j]) for j in range(n)] for i in range(n)]
-        if not all(math.isfinite(v) for row in Yn for v in row):
-            return None
-        Y, W = Yn, Wn
-    return gs, Y, W
-
-
-# --------------------------------------------------------------------------
-# construction of known SPD triples: A = Q D Q^T, D positive
-# --------------------------------------------------------------------------
-
-
-def eident(n):
-    return [[F(i == j) for j in range(n)] for i in range(n)]
-
-
-def emm(A, B, n):
-    C = [[F(0)] * n for _ in range(n)]
-    for i in range(n):
-        for k in range(n):
-            a = A[i][k]
-            if a:
-                for j in range(n):
-                    C[i][j] += a * B[k][j]
-    return C
-
-
-def householder_int(rng, n):
-    """Exact rational Householder reflector R = I - 2 v v^T / (v.v), orthogonal."""
-    while True:
-        v = [rng.randint(-2, 2) for _ in range(n)]
-        if any(x != 0 for x in v):
+def _prepare_run_tree(root: Path, out: Path) -> None:
+    subprocess.run(["chown", "-R", VERIFIER_RUN_USER, str(out)], check=False)
+    if root == ENV:
+        return
+    parent = root
+    while parent != parent.parent:
+        subprocess.run(["chmod", "a+rx", str(parent)], check=False)
+        if parent == Path("/"):
             break
-    vv = sum(x * x for x in v)
-    return [[F(i == j) - F(2 * v[i] * v[j], vv) for j in range(n)] for i in range(n)]
+        parent = parent.parent
+    subprocess.run(["chmod", "-R", "a+rX", str(root)], check=False)
+    subprocess.run(["chown", "-R", VERIFIER_RUN_USER, str(root)], check=False)
 
 
-def dyadic(rng, e):
-    """Odd 5-bit mantissa times 2**(e-5): exactly representable when in range."""
-    return F(rng.randrange(16, 32)) * F(2) ** (e - 5)
+def _run_as(args: list[str], *, env: dict, check: bool = True) -> subprocess.CompletedProcess:
+    cmd = ["runuser", "-u", VERIFIER_RUN_USER, "--", "env"]
+    cmd.extend(f"{key}={value}" for key, value in env.items())
+    cmd.extend(args)
+    return subprocess.run(cmd, cwd="/app", check=check)
 
 
-def representable(A, n):
-    for i in range(n):
-        for j in range(n):
-            x = float(A[i][j])
-            if not math.isfinite(x) or F(x) != A[i][j]:
-                return False
-    return True
+def _run_mirctl(
+    out_dir: Path,
+    *,
+    mirror_root: Path | None = None,
+    cycle: int | None = None,
+    append: bool = False,
+    check: bool = True,
+) -> subprocess.CompletedProcess:
+    mirctl = _mirctl()
+    assert mirctl.is_file() and os.access(mirctl, os.X_OK), f"missing verifier binary {mirctl}"
+    env = {
+        "MIRROR_ROOT": str(mirror_root or ENV),
+        "OUTPUT_DIR": str(out_dir),
+    }
+    if cycle is not None:
+        env["CYCLE"] = str(cycle)
+    if append:
+        env["APPEND_EXPORT"] = "1"
+    _prepare_run_tree(Path(env["MIRROR_ROOT"]), out_dir)
+    return _run_as([str(mirctl), "run", str(out_dir)], env=env, check=check)
 
 
-def logabs_frac(fr):
-    return math.log(abs(fr.numerator)) - math.log(fr.denominator)
+def _catalog(cycle: int) -> dict:
+    name = "catalog_view_a.json" if cycle == 1 else "catalog_view_b.json"
+    return json.loads((FIXTURES / name).read_text())
 
 
-def build_spd(rng, n, base_e, spread):
-    """Return (A_float, spectrum_logmods) for a symmetric positive-definite A."""
-    for _ in range(400):
-        eigs = [
-            dyadic(rng, base_e + (rng.randrange(-spread, spread + 1) if spread else 0))
-            for _ in range(n)
-        ]
-        Q = eident(n)
-        for _ in range(rng.choice([1, 2])):
-            Q = emm(Q, householder_int(rng, n), n)
-        D = [[F(0)] * n for _ in range(n)]
-        for i in range(n):
-            D[i][i] = eigs[i]
-        QT = [[Q[j][i] for j in range(n)] for i in range(n)]
-        A = emm(emm(Q, D, n), QT, n)
-        if representable(A, n):
-            Af = [[float(A[i][j]) for j in range(n)] for i in range(n)]
-            return Af, [logabs_frac(e) for e in eigs]
-    raise RuntimeError(f"SPD not representable for n={n}, base_e={base_e}")
+def _probe(cycle: int) -> dict:
+    name = "probe_view_a.json" if cycle == 1 else "probe_view_b.json"
+    return json.loads((FIXTURES / name).read_text())
 
 
-def build_battery():
-    rng = random.Random(20260725)
-    cases = []
-    idx = 0
-
-    def add(tag, n, base_e, spread):
-        nonlocal idx
-        A, logmods = build_spd(rng, n, base_e, spread)
-        cases.append((idx, tag, n, A, logmods))
-        idx += 1
-
-    # Wide-magnitude families: |det A| ~ 2^(+-1100), far outside double range, so
-    # forming the determinant as a product of pivots overflows or underflows.
-    # These start at n = 3: at n = 2 the Frobenius norm of A would itself
-    # overflow when |det A| does (they share the same scale).
-    for n in range(3, 11):
-        e = max(6, math.ceil(1100 / n))
-        add("big", n, e, 3)
-        add("small", n, -e, 3)
-    # Modest-magnitude families with increasing condition number (the product
-    # determinant survives here, so these force the correct determinant SCALING
-    # rather than only the overflow handling).
-    for n in range(2, 11):
-        add("unit", n, 0, 4)
-        add("s8", n, 0, 8)
-        add("cond", n, 0, 12)
-        add("s16", n, 0, 16)
-        add("illcond", n, 0, 20)
-    # A few larger wide cases.
-    for n in (7, 9, 10):
-        e = max(6, math.ceil(1400 / n))
-        add("bigger", n, e, 4)
-    return cases
-
-
-BATTERY = build_battery()
-
-# --------------------------------------------------------------------------
-# build / run / io helpers
-# --------------------------------------------------------------------------
-
-
-def _build():
-    """Compile from the frozen fixed sources plus the agent's matsqrt_impl.cpp
-    with a hardcoded command; never trust the agent's CMake or other files."""
-    assert FIXED.is_dir(), f"{FIXED} missing; image not built as expected"
-    assert AGENT_IMPL.is_file(), f"{AGENT_IMPL} missing"
-    cmd = [
-        "g++",
-        "-O2",
-        "-std=c++17",
-        "-Wall",
-        f"-I{FIXED}",
-        str(FIXED / "main.cpp"),
-        str(AGENT_IMPL),
-        "-o",
-        str(BIN),
-    ]
-    r = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    assert r.returncode == 0, f"compile failed:\n{r.stderr}"
-
-
-def _write_case(A, n):
-    parts = [str(n)]
-    for i in range(n):
-        parts.append(" ".join(format(A[i][j], ".17g") for j in range(i + 1)))
-    CASE_FILE.write_text("\n".join(parts) + "\n")
-
-
-def _run():
-    if OUT_FILE.exists():
-        OUT_FILE.unlink()
-    r = subprocess.run(
-        [str(BIN), str(CASE_FILE), str(OUT_FILE)],
+def _tally_hex(tally: int, epoch: int) -> str:
+    canon = tally.to_bytes(8, "little", signed=False) + epoch.to_bytes(4, "little", signed=False)
+    proc = subprocess.run(
+        ["openssl", "dgst", "-sha256", "-hex"],
+        input=canon,
         capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+        check=True,
     )
-    assert r.returncode == 0, f"matsqrt exited {r.returncode}\nstderr:\n{r.stderr}"
-    assert OUT_FILE.exists(), "no output file was written"
+    return proc.stdout.decode().strip().split()[-1]
 
 
-def _parse_output(n):
-    lines = OUT_FILE.read_text().splitlines()
-    pos = 0
-
-    def nxt():
-        nonlocal pos
-        assert pos < len(lines), "output ended unexpectedly"
-        s = lines[pos]
-        pos += 1
-        return s
-
-    assert nxt().startswith("n="), "expected n= line"
-    assert nxt().startswith("status=OK"), "expected status=OK"
-    assert nxt().startswith("message="), "expected message= line"
-
-    def read_matrix(label):
-        assert nxt() == label, f"expected {label} section"
-        return [[float(v) for v in nxt().split()] for _ in range(n)]
-
-    X = read_matrix("X")
-    Z = read_matrix("Z")
-    assert nxt() == "SCALE", "expected SCALE section"
-    mu = [float(nxt()) for _ in range(K)]
-    return X, Z, mu
+def _window_sum(offset: int, span: int) -> int:
+    data = PAYLOAD.read_bytes()
+    window = data[offset : offset + span]
+    return sum(window)
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _built():
-    _build()
+def _run_repro(extra_env: dict | None = None) -> subprocess.CompletedProcess:
+    if OUTPUT.exists():
+        shutil.rmtree(OUTPUT)
+    env = os.environ.copy()
+    env.setdefault("OUTPUT_DIR", str(OUTPUT))
+    env.setdefault("CYCLE_COUNT", str(DEFAULT_CYCLES))
+    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
+    env.setdefault("MIRROR_ROOT", str(ENV))
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=False)
 
 
-# --------------------------------------------------------------------------
-# tests
-# --------------------------------------------------------------------------
+def _load(name: str):
+    path = OUTPUT / name
+    assert path.exists(), f"missing {path}"
+    if name.endswith(".jsonl"):
+        return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+    data = json.loads(path.read_text())
+    if name == "push_trace.json":
+        return data.get("segments", data)
+    return data
 
 
-def test_binary_builds_successfully():
-    assert BIN.exists() and BIN.is_file()
+def _side_b_view() -> dict:
+    digest = _load("rolling_digest.json")
+    side_b = [v for v in digest["views"] if v["source"] == "side-b"]
+    assert side_b, "missing side-b view in rolling_digest"
+    return side_b[0]
 
 
-@pytest.mark.parametrize(
-    "case", BATTERY, ids=[f"{c[0]:02d}-{c[1]}-n{c[2]}" for c in BATTERY]
-)
-def test_case(case):
-    """Recover X, Z and the pinned scale trace, satisfying every condition."""
-    _idx, _tag, n, A, logmods = case
-    _write_case(A, n)
-    _run()
-    X, Z, mu = _parse_output(n)
+def _side_a_view() -> dict | None:
+    digest = _load("rolling_digest.json")
+    side_a = [v for v in digest["views"] if v["source"] == "side-a"]
+    return side_a[0] if side_a else None
 
-    assert len(X) == n and all(len(r) == n for r in X), "X wrong shape"
-    assert len(Z) == n and all(len(r) == n for r in Z), "Z wrong shape"
-    assert all(math.isfinite(v) for r in X for v in r), "X has non-finite values"
-    assert all(math.isfinite(v) for r in Z for v in r), "Z has non-finite values"
-    assert all(math.isfinite(x) and x > 0.0 for x in mu), (
-        "scale factors must be finite positive"
+
+def _max_verified_seal(conv: dict) -> int:
+    seal = 0
+    for row in conv.get("cycles", []):
+        if row["verified_bytes"] > 0 and row["verified_bytes"] == row["synced_bytes"]:
+            seal = max(seal, row["cycle"])
+    return seal
+
+
+def _packed_probe_epoch(cycle: int) -> int:
+    catalog = _catalog(cycle)
+    probe = _probe(cycle)
+    lanes = {"catalog_lane": 0, "probe_lane": 1}
+    cat_epoch = catalog["epoch"]
+    prb_epoch = probe["epoch"]
+    if lanes["catalog_lane"] == lanes["probe_lane"]:
+        return cat_epoch
+    return prb_epoch
+
+
+def _leg_b_baseline_epoch(cycle: int) -> int:
+    return _packed_probe_epoch(cycle) - 1
+
+
+def _run_cycle_one_with_probe(probe_patch: dict) -> tuple[dict, dict]:
+    """Run a single replay cycle with a patched probe fixture in an isolated env copy."""
+    tmp_root = Path(tempfile.mkdtemp(prefix="blkmir-mixed-"))
+    env_copy = tmp_root / "environment"
+    shutil.copytree(ENV, env_copy)
+    probe_path = env_copy / "fixtures" / "probe_view_a.json"
+    probe = json.loads(probe_path.read_text())
+    probe.update(probe_patch)
+    probe_path.write_text(json.dumps(probe, indent=2) + "\n")
+    out_dir = tmp_root / "output"
+    out_dir.mkdir()
+    _prepare_run_tree(env_copy, out_dir)
+    env = os.environ.copy()
+    env["MIRROR_ROOT"] = str(env_copy)
+    env["OUTPUT_DIR"] = str(out_dir)
+    env["CYCLE_COUNT"] = "1"
+    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
+    proc = subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=False)
+    assert proc.returncode == 0, proc.stderr
+    segments = json.loads((out_dir / "push_trace.json").read_text())["segments"]
+    leg_b = next(r for r in segments if r["leg_id"] == "leg-b")
+    leg_a = next(r for r in segments if r["leg_id"] == "leg-a")
+    return leg_b, leg_a
+
+
+def _assert_leg_b_quiescent(leg_b: dict, baseline_epoch: int) -> None:
+    assert leg_b["hold_ms"] < CONFIG_HOLD_MS
+    assert leg_b["epoch"] == baseline_epoch
+
+
+def test_configured_lane_epochs_track_fixture_authorities():
+    """Digest epochs must follow lane routing from epoch_lane.toml, not collapse when lanes differ."""
+    _run_repro({"CYCLE_COUNT": str(DEFAULT_CYCLES)})
+    catalog = _catalog(DEFAULT_CYCLES)
+    probe = _probe(DEFAULT_CYCLES)
+    side_a = _side_a_view()
+    side_b = _side_b_view()
+    assert side_a is not None
+    assert side_a["epoch"] == catalog["epoch"]
+    assert side_b["epoch"] == probe["epoch"]
+    if catalog["epoch"] != probe["epoch"]:
+        assert side_a["epoch"] != side_b["epoch"]
+
+
+def test_presentation_with_hole_debt_preserves_split_authorities():
+    """Finished catalog with hole debt must not seal rank or collapse split digest authorities."""
+    if OUTPUT.exists():
+        shutil.rmtree(OUTPUT)
+    env = os.environ.copy()
+    env["OUTPUT_DIR"] = str(OUTPUT)
+    env["CYCLE_COUNT"] = "1"
+    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
+    subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=True)
+    probe = _probe(1)
+    catalog = _catalog(1)
+    conv = _load("convergence_report.json")
+    cycle1 = conv["cycles"][0]
+    side_a = _side_a_view()
+    side_b = _side_b_view()
+    segments = _load("push_trace.json")
+    leg_b = next(r for r in segments if r["leg_id"] == "leg-b")
+    assert catalog["finished"] is True
+    assert probe["hole_debt"] > 0
+    assert probe["holes_cleared"] is False
+    assert probe["content_caught"] is False
+    assert cycle1["synced_bytes"] > 0
+    assert cycle1["verified_bytes"] != cycle1["synced_bytes"]
+    assert _max_verified_seal(conv) == 0
+    assert side_a is not None
+    assert side_a["epoch"] == catalog["epoch"]
+    assert side_b["epoch"] == probe["epoch"]
+    assert leg_b["epoch"] != cycle1["verified_bytes"]
+    if catalog["epoch"] != probe["epoch"]:
+        assert side_a["epoch"] != side_b["epoch"]
+
+
+def test_holes_cleared_alone_does_not_advance_leg_b():
+    """Hole-axis clearance alone must not advance leg-b hold or epoch while content catchup is open."""
+    leg_b, _leg_a = _run_cycle_one_with_probe(
+        {
+            "leg_b_io_done": True,
+            "hole_clear_mark": True,
+            "holes_cleared": True,
+            "hole_debt": 0,
+            "content_mark": False,
+            "content_caught": False,
+            "present_mark": True,
+        }
     )
+    _assert_leg_b_quiescent(leg_b, _leg_b_baseline_epoch(1))
 
-    assert max_asym(X, n) <= TOL_SYM, f"X not symmetric ({max_asym(X, n):.2e})"
-    assert max_asym(Z, n) <= TOL_SYM, f"Z not symmetric ({max_asym(Z, n):.2e})"
-    assert is_pd(X, n), "X is not positive definite"
-    assert is_pd(Z, n), "Z is not positive definite"
 
-    rx = rel_resid(matmul(X, X, n), A, n)
-    assert rx <= TOL_X2A, f"||X X - A||/||A|| = {rx:.3e} exceeds {TOL_X2A:.1e}"
-
-    rxz = max_off_identity(matmul(X, Z, n), n)
-    assert rxz <= TOL_XZ, f"max|X Z - I| = {rxz:.3e} exceeds {TOL_XZ:.1e}"
-
-    # (e) mu_0 against the certified anchor from the exact spectrum (log domain)
-    g0_true = math.exp(-sum(logmods) / (2 * n))
-    assert abs(mu[0] - g0_true) <= SCALE_TOL * g0_true, (
-        f"mu_0={mu[0]:.6e} differs from certified {g0_true:.6e}"
+def test_content_caught_alone_does_not_advance_leg_b():
+    """Content catchup alone must not advance leg-b hold or epoch while hole debt remains."""
+    leg_b, _leg_a = _run_cycle_one_with_probe(
+        {
+            "leg_b_io_done": True,
+            "content_mark": True,
+            "content_caught": True,
+            "hole_clear_mark": False,
+            "holes_cleared": False,
+            "hole_debt": 2048,
+            "present_mark": True,
+        }
     )
-
-    # (f) full scale trace against the independent LU-based recomputation
-    ref = ref_trace(A, n)
-    assert ref is not None, "reference iteration failed"
-    gref, _Yr, _Wr = ref
-    for k in range(K):
-        assert abs(mu[k] - gref[k]) <= SCALE_TOL * abs(gref[k]) + 1e-300, (
-            f"mu_{k}={mu[k]:.6e} differs from reference {gref[k]:.6e}"
-        )
+    _assert_leg_b_quiescent(leg_b, _leg_b_baseline_epoch(1))
 
 
-def test_case_count_meets_minimum():
-    assert len({c[0] for c in BATTERY}) == len(BATTERY), "duplicate case id"
-    assert len(BATTERY) >= 60, f"only {len(BATTERY)} graded cases, expected >= 60"
-
-
-def test_example_case_files_present():
-    for name in ("case_spd_n5_c6", "case_toy"):
-        assert (ENV / "data" / f"{name}.txt").exists(), f"missing example {name}.txt"
-
-
-def test_interface_contract_unaltered():
-    header = (FIXED / "matsqrt.hpp").read_text()
-    assert "MatSqrtResult matrix_sqrt(const Matrix& A);" in header, "signature altered"
-    for field in ("Matrix X", "Matrix Z", "Vector scale", "bool ok"):
-        assert field in header, f"expected field {field!r} missing"
-
-
-# --------------------------------------------------------------------------
-# adversarial negatives: each shortcut is recomputed here and shown to fail,
-# proving the discriminating power of the scale-trace grade is real.
-# --------------------------------------------------------------------------
-
-
-def _prod_absdet(A, n):
-    M = lu_decompose(A, n)
-    if M is None:
-        return 0.0
-    d = 1.0
-    for i in range(n):
-        d *= M[i][i]
-    return abs(d)
-
-
-def _trace_with(A, n, scaling):
-    """Recompute the coupled iteration using a chosen scaling rule.  Returns the
-    scale trace, or None if it produces a non-finite value (a rejection)."""
-    Y = [row[:] for row in A]
-    W = ident(n)
-    gs = []
-    for _k in range(K):
-        Yi = gj_inverse(Y, n)
-        Wi = gj_inverse(W, n)
-        if Yi is None or Wi is None:
-            return None
-        if scaling == "prodet":
-            d = _prod_absdet(Y, n) * _prod_absdet(W, n)
-            if d == 0.0 or not math.isfinite(d):
-                return None
-            g = d ** (-1.0 / (2 * n))
-        elif scaling == "frob":
-            ny = fro(Y, n)
-            nwi = fro(Wi, n)
-            if not math.isfinite(ny) or not math.isfinite(nwi) or ny == 0.0:
-                return None
-            g = math.sqrt(nwi / ny)
-        else:  # "none": no scaling
-            g = 1.0
-        if not math.isfinite(g) or g == 0.0:
-            return None
-        ig = 1.0 / g
-        gs.append(g)
-        Yn = [[0.5 * (g * Y[i][j] + ig * Wi[i][j]) for j in range(n)] for i in range(n)]
-        Wn = [[0.5 * (g * W[i][j] + ig * Yi[i][j]) for j in range(n)] for i in range(n)]
-        if not all(math.isfinite(v) for row in Yn for v in row):
-            return None
-        Y, W = Yn, Wn
-    return gs
-
-
-def _reference_mu0(logmods, n):
-    return math.exp(-sum(logmods) / (2 * n))
-
-
-def test_naive_product_determinant_is_rejected():
-    """Forming |det| as a product of pivots overflows or underflows on the wide
-    cases, so the mu it produces is non-finite; every wide case must break."""
-    wide = 0
-    broke = 0
-    for _idx, tag, n, A, _lm in BATTERY:
-        if tag in ("big", "small", "bigger"):
-            wide += 1
-            if _trace_with(A, n, "prodet") is None:
-                broke += 1
-    assert wide > 0
-    assert broke == wide, (
-        f"naive product determinant must break on every wide case, {broke}/{wide}"
+def test_both_axes_and_io_advance_leg_b():
+    """Leg-b hold and epoch may advance only after hole clearance, content catchup, and destination IO."""
+    leg_b, leg_a = _run_cycle_one_with_probe(
+        {
+            "leg_b_io_done": True,
+            "hole_clear_mark": True,
+            "holes_cleared": True,
+            "hole_debt": 0,
+            "content_mark": True,
+            "content_caught": True,
+            "present_mark": True,
+        }
     )
+    baseline = _leg_b_baseline_epoch(1)
+    assert leg_b["hold_ms"] >= CONFIG_HOLD_MS
+    assert leg_b["epoch"] == baseline + 1
+    assert leg_b["epoch"] > leg_a["epoch"]
 
 
-def test_frobenius_scaling_trace_is_rejected():
-    """A full but Frobenius-scaled iteration produces a valid square root yet a
-    different scale trace, so it must fail the scale grade on every case."""
-    failed = 0
-    for _idx, _tag, n, A, logmods in BATTERY:
-        g0 = _reference_mu0(logmods, n)
-        ft = _trace_with(A, n, "frob")
-        if ft is None or abs(ft[0] - g0) > SCALE_TOL * g0:
-            failed += 1
-    assert failed == len(BATTERY), (
-        f"Frobenius scaling must fail the trace grade everywhere, {failed}/{len(BATTERY)}"
-    )
+def test_append_resume_rebuilds_from_fixture_not_poison():
+    """Append resume must rebuild leg-b epoch floors from fixture authorities, not partial verified or hole tallies."""
+    if OUTPUT.exists():
+        shutil.rmtree(OUTPUT)
+    env = os.environ.copy()
+    env["OUTPUT_DIR"] = str(OUTPUT)
+    env["CYCLE_COUNT"] = "1"
+    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
+    subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=True)
+    conv_partial = _load("convergence_report.json")["cycles"][0]
+    assert conv_partial["verified_bytes"] < conv_partial["synced_bytes"]
+    probe2 = _probe(2)
+    packed_floor = _packed_probe_epoch(2) - 1
+    _run_mirctl(OUTPUT, cycle=2, append=True)
+    segments = _load("push_trace.json")
+    leg_b_rows = [r for r in segments if r["leg_id"] == "leg-b"]
+    assert leg_b_rows, "missing leg-b rows after append resume"
+    assert all(r["epoch"] != conv_partial["verified_bytes"] for r in leg_b_rows)
+    assert all(r["byte_offset"] == probe2["delayed_offset"] for r in leg_b_rows)
+    last_leg_b_epoch = leg_b_rows[len(leg_b_rows) - 1]["epoch"]
+    assert last_leg_b_epoch >= packed_floor
+    assert last_leg_b_epoch >= probe2["epoch"] - 1
 
 
-def test_unscaled_iteration_is_rejected():
-    """The unscaled coupled iteration (mu_k = 1) yields the wrong trace on every
-    case, and does not even converge on the wide ones."""
-    failed = 0
-    for _idx, _tag, n, A, logmods in BATTERY:
-        g0 = _reference_mu0(logmods, n)
-        ut = _trace_with(A, n, "none")
-        if ut is None or abs(ut[0] - g0) > SCALE_TOL * g0:
-            failed += 1
-    assert failed == len(BATTERY), (
-        f"unscaled iteration must fail the trace grade everywhere, {failed}/{len(BATTERY)}"
-    )
+def test_dual_authority_digest_survives_hole_debt():
+    """Digest views must keep catalog and probe epochs separate while hole debt remains unsettled."""
+    if OUTPUT.exists():
+        shutil.rmtree(OUTPUT)
+    env = os.environ.copy()
+    env["OUTPUT_DIR"] = str(OUTPUT)
+    env["CYCLE_COUNT"] = "1"
+    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
+    subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=True)
+    catalog = _catalog(1)
+    probe = _probe(1)
+    conv = _load("convergence_report.json")
+    side_a = _side_a_view()
+    side_b = _side_b_view()
+    assert catalog["finished"] is True
+    assert probe["hole_debt"] > 0
+    assert _max_verified_seal(conv) == 0
+    assert probe["epoch"] > catalog["epoch"] or catalog["epoch"] != probe["epoch"]
+    assert side_a is not None
+    assert side_a["epoch"] == catalog["epoch"]
+    assert side_b["epoch"] == probe["epoch"]
+    assert side_a["tally"] == catalog["tally"]
+    assert side_b["tally"] == probe["tally"]
+    assert side_a["tally_hex"] == _tally_hex(side_a["tally"], side_a["epoch"])
+    assert side_b["tally_hex"] == _tally_hex(side_b["tally"], side_b["epoch"])
 
 
-def test_return_A_is_rejected():
-    """Returning X = A (and Z = I) misses the X X = A residual by orders of
-    magnitude on every conditioned case."""
-    bad = 0
-    for _idx, _tag, n, A, _lm in BATTERY:
-        rx = rel_resid(matmul(A, A, n), A, n)
-        if not math.isfinite(rx) or rx > TOL_X2A:
-            bad += 1
-    assert bad == len(BATTERY), "returning A must miss the residual on every case"
+def test_rolling_digest_exports_latest_cycle_pair_only():
+    """rolling_digest.json must contain only side-a and side-b views from the latest completed cycle."""
+    _run_repro({"CYCLE_COUNT": str(DEFAULT_CYCLES)})
+    digest = _load("rolling_digest.json")
+    views = digest["views"]
+    assert len(views) == 2
+    sources = {view["source"] for view in views}
+    assert sources == {"side-a", "side-b"}
+    catalog = _catalog(DEFAULT_CYCLES)
+    probe = _probe(DEFAULT_CYCLES)
+    side_a = next(view for view in views if view["source"] == "side-a")
+    side_b = next(view for view in views if view["source"] == "side-b")
+    assert side_a["epoch"] == catalog["epoch"]
+    assert side_a["tally"] == catalog["tally"]
+    assert side_b["epoch"] == probe["epoch"]
+    assert side_b["tally"] == probe["tally"]
 
 
-def test_no_forbidden_libraries():
-    """No external linear-algebra routines are referenced in the agent source."""
-    forbidden = [
-        "dgesv",
-        "dpotrf",
-        "dsyev",
-        "dgeev",
-        "dgesvd",
-        "cblas_",
-        "gsl_linalg",
-        "gsl_matrix",
-        "Eigen::",
-        "LAPACKE_",
-        "armadillo",
-        "#include <mkl",
-    ]
-    text = AGENT_IMPL.read_text()
-    for sym in forbidden:
-        assert sym not in text, f"forbidden symbol '{sym}' in src/matsqrt_impl.cpp"
+def test_probe_metric_authority_in_digest_chain():
+    """Probe-side digest tally must follow probe fixture metrics through blending and export, not catalog metrics."""
+    _run_repro({"CYCLE_COUNT": str(DEFAULT_CYCLES)})
+    probe = _probe(2)
+    catalog = _catalog(2)
+    side_b = _side_b_view()
+    side_a = _side_a_view()
+    assert side_b["tally"] == probe["tally"]
+    assert side_b["tally"] != catalog["tally"]
+    assert side_a is not None
+    assert side_a["tally"] == catalog["tally"]
+    assert side_b["tally_hex"] == _tally_hex(side_b["tally"], side_b["epoch"])
+
+
+def test_sealed_append_idempotent_across_rank_boundary():
+    """Idempotent mirctl rerun must skip an already-exported settled cycle and leave artifacts unchanged."""
+    _run_repro({"CYCLE_COUNT": str(DEFAULT_CYCLES)})
+    conv_before = _load("convergence_report.json")
+    assert _max_verified_seal(conv_before) == DEFAULT_CYCLES
+    before_segments = len(_load("push_trace.json"))
+    before_cycles = len(conv_before["cycles"])
+    before_trace = _load("progress_trace.jsonl")
+    first_digest = _load("rolling_digest.json")
+    _run_mirctl(OUTPUT, cycle=DEFAULT_CYCLES, append=True)
+    assert len(_load("push_trace.json")) == before_segments
+    assert len(_load("convergence_report.json")["cycles"]) == before_cycles
+    assert _load("progress_trace.jsonl") == before_trace
+    assert _load("rolling_digest.json") == first_digest
+
+
+def test_delayed_window_settles_after_both_axes():
+    """Delayed window sums disagree on cycle one and converge once both settlement axes complete on cycle two."""
+    if OUTPUT.exists():
+        shutil.rmtree(OUTPUT)
+    env = os.environ.copy()
+    env["OUTPUT_DIR"] = str(OUTPUT)
+    env["CYCLE_COUNT"] = "1"
+    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
+    subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=True)
+    probe1 = _probe(1)
+    catalog = _catalog(1)
+    offset = probe1["delayed_offset"]
+    span = probe1["delayed_span"]
+    seed_sum = _window_sum(offset, span)
+    assert catalog["finished"] is True
+    assert probe1["leg_a_sum"] == seed_sum
+    assert probe1["leg_b_sum"] != probe1["leg_a_sum"]
+    _run_mirctl(OUTPUT, cycle=2, append=True)
+    probe2 = _probe(2)
+    conv = _load("convergence_report.json")
+    final = conv["cycles"][-1]
+    assert probe2["leg_a_sum"] == probe2["leg_b_sum"]
+    assert probe2["hole_debt"] == 0
+    assert probe2["holes_cleared"] is True
+    assert probe2["content_caught"] is True
+    assert final["verified_bytes"] == final["synced_bytes"]
+    assert _max_verified_seal(conv) == 2
+
+
+def test_cross_artifact_replay_coherence():
+    """Full replay coordinates dual-axis settlement, trace ordering, leg-b anchors, and digest chain."""
+    _run_repro({"CYCLE_COUNT": "2"})
+    conv = _load("convergence_report.json")
+    assert len(conv["cycles"]) >= 2
+    digest = _load("rolling_digest.json")
+    segments = _load("push_trace.json")
+    trace = _load("progress_trace.jsonl")
+    probe = _probe(2)
+    for view in digest["views"]:
+        assert view["tally_hex"] == _tally_hex(view["tally"], view["epoch"])
+    assert len(trace) >= DEFAULT_CYCLES * 3
+    for cycle in range(1, DEFAULT_CYCLES + 1):
+        stage_rows = [row for row in trace if row["epoch"] == cycle]
+        assert [row["op"] for row in stage_rows] == ["chunk", "roll", "latch"]
+        for row in stage_rows:
+            assert row["path"] == LOGICAL_PATH
+        cycle_conv = next(c for c in conv["cycles"] if c["cycle"] == cycle)
+        if cycle == 1:
+            assert cycle_conv["verified_bytes"] != cycle_conv["synced_bytes"]
+            assert cycle_conv["synced_bytes"] > 0
+            assert _max_verified_seal({"cycles": conv["cycles"][:1]}) == 0
+        else:
+            assert cycle_conv["verified_bytes"] == cycle_conv["synced_bytes"]
+    leg_b_rows = [r for r in segments if r["leg_id"] == "leg-b"]
+    assert all(r["byte_offset"] == probe["delayed_offset"] for r in leg_b_rows)
+    side_b = _side_b_view()
+    assert side_b["tally"] == probe["tally"]
+    leg_a_rows = [r for r in segments if r["leg_id"] == "leg-a"]
+    for cycle in range(1, DEFAULT_CYCLES + 1):
+        if not _probe(cycle).get("leg_b_io_done", True):
+            idx = cycle - 1
+            assert leg_b_rows[idx]["epoch"] <= leg_a_rows[idx]["epoch"]
+
+
+def test_rank_seal_requires_verified_catchup_both_axes():
+    """Rank, sealed generation, and digest epochs must stay coupled through dual-axis verified catchup."""
+    _run_repro({"CYCLE_COUNT": str(DEFAULT_CYCLES)})
+    conv = _load("convergence_report.json")
+    cycle1 = next(c for c in conv["cycles"] if c["cycle"] == 1)
+    cycle2 = next(c for c in conv["cycles"] if c["cycle"] == 2)
+    assert cycle1["verified_bytes"] != cycle1["synced_bytes"]
+    assert cycle2["verified_bytes"] == cycle2["synced_bytes"]
+    assert _max_verified_seal({"cycles": conv["cycles"][:1]}) == 0
+    assert _max_verified_seal(conv) == DEFAULT_CYCLES
+    digest = _load("rolling_digest.json")
+    catalog = _catalog(DEFAULT_CYCLES)
+    probe = _probe(DEFAULT_CYCLES)
+    side_a = next(v for v in digest["views"] if v["source"] == "side-a")
+    side_b = next(v for v in digest["views"] if v["source"] == "side-b")
+    assert side_a["epoch"] == catalog["epoch"]
+    assert side_b["epoch"] == probe["epoch"]
+    assert probe["hole_debt"] == 0
+    assert probe["content_caught"] is True

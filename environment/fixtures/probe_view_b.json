@@ -1,0 +1,17 @@
+{
+  "logical_path": "mir-blk",
+  "tally": 7,
+  "epoch": 4,
+  "hole_debt": 0,
+  "holes_cleared": true,
+  "content_caught": true,
+  "present_mark": true,
+  "hole_clear_mark": true,
+  "content_mark": true,
+  "leg_a_io_done": true,
+  "leg_b_io_done": true,
+  "delayed_offset": 4096,
+  "delayed_span": 512,
+  "leg_a_sum": 8704,
+  "leg_b_sum": 8704
+}
