@@ -1,5 +1,22 @@
-A semiconductor transport lab needs the carrier state behind a set of coupled longitudinal and Hall sweeps. Infer one temperature-dependent density and mobility law per carrier band, together with the bounded field-scale and contact offsets for each run, so that the same emitted state satisfies the tensor replay, compensation, ordering, smoothness, and residual-quality limits for the entire archive.
+The question here is a timing one. Given a clock, a set of deadlines armed
+against it, and a stream of advances, which deadlines come due at which tick,
+and in what order are they reported when several come due during one advance.
+The only surviving evidence is a stripped x86-64 executable at /app/bin/timers,
+optimized and carrying no symbols. Its source is gone, so the discipline it
+settled on has to be recovered by analysing it and running it on traces of your
+choosing.
 
-The input archive is `/app/task_file/input_data/`. Write `/app/hall_transport.c`, compile it without warnings to `/app/hall_transport` using `cc -O2 -std=c11 -Wall -Wextra -o /app/hall_transport /app/hall_transport.c -lm`, and make the binary accept exactly `/app/hall_transport <input_dir> <output_dir>` without starting another process. For the supplied archive it must write `/app/task_file/calibration/transport_parameters.json`, `/app/task_file/calibration/observation_residuals.jsonl`, and `/app/task_file/calibration/transport_summary.json`; a run with the wrong argument count must fail, and an infeasible calibration must fail without leaving any of those three files.
+The framing is settled in /app/docs/io-contract.txt: an ASCII trace that sets a
+starting clock and then arms, cancels and advances, answered by one due line
+and one live count per advance and closed by a digest. That document gives
+every field range, every output line, and every error token.
 
-`/app/task_file/transport_spec.md` defines the input tables, transport equations and units, simultaneous final-state gates, exact output schemas, six-decimal canonical replay, ordering, empty-set behavior, and additive diagnostic rules. `/app/task_file/transport_model.py` is the public numeric implementation of the same replay and metrics. Treat the model, specification, and input archive as read-only. The same program will be rebuilt and run on compatible archives that change carrier counts and signs, temperature and magnetic-field coverage, compensation, mobility separation, activation behavior, run corrections, bounds, noise, flags, and row ordering; all configured gates and the same output contract continue to apply.
+Nothing about the internal timing is written down. How the executable treats
+each operation it accepts, and how it decides which deadlines come due and in
+what order, are deterministic, and the executable is their only account.
+
+/app/harness/run.sh feeds a trace in, /app/harness/diff.py compares the two,
+and /app/inputs holds examples that do not reach everywhere the grading traces
+reach. Write the recovered C to /app/src/recovered.c; running make from /app
+compiles it to /app/build/recovered. Grading recompiles that source alone,
+where no copy of the executable exists.

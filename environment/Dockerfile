@@ -1,25 +1,18 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        gcc \
-        libc6-dev \
-        binutils \
-        strace \
-        tmux \
-        asciinema \
-        ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt /tmp/requirements.txt
 
-RUN python -m venv /opt/verifier-venv
+RUN apt-get update && apt-get install -y --no-install-recommends tmux asciinema python3 python3-venv make binutils util-linux ca-certificates && python3 -m venv /opt/pytools && /opt/pytools/bin/pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/requirements.txt && rm -rf /var/lib/apt/lists/* /tmp/requirements.txt
 
-COPY requirements.lock /tmp/requirements.lock
-RUN /opt/verifier-venv/bin/python -m pip install --no-cache-dir --require-hashes \
-    -r /tmp/requirements.lock
+ENV PATH="/opt/pytools/bin:${PATH}"
 
-COPY --chown=65534:65534 task_file/ /app/task_file/
-RUN mkdir -p /app/task_file/calibration
-RUN chown 65534:65534 /app/task_file/calibration
-RUN chown 65534:65534 /app
+COPY Makefile /app/Makefile
+COPY src/ /app/src/
+COPY --chmod=755 bin/ /app/bin/
+COPY --chmod=755 harness/ /app/harness/
+COPY inputs/ /app/inputs/
+COPY docs/ /app/docs/

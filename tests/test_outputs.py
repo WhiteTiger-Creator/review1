@@ -1,591 +1,348 @@
-from __future__ import annotations
-
-import csv
-import hashlib
-import importlib.util
-import json
-import math
-import re
-import shutil
+import glob
+import os
 import subprocess
-from pathlib import Path
+from shutil import copyfile
+from tempfile import mkdtemp
 
 import pytest
 
-from case_builder import make_case
-
-APP_INPUT = Path("/app/task_file/input_data")
-APP_OUTPUT = Path("/app/task_file/calibration")
-APP_SOURCE = Path("/app/hall_transport.c")
-
-if APP_INPUT.exists():
-    INPUT_DIR = APP_INPUT
-    OUTPUT_DIR = APP_OUTPUT
-    SOURCE_PATH = APP_SOURCE
-    TASK_FILE = Path("/app/task_file")
-else:
-    ROOT = Path(__file__).resolve().parents[1]
-    INPUT_DIR = ROOT / "environment" / "task_file" / "input_data"
-    OUTPUT_DIR = ROOT / "environment" / "task_file" / "calibration"
-    SOURCE_PATH = ROOT / "solution" / "hall_transport.c"
-    TASK_FILE = ROOT / "environment" / "task_file"
-
-SPEC_SHA256 = "af520a8a1f5aa78662dc409c0989dba6af24e89475071142bf0f1bc602d283f0"
-MODEL_SHA256 = "5853eac6f3b7f89b541f3bde54ae8f513c035544d2dac9bee67ca03b29185328"
-PUBLIC_INPUT_SHA256 = {
-    "carriers.csv": "0fcfff98ed9a70acb2607b3f106a524d3573607e0bb6940641e8d1887e45654b",
-    "case_config.csv": "5a9362d3bd71da942384e85f50c7bd48ca71a463e0e4f91876584d6d444ec4ab",
-    "input_hashes.json": "5a50ba2aaf1a9a393899710e14cf72a2b3e7308aa55ba1bdd7a492486f00bc5c",
-    "observations.csv": "fd03429572661aae688c14fcc46c0878666d2604dfd8c2582db458d87ed7c8d3",
-    "prior_flags.csv": "5cae1ee628e073c240fcfdb8e22281d91fbb2d1b6e987802820467ba2b6d7d37",
-    "runs.csv": "4a33aaa2a81e060a40f9c5d37b7f37af03f5af8f6fd0b2397b9637fb3a7eea5a",
-}
-FINDINGS = [
-    "excluded_observation",
-    "prior_flag",
-    "longitudinal_outlier",
-    "hall_outlier",
-    "run_bias",
-]
-ROUNDING = {
-    "carrier_parameters": 6,
-    "run_parameters": 6,
-    "modeled_uohm_m": 6,
-    "residual_sigma": 6,
-}
-OUTPUT_NAMES = [
-    "transport_parameters.json",
-    "observation_residuals.jsonl",
-    "transport_summary.json",
-]
-
-model_spec = importlib.util.spec_from_file_location(
-    "transport_model", TASK_FILE / "transport_model.py"
-)
-assert model_spec and model_spec.loader
-model = importlib.util.module_from_spec(model_spec)
-model_spec.loader.exec_module(model)
+APP_ROOT = "/app"
+TESTS_ROOT = "/tests"
+RECOVERED_SRC = os.path.join(APP_ROOT, "src", "recovered.c")
+MAKE_SRC = os.path.join(APP_ROOT, "Makefile")
+REFERENCE_BIN = os.path.join(APP_ROOT, "bin", "timers")
+VISIBLE_DIR = os.path.join(APP_ROOT, "inputs")
+HIDDEN_DIR = os.path.join(TESTS_ROOT, "inputs_hidden")
+GOLDEN_DIR = os.path.join(TESTS_ROOT, "golden")
+REFERENCE_DIR = os.path.join(TESTS_ROOT, "reference")
+UNPRIVILEGED = ["setpriv", "--reuid=65534", "--regid=65534", "--clear-groups"]
 
 
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _inputs(directory):
+    return sorted(glob.glob(os.path.join(directory, "*.bin")))
 
 
-def rows(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
+VISIBLE_INPUTS = _inputs(VISIBLE_DIR)
+HIDDEN_INPUTS = _inputs(HIDDEN_DIR)
 
 
-def write_rows(path: Path, fields: list[str], values: list[dict]) -> None:
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(values)
+def _family(name):
+    return sorted(glob.glob(os.path.join(HIDDEN_DIR, f"hidden_{name}_*.bin")))
 
 
-def finite_number(value: object) -> bool:
-    return type(value) in (int, float) and math.isfinite(float(value))
+def _ids(paths):
+    return [os.path.basename(path) for path in paths]
 
 
-def six_decimal_number(value: object) -> bool:
-    return finite_number(value) and float(value) == round(float(value), 6)
+def _golden(path):
+    base = os.path.join(GOLDEN_DIR, os.path.basename(path))
+    with open(base + ".out", "rb") as handle:
+        payload = handle.read()
+    with open(base + ".code") as handle:
+        code = int(handle.read())
+    return payload, code
 
 
-def parse_parameters(output_dir: Path, archive: dict) -> dict:
-    payload = json.loads((output_dir / "transport_parameters.json").read_text())
-    assert set(payload) == {
-        "reference",
-        "rounding",
-        "carriers",
-        "runs",
-        "constraints",
-    }
-    assert payload["reference"] == "carrier input order and run input order"
-    assert payload["rounding"] == ROUNDING
-    assert len(payload["carriers"]) == len(archive["carriers"])
-    assert len(payload["runs"]) == len(archive["runs"])
-
-    carriers = {}
-    carrier_keys = {
-        "carrier_id",
-        "band_index",
-        "charge_sign",
-        "density_1e22_m3",
-        "mobility_cm2_vs",
-        "activation_mev",
-        "alpha",
-    }
-    field_map = {
-        "density_1e22_m3": (
-            "density_min_1e22_m3",
-            "density_max_1e22_m3",
-        ),
-        "mobility_cm2_vs": ("mobility_min_cm2_vs", "mobility_max_cm2_vs"),
-        "activation_mev": ("activation_min_mev", "activation_max_mev"),
-        "alpha": ("alpha_min", "alpha_max"),
-    }
-    for actual, expected in zip(
-        payload["carriers"], archive["carriers"], strict=True
-    ):
-        assert set(actual) == carrier_keys
-        assert actual["carrier_id"] == expected["carrier_id"]
-        assert type(actual["band_index"]) is int
-        assert actual["band_index"] == expected["band_index"]
-        assert type(actual["charge_sign"]) is int
-        assert actual["charge_sign"] == expected["charge_sign"]
-        values = {}
-        for field, (minimum, maximum) in field_map.items():
-            assert six_decimal_number(actual[field])
-            value = float(actual[field])
-            assert expected[minimum] <= value <= expected[maximum]
-            values[field] = value
-        carriers[expected["carrier_id"]] = values
-
-    runs = {}
-    run_keys = {
-        "run_id",
-        "temperature_k",
-        "field_scale",
-        "longitudinal_offset_uohm_m",
-        "hall_offset_uohm_m",
-    }
-    run_field_map = {
-        "field_scale": ("field_scale_min", "field_scale_max"),
-        "longitudinal_offset_uohm_m": (
-            "longitudinal_offset_min_uohm_m",
-            "longitudinal_offset_max_uohm_m",
-        ),
-        "hall_offset_uohm_m": (
-            "hall_offset_min_uohm_m",
-            "hall_offset_max_uohm_m",
-        ),
-    }
-    for actual, expected in zip(payload["runs"], archive["runs"], strict=True):
-        assert set(actual) == run_keys
-        assert actual["run_id"] == expected["run_id"]
-        assert six_decimal_number(actual["temperature_k"])
-        assert float(actual["temperature_k"]) == pytest.approx(
-            expected["temperature_k"], abs=5.1e-7
-        )
-        values = {}
-        for field, (minimum, maximum) in run_field_map.items():
-            assert six_decimal_number(actual[field])
-            value = float(actual[field])
-            assert expected[minimum] <= value <= expected[maximum]
-            values[field] = value
-        runs[expected["run_id"]] = values
-
-    metrics = model.constraint_metrics(archive, carriers, runs)
-    assert set(payload["constraints"]) == set(metrics)
-    for key, expected in metrics.items():
-        assert six_decimal_number(payload["constraints"][key])
-        assert float(payload["constraints"][key]) == pytest.approx(
-            expected, abs=5.1e-7
-        )
-    cfg = archive["cfg"]
-    assert metrics["charge_imbalance"] <= cfg["max_charge_imbalance"] + 1.0e-12
-    assert (
-        cfg["total_density_min_1e22_m3"]
-        <= metrics["total_density_1e22_m3"]
-        <= cfg["total_density_max_1e22_m3"]
-    )
-    assert (
-        metrics["minimum_conductivity_share"]
-        >= cfg["min_conductivity_share"] - 1.0e-12
-    )
-    assert (
-        metrics["minimum_mobility_ratio"]
-        >= cfg["min_mobility_ratio"] - 1.0e-12
-    )
-    assert (
-        metrics["maximum_activation_step_mev"]
-        <= cfg["max_activation_step_mev"] + 1.0e-12
-    )
-    assert (
-        metrics["maximum_field_scale_step"]
-        <= cfg["max_field_scale_step"] + 1.0e-12
-    )
-    assert (
-        abs(metrics["mean_longitudinal_offset_uohm_m"])
-        <= cfg["max_mean_longitudinal_offset_uohm_m"] + 1.0e-12
-    )
-    assert (
-        abs(metrics["mean_hall_offset_uohm_m"])
-        <= cfg["max_mean_hall_offset_uohm_m"] + 1.0e-12
-    )
-    return {"carriers": carriers, "runs": runs, "metrics": metrics}
+def _payload(path):
+    with open(path, "rb") as handle:
+        return handle.read()
 
 
-def validate_residuals(output_dir: Path, archive: dict, result: dict) -> None:
-    actual = [
-        json.loads(line)
-        for line in (output_dir / "observation_residuals.jsonl")
-        .read_text()
-        .splitlines()
-        if line.strip()
-    ]
-    ordered = sorted(
-        enumerate(archive["observations"]), key=lambda pair: pair[1]["observation_id"]
-    )
-    expected_keys = {
-        "observation_id",
-        "run_id",
-        "field_t",
-        "modeled_longitudinal_uohm_m",
-        "observed_longitudinal_uohm_m",
-        "longitudinal_residual_sigma",
-        "modeled_hall_uohm_m",
-        "observed_hall_uohm_m",
-        "hall_residual_sigma",
-        "findings",
-    }
-    assert len(actual) == len(ordered)
-    for row, (index, source) in zip(actual, ordered, strict=True):
-        assert set(row) == expected_keys
-        assert row["observation_id"] == source["observation_id"]
-        assert row["run_id"] == source["run_id"]
-        for field in (
-            "field_t",
-            "modeled_longitudinal_uohm_m",
-            "observed_longitudinal_uohm_m",
-            "longitudinal_residual_sigma",
-            "modeled_hall_uohm_m",
-            "observed_hall_uohm_m",
-            "hall_residual_sigma",
-        ):
-            assert six_decimal_number(row[field])
-        assert float(row["field_t"]) == pytest.approx(source["field_t"], abs=5.1e-7)
-        assert float(row["modeled_longitudinal_uohm_m"]) == pytest.approx(
-            result["modeled"][index][0], abs=5.1e-7
-        )
-        assert float(row["modeled_hall_uohm_m"]) == pytest.approx(
-            result["modeled"][index][1], abs=5.1e-7
-        )
-        assert float(row["observed_longitudinal_uohm_m"]) == pytest.approx(
-            source["observed_longitudinal_uohm_m"], abs=5.1e-7
-        )
-        assert float(row["observed_hall_uohm_m"]) == pytest.approx(
-            source["observed_hall_uohm_m"], abs=5.1e-7
-        )
-        replay_longitudinal = (
-            float(row["modeled_longitudinal_uohm_m"])
-            - source["observed_longitudinal_uohm_m"]
-        ) / source["sigma_longitudinal_uohm_m"]
-        replay_hall = (
-            float(row["modeled_hall_uohm_m"]) - source["observed_hall_uohm_m"]
-        ) / source["sigma_hall_uohm_m"]
-        assert min(
-            abs(
-                float(row["longitudinal_residual_sigma"])
-                - result["residuals"][index][0]
-            ),
-            abs(float(row["longitudinal_residual_sigma"]) - replay_longitudinal),
-        ) <= 1.0e-5
-        assert min(
-            abs(float(row["hall_residual_sigma"]) - result["residuals"][index][1]),
-            abs(float(row["hall_residual_sigma"]) - replay_hall),
-        ) <= 1.0e-5
-        assert row["findings"] == result["findings"][index]
+def _share(directory):
+    os.chmod(directory, 0o755)
+    return directory
 
 
-def validate_summary(
-    output_dir: Path, archive: dict, parameters: dict, result: dict
-) -> None:
-    payload = json.loads((output_dir / "transport_summary.json").read_text())
-    expected_keys = {
-        "carrier_count",
-        "run_count",
-        "observations",
-        "scored_observations",
-        "clean_observations",
-        "combined_rms",
-        "longitudinal_rms",
-        "hall_rms",
-        "residual_p90",
-        "clean_fraction",
-        "charge_imbalance",
-        "total_density_1e22_m3",
-        "minimum_conductivity_share",
-        "minimum_mobility_ratio",
-        "maximum_activation_step_mev",
-        "maximum_field_scale_step",
-        "mean_longitudinal_offset_uohm_m",
-        "mean_hall_offset_uohm_m",
-        "finding_counts",
-    }
-    assert set(payload) == expected_keys
-    counts = {
-        "carrier_count": len(archive["carriers"]),
-        "run_count": len(archive["runs"]),
-        "observations": len(archive["observations"]),
-        "scored_observations": result["scored"],
-        "clean_observations": result["clean"],
-    }
-    for key, expected in counts.items():
-        assert type(payload[key]) is int and payload[key] == expected
-    metrics = {
-        "combined_rms": result["combined_rms"],
-        "longitudinal_rms": result["longitudinal_rms"],
-        "hall_rms": result["hall_rms"],
-        "residual_p90": result["residual_p90"],
-        "clean_fraction": result["clean_fraction"],
-        **parameters["metrics"],
-    }
-    for key, expected in metrics.items():
-        assert six_decimal_number(payload[key])
-        assert float(payload[key]) == pytest.approx(expected, abs=5.1e-7)
-    assert set(payload["finding_counts"]) == set(FINDINGS)
-    assert payload["finding_counts"] == result["finding_counts"]
-
-
-def validate_calibration(input_dir: Path, output_dir: Path) -> dict:
-    archive = model.load_archive(input_dir)
-    parameters = parse_parameters(output_dir, archive)
-    result = model.evaluate(input_dir, output_dir)
-    validate_residuals(output_dir, archive, result)
-    validate_summary(output_dir, archive, parameters, result)
-    cfg = archive["cfg"]
-    assert result["combined_rms"] <= cfg["combined_rms_max"] + 1.0e-12
-    assert (
-        result["longitudinal_rms"] <= cfg["longitudinal_rms_max"] + 1.0e-12
-    )
-    assert result["hall_rms"] <= cfg["hall_rms_max"] + 1.0e-12
-    assert result["residual_p90"] <= cfg["residual_p90_max"] + 1.0e-12
-    assert result["clean_fraction"] >= cfg["min_clean_fraction"] - 1.0e-12
-    return {"archive": archive, "parameters": parameters, "result": result}
-
-
-def run_solver(
-    binary: Path,
-    input_dir: Path,
-    output_dir: Path,
-    *,
-    check: bool = True,
-) -> subprocess.CompletedProcess:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for name in OUTPUT_NAMES:
-        (output_dir / name).unlink(missing_ok=True)
-    return subprocess.run(
-        [str(binary), str(input_dir), str(output_dir)],
-        check=check,
-        text=True,
+def _run(binary, path, cwd):
+    done = subprocess.run(
+        UNPRIVILEGED + [binary],
+        input=_payload(path),
         capture_output=True,
-        timeout=90,
+        timeout=300,
+        cwd=cwd,
+        check=False,
+    )
+    return done.stdout, done.returncode
+
+
+def _compile(source, output):
+    return subprocess.run(
+        ["gcc", "-std=c11", "-O2", "-o", output, source],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
     )
 
 
 @pytest.fixture(scope="session")
-def rebuilt_binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Compile the submitted source cleanly and reject process delegation."""
-    build_dir = tmp_path_factory.mktemp("native-build")
-    if not SOURCE_PATH.exists():
-        pytest.skip("hall_transport.c is missing")
-    source = SOURCE_PATH.read_text()
-    assert re.search(r"\bint\s+main\s*\(", source)
-    binary = build_dir / "hall_transport"
-    completed = subprocess.run(
-        [
-            "cc",
-            "-O2",
-            "-std=c11",
-            "-Wall",
-            "-Wextra",
-            "-o",
-            str(binary),
-            str(SOURCE_PATH),
-            "-lm",
-        ],
-        check=True,
-        text=True,
+def agent_binary():
+    """Compile only the recovered source and the public build rules in isolation."""
+    build_dir = _share(mkdtemp(prefix="tw_agent_build_"))
+    os.makedirs(os.path.join(build_dir, "src"), exist_ok=True)
+    _share(os.path.join(build_dir, "src"))
+    copyfile(RECOVERED_SRC, os.path.join(build_dir, "src", "recovered.c"))
+    copyfile(MAKE_SRC, os.path.join(build_dir, "Makefile"))
+    result = subprocess.run(
+        ["make", "recovered"],
+        cwd=build_dir,
         capture_output=True,
-    )
-    assert completed.stderr == "", f"compiler warnings are not allowed: {completed.stderr}"
-    symbols = subprocess.run(
-        ["nm", "-u", str(binary)],
-        check=True,
         text=True,
-        capture_output=True,
-    ).stdout
-    forbidden = re.compile(
-        r"\b(system|popen|fork|vfork|clone|execl|execle|execlp|execv|execve|"
-        r"execvp|posix_spawn|posix_spawnp)\b"
+        timeout=180,
+        check=False,
     )
-    assert not forbidden.search(symbols), "the native program links a process API"
-    return binary
+    assert result.returncode == 0, result.stdout + result.stderr
+    output = os.path.join(build_dir, "build", "recovered")
+    assert os.path.exists(output)
+    _share(os.path.join(build_dir, "build"))
+    os.chmod(output, 0o755)
+    if os.path.exists(REFERENCE_BIN):
+        os.remove(REFERENCE_BIN)
+    yield output, _share(mkdtemp(prefix="tw_agent_run_"))
 
 
-class TestInputIntegrity:
-    def test_public_archive_hashes(self):
-        """The public transport archive remains unchanged."""
-        manifest = json.loads((INPUT_DIR / "input_hashes.json").read_text())
-        assert set(manifest) == set(PUBLIC_INPUT_SHA256) - {"input_hashes.json"}
-        for name, expected in PUBLIC_INPUT_SHA256.items():
-            assert sha256(INPUT_DIR / name) == expected, f"{name} hash drifted"
-
-    def test_public_contract_hashes(self):
-        """The public specification and numeric model are immutable."""
-        assert sha256(TASK_FILE / "transport_spec.md") == SPEC_SHA256
-        assert sha256(TASK_FILE / "transport_model.py") == MODEL_SHA256
+def _baseline(source_name):
+    build_dir = _share(mkdtemp(prefix="tw_wrong_build_"))
+    output = os.path.join(build_dir, source_name.removesuffix(".c"))
+    result = _compile(os.path.join(REFERENCE_DIR, source_name), output)
+    assert result.returncode == 0, result.stdout + result.stderr
+    os.chmod(output, 0o755)
+    return output
 
 
-class TestSubmittedCalibration:
-    def test_required_native_source_exists(self):
-        """The required native C source is present at the documented path."""
-        assert SOURCE_PATH.exists(), "hall_transport.c is missing"
-
-    @pytest.mark.parametrize("filename", OUTPUT_NAMES)
-    def test_required_outputs_exist(self, filename):
-        """Each named output exists and is nonempty."""
-        path = OUTPUT_DIR / filename
-        assert path.exists() and path.stat().st_size > 0
-
-    def test_public_calibration_replays_and_meets_every_gate(self):
-        """Canonical public parameters satisfy all physical and quality gates."""
-        validate_calibration(INPUT_DIR, OUTPUT_DIR)
-
-    def test_supplied_priors_are_not_a_solution(self):
-        """The realistic priors miss the public residual-quality surface."""
-        archive = model.load_archive(INPUT_DIR)
-        carriers = {
-            row["carrier_id"]: {
-                "density_1e22_m3": row["prior_density_1e22_m3"],
-                "mobility_cm2_vs": row["prior_mobility_cm2_vs"],
-                "activation_mev": row["prior_activation_mev"],
-                "alpha": row["prior_alpha"],
-            }
-            for row in archive["carriers"]
-        }
-        runs = {
-            row["run_id"]: {
-                "field_scale": row["prior_field_scale"],
-                "longitudinal_offset_uohm_m": row[
-                    "prior_longitudinal_offset_uohm_m"
-                ],
-                "hall_offset_uohm_m": row["prior_hall_offset_uohm_m"],
-            }
-            for row in archive["runs"]
-        }
-        residuals = []
-        for observation in archive["observations"]:
-            if (
-                observation["use_flag"] == 0
-                or observation["observation_id"] in archive["prior_flags"]
-            ):
-                continue
-            longitudinal, hall = model.modeled_pair(
-                archive, carriers, runs, observation
-            )
-            residuals.append(
-                (
-                    (longitudinal - observation["observed_longitudinal_uohm_m"])
-                    / observation["sigma_longitudinal_uohm_m"],
-                    (hall - observation["observed_hall_uohm_m"])
-                    / observation["sigma_hall_uohm_m"],
-                )
-            )
-        combined = math.sqrt(
-            sum(left * left + right * right for left, right in residuals)
-            / (2 * len(residuals))
-        )
-        assert combined > archive["cfg"]["combined_rms_max"]
+@pytest.fixture(scope="session")
+def wrong_unsigned():
+    """A recovery whose due test compares the deadline and the clock as unsigned."""
+    return _baseline("wrong_unsigned.c")
 
 
-class TestNativeGeneralization:
-    def test_rebuilt_source_handles_public_archive(
-        self, rebuilt_binary: Path, tmp_path: Path
-    ):
-        """A clean native rebuild regenerates a valid public calibration."""
-        input_copy = tmp_path / "input"
-        output_dir = tmp_path / "output"
-        shutil.copytree(INPUT_DIR, input_copy)
-        run_solver(rebuilt_binary, input_copy, output_dir)
-        validate_calibration(input_copy, output_dir)
-        wrong_args = subprocess.run(
-            [str(rebuilt_binary)], text=True, capture_output=True
-        )
-        assert wrong_args.returncode != 0
+@pytest.fixture(scope="session")
+def wrong_boundary():
+    """A recovery that admits the exact boundary delta into the nearer tier."""
+    return _baseline("wrong_boundary.c")
 
-    def test_runtime_starts_no_other_process(
-        self, rebuilt_binary: Path, tmp_path: Path
-    ):
-        """Process tracing permits only the initial exec of the solver."""
-        input_copy = tmp_path / "input"
-        output_dir = tmp_path / "output"
-        trace_path = tmp_path / "process.trace"
-        shutil.copytree(INPUT_DIR, input_copy)
-        output_dir.mkdir()
-        completed = subprocess.run(
-            [
-                "strace",
-                "-f",
-                "-qq",
-                "-e",
-                "trace=process",
-                "-o",
-                str(trace_path),
-                str(rebuilt_binary),
-                str(input_copy),
-                str(output_dir),
-            ],
-            text=True,
-            capture_output=True,
-            timeout=90,
-        )
-        assert completed.returncode == 0, completed.stderr
-        trace = trace_path.read_text()
-        assert not re.search(r"\b(clone|clone3|fork|vfork)\(", trace)
-        assert len(re.findall(r"\bexecve\(", trace)) <= 1
-        validate_calibration(input_copy, output_dir)
 
-    @pytest.mark.parametrize("mode", list(range(1, 17)))
-    def test_compatible_scientific_matrix(
-        self, rebuilt_binary: Path, tmp_path: Path, mode: int
-    ):
-        """The same C solver handles every documented scientific regime."""
-        input_dir = tmp_path / f"case-{mode}"
-        output_dir = tmp_path / f"output-{mode}"
-        make_case(mode, input_dir)
-        run_solver(rebuilt_binary, input_dir, output_dir)
-        validate_calibration(input_dir, output_dir)
+@pytest.fixture(scope="session")
+def wrong_append():
+    """A recovery that keeps every pending group in arrival order."""
+    return _baseline("wrong_append.c")
 
-    def test_outputs_respond_to_changed_scientific_inputs(
-        self, rebuilt_binary: Path, tmp_path: Path
-    ):
-        """Changed carrier topology and temperature coverage change the fit."""
-        first_input = tmp_path / "first-input"
-        second_input = tmp_path / "second-input"
-        first_output = tmp_path / "first-output"
-        second_output = tmp_path / "second-output"
-        make_case(3, first_input)
-        make_case(14, second_input)
-        run_solver(rebuilt_binary, first_input, first_output)
-        run_solver(rebuilt_binary, second_input, second_output)
-        first = validate_calibration(first_input, first_output)
-        second = validate_calibration(second_input, second_output)
-        assert len(first["archive"]["carriers"]) != len(second["archive"]["carriers"])
-        assert first["parameters"]["carriers"] != second["parameters"]["carriers"]
 
-    def test_infeasible_archive_leaves_no_outputs(
-        self, rebuilt_binary: Path, tmp_path: Path
-    ):
-        """An impossible configured density interval fails atomically."""
-        input_dir = tmp_path / "input"
-        output_dir = tmp_path / "output"
-        make_case(5, input_dir)
-        carrier_rows = rows(input_dir / "carriers.csv")
-        impossible_minimum = (
-            sum(float(row["density_max_1e22_m3"]) for row in carrier_rows) + 1.0
-        )
-        config_rows = rows(input_dir / "case_config.csv")
-        for row in config_rows:
-            if row["key"] == "total_density_min_1e22_m3":
-                row["value"] = f"{impossible_minimum:.12f}"
-        write_rows(input_dir / "case_config.csv", ["key", "value"], config_rows)
-        output_dir.mkdir()
-        for name in OUTPUT_NAMES:
-            (output_dir / name).write_text("stale\n")
-        completed = run_solver(
-            rebuilt_binary, input_dir, output_dir, check=False
-        )
-        assert completed.returncode != 0
-        assert all(not (output_dir / name).exists() for name in OUTPUT_NAMES)
+@pytest.fixture(scope="session")
+def wrong_cascade():
+    """A recovery that re-homes a due group in list order instead of reversing it."""
+    return _baseline("wrong_cascade.c")
+
+
+@pytest.fixture(scope="session")
+def wrong_delegate():
+    """A recovery that execs the reference artifact instead of reproducing it."""
+    return _baseline("wrong_delegate.c")
+
+
+@pytest.fixture(scope="session")
+def wrong_rearm():
+    """A recovery that treats a cancelled id as armable again straight away."""
+    return _baseline("wrong_rearm.c")
+
+
+@pytest.fixture(scope="session")
+def visible_lookup():
+    """An overfit answer map that recognizes only the public example traces."""
+    return _baseline("hardcoded_visible.c")
+
+
+def _assert_match(agent_binary, path):
+    binary, cwd = agent_binary
+    stdout, code = _run(binary, path, cwd)
+    want, want_code = _golden(path)
+    assert stdout == want
+    assert code == want_code
+
+
+def _moved(wrong, paths):
+    total = 0
+    for path in paths:
+        if _run(wrong, path, None) != _golden(path):
+            total += 1
+    return total
+
+
+def test_executed_case_floor_and_golden_coverage():
+    """The hidden battery holds at least 120 distinct traces with complete goldens."""
+    assert len(HIDDEN_INPUTS) >= 120
+    hidden_bytes = {_payload(path) for path in HIDDEN_INPUTS}
+    visible_bytes = {_payload(path) for path in VISIBLE_INPUTS}
+    assert len(hidden_bytes) == len(HIDDEN_INPUTS)
+    assert not (hidden_bytes & visible_bytes)
+    for path in VISIBLE_INPUTS + HIDDEN_INPUTS:
+        base = os.path.join(GOLDEN_DIR, os.path.basename(path))
+        assert os.path.exists(base + ".out")
+        assert os.path.exists(base + ".code")
+
+
+def test_every_error_token_is_exercised():
+    """The battery reaches all five disclosed error tokens."""
+    seen = set()
+    for path in HIDDEN_INPUTS:
+        payload, code = _golden(path)
+        if code == 1:
+            seen.add(payload.strip().split(b"\n")[-1])
+    assert seen == {
+        b"ERR syntax",
+        b"ERR range",
+        b"ERR ops",
+        b"ERR capacity",
+        b"ERR budget",
+    }
+
+
+@pytest.mark.parametrize("path", VISIBLE_INPUTS, ids=_ids(VISIBLE_INPUTS))
+def test_recovered_matches_visible_traces(agent_binary, path):
+    """The recovered source matches every public example byte for byte."""
+    _assert_match(agent_binary, path)
+
+
+@pytest.mark.parametrize("path", HIDDEN_INPUTS, ids=_ids(HIDDEN_INPUTS))
+def test_recovered_matches_hidden_traces(agent_binary, path):
+    """The recovered source matches independent goldens on unseen traces."""
+    _assert_match(agent_binary, path)
+
+
+def test_output_envelope_holds_on_every_hidden_trace(agent_binary):
+    """Successful runs close with a digest line and failures with one error line."""
+    binary, cwd = agent_binary
+    for path in HIDDEN_INPUTS:
+        stdout, code = _run(binary, path, cwd)
+        lines = stdout.decode("ascii").splitlines()
+        assert lines
+        if code == 0:
+            assert lines[-1].startswith("D ")
+            assert len(lines[-1]) == 10
+        else:
+            assert code == 1
+            assert lines[-1].startswith("ERR ")
+
+
+def test_goldens_are_sealed_from_the_graded_uid():
+    """The uid that runs the candidate cannot read the goldens it is scored against."""
+    target = os.path.join(GOLDEN_DIR, os.path.basename(HIDDEN_INPUTS[0]) + ".out")
+    assert os.path.exists(target)
+    probe = subprocess.run(
+        UNPRIVILEGED + ["cat", target],
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert probe.returncode != 0
+    assert probe.stdout == b""
+
+
+def test_reference_is_absent_and_execution_repeats(agent_binary):
+    """Grading holds no reference artifact and the candidate repeats exactly."""
+    binary, cwd = agent_binary
+    assert not os.path.exists(REFERENCE_BIN)
+    target = _family("mixed")[0]
+    first = _run(binary, target, cwd)
+    second = _run(binary, target, cwd)
+    assert first == second == _golden(target)
+
+
+@pytest.mark.parametrize("path", _family("wrap"), ids=_ids(_family("wrap")))
+def test_wrap_safe_due_test_is_necessary(agent_binary, path):
+    """Traces that carry the clock across its wrap are matched exactly."""
+    _assert_match(agent_binary, path)
+
+
+def test_unsigned_due_test_diverges_across_the_wrap(wrong_unsigned):
+    """Comparing deadline and clock as unsigned moves most wrap traces."""
+    assert _moved(wrong_unsigned, _family("wrap")) >= 12
+
+
+@pytest.mark.parametrize("path", _family("bound"), ids=_ids(_family("bound")))
+def test_tier_boundary_is_necessary(agent_binary, path):
+    """Traces sitting on the exact boundary delta are matched exactly."""
+    _assert_match(agent_binary, path)
+
+
+@pytest.mark.parametrize("path", _family("rearm"), ids=_ids(_family("rearm")))
+def test_arming_after_a_cancel_is_necessary(agent_binary, path):
+    """The recovered source matches every trace that cancels and arms one id."""
+    _assert_match(agent_binary, path)
+
+
+def test_treating_a_cancelled_id_as_free_diverges(wrong_rearm):
+    """Arming a cancelled id straight away diverges on the cancel traces."""
+    assert _moved(wrong_rearm, _family("rearm")) >= 8
+
+
+def test_the_cancel_rule_clears_every_public_trace(wrong_rearm):
+    """That same reading matches every shipped example, so samples cannot show it."""
+    assert _moved(wrong_rearm, VISIBLE_INPUTS) == 0
+
+
+def test_boundary_admission_diverges_on_exact_deltas(wrong_boundary):
+    """Admitting the boundary delta into the nearer tier moves most boundary traces."""
+    assert _moved(wrong_boundary, _family("bound")) >= 10
+
+
+@pytest.mark.parametrize(
+    "path",
+    _family("orderdirect") + _family("ordermixed"),
+    ids=_ids(_family("orderdirect") + _family("ordermixed")),
+)
+def test_pending_group_order_is_necessary(agent_binary, path):
+    """Traces whose groups come due together are matched in the reference order."""
+    _assert_match(agent_binary, path)
+
+
+def test_arrival_order_recovery_diverges(wrong_append):
+    """Keeping groups in arrival order moves the direct and mixed families."""
+    assert _moved(wrong_append, _family("orderdirect") + _family("ordermixed")) >= 12
+
+
+@pytest.mark.parametrize(
+    "path",
+    _family("ordercascade") + _family("ordermixed"),
+    ids=_ids(_family("ordercascade") + _family("ordermixed")),
+)
+def test_rehomed_group_order_is_necessary(agent_binary, path):
+    """Traces whose groups are re-homed before coming due keep the reference order."""
+    _assert_match(agent_binary, path)
+
+
+def test_rehome_order_recovery_diverges(wrong_cascade):
+    """Re-homing in list order moves the re-homed and mixed families."""
+    assert _moved(wrong_cascade, _family("ordercascade") + _family("ordermixed")) >= 12
+
+
+def test_shift_pairs_agree_on_the_due_sequence(agent_binary):
+    """A trace and its clock-shifted twin report the same ids in the same order."""
+    binary, cwd = agent_binary
+    bases = sorted(glob.glob(os.path.join(HIDDEN_DIR, "hidden_shift_*a.bin")))
+    assert len(bases) >= 4
+    for base in bases:
+        twin = base[:-5] + "b.bin"
+        assert os.path.exists(twin)
+        left = _run(binary, base, cwd)[0].decode("ascii").splitlines()
+        right = _run(binary, twin, cwd)[0].decode("ascii").splitlines()
+        left_ids = [line.split()[2:] for line in left if line.startswith("F ")]
+        right_ids = [line.split()[2:] for line in right if line.startswith("F ")]
+        assert left_ids == right_ids
+        assert any(left_ids)
+
+
+def test_delegation_wrapper_produces_nothing(agent_binary, wrong_delegate):
+    """A recovery that execs the reference fails once the artifact is gone."""
+    assert not os.path.exists(REFERENCE_BIN)
+    targets = _family("short")
+    assert _moved(wrong_delegate, targets) == len(targets)
+    for path in targets:
+        _assert_match(agent_binary, path)
+
+
+def test_visible_answer_map_does_not_generalize(visible_lookup):
+    """A map over the public traces passes them and fails the hidden battery."""
+    for path in VISIBLE_INPUTS:
+        assert _run(visible_lookup, path, None) == _golden(path)
+    assert _moved(visible_lookup, HIDDEN_INPUTS) == len(HIDDEN_INPUTS)

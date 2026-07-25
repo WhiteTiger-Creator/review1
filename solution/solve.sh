@@ -1,6 +1,25 @@
 #!/bin/bash
 set -euo pipefail
-
-cp /solution/hall_transport.c /app/hall_transport.c
-cc -O2 -std=c11 -Wall -Wextra -o /app/hall_transport /app/hall_transport.c -lm
-/app/hall_transport /app/task_file/input_data /app/task_file/calibration
+cp /solution/solution.c /app/src/recovered.c
+cd /app
+make clean
+make recovered
+test -x /app/build/recovered
+for trace in /app/inputs/*.bin; do
+  set +e
+  /app/build/recovered < "$trace" > /tmp/candidate.out
+  candidate_code=$?
+  set -e
+  if [ ! -x /app/bin/timers ]; then
+    continue
+  fi
+  set +e
+  /app/bin/timers < "$trace" > /tmp/reference.out
+  reference_code=$?
+  set -e
+  cmp /tmp/candidate.out /tmp/reference.out
+  if [ "$candidate_code" -ne "$reference_code" ]; then
+    echo "exit status mismatch on $trace" >&2
+    exit 1
+  fi
+done
