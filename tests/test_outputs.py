@@ -1,401 +1,557 @@
-"""Graded verifier for mixture-cure-standardized-fraction.
-
-Every test in this file runs the candidate's analysis.R and grades its estimate.json. The
-candidate is compared against an independent oracle (propensity-weighted Kaplan-Meier
-plateau standardized over the (stage_high, marker_high) mix) recomputed from the same raw
-records, on the committed cohort and many held-back cohorts. On the cohorts where a given
-shortcut is biased, the candidate must not only match the oracle but also sit clear of the
-corresponding wrong baseline (ignore the continuous confounder, drop the binary-flag
-standardization, read the curve before the plateau, or count censored susceptibles as
-long-term event-free). Metamorphic relations (time rescale, permutation,
-latency shape, baseline shift and scale) must leave the candidate's estimate invariant, and
-three repeat runs must be byte-identical.
-
-The oracle and wrong-baseline definitions live in fixtures/reference.py; the design
-assertions that check the verifier's own model is internally discriminating (and do not run
-the candidate) live in fixtures/selftest_design.py and are NOT collected for reward.
-"""
-
+import copy
 import hashlib
 import json
-import math
-import os
 import subprocess
-import sys
-import tempfile
+from pathlib import Path
 
-import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import fixtures.reference as ref
-from fixtures import scm
+APP = Path("/app")
+INPUT = APP / "input" / "match.json"
+OUTPUT = APP / "output" / "report.json"
+BIN = APP / "abalone"
+PUBLIC_SHA256 = "9c25e54655c2aecc2845f2326ab43ed182c3473728ce8a24cd729218f9397a72"
 
-APP = "/app"
-ANALYSIS = os.path.join(APP, "analysis.R")
-ESTIMATE = os.path.join(APP, "estimate.json")
-COMMITTED_DIR = os.path.join(APP, "data")
+EXPECTED_REPORT_SHA256 = {
+    "public": "03aef5a38cc0fe52cdbb05ec2bfd3054699933feb99078981db83230edff8663",
+    "empty-radius-two": "dde87f9bd62872639b02f38b476d82d303a39c6694c7ed7d5e54063210861ea2",
+    "validation-precedence": "d564e9d9cfd60037204fe58e46711565316fa956a722be3140af9df05e00cbfa",
+    "noncollinear-and-gap": "8c561f0416b6f9d13a0a8e83a39ac310a83dfdaf73d1c0605ca4d5b65e520207",
+    "sidestep-matrix": "c3107e37900860cf25b5f9b3d660fc3e70772802039af7c192b28c6092cb28b7",
+    "broadside-edge-priority": "4d8d5680615ae7afd1da340c92c25c7c382f98b0f528472a4b36bd86074f5fcb",
+    "inline-rejections": "2b05835fdc78a443a880fdcd1ec4ed36210281341d0cee3ed66aa2c3a4a77c6e",
+    "push-blocked-behind": "98653443708f72cf31719a99b6fc007b095bb805b2a07f38f730f7061f925b1d",
+    "three-push-two": "f47f3188ce486ff0116acf137830ea9203aa8b30ac2534d0868f10b4c0e1ce58",
+    "ejection-win-postgame": "f9ba05311443bffaf59747bb8b8a5fa5605af0a7ea7e168aed60ab17bfbaf77c",
+    "repetition-three": "ee1efc4eeb9d3299665f2974fc3a1908dbaa868439feb5ec3dd0be64d08803ac",
+    "repetition-before-no-progress": "73fcd18de0799bf1b05fb8808ed92b66081f96e5998fae5f9b7e44c7d6ce475f",
+    "no-progress-before-move-limit": "195cfac9063f6140f9a28c5f1960f7cbe60b548986e1047170aecc3629e0422b",
+    "move-limit-only": "f0e856e37433a6cd018d29a7a7e2e6841fac57291b65e0e12fb5eb985cdbbb5f",
+    "max-group-two": "8b4d4be55e52e8ebbfc3449def93df9c5b00daed64a2580e4704586e7c63208f",
+    "no-progress-reset-by-ejection": "91e4776d16ec8c1b5f24b3c40b51357ca02dbf6703bb33fe378c85a3fc491d21",
+    "exact-ko-rolls-back-turn": "b4fc83f9cfe4a2171d62536d06cf92e48d2df3e6bce55da7a5375f95c60fbd2c",
+    "rotation-ko": "f4ea649f98845ce2a26b020f30f6bc43063d49babd4fcef0e84ce2dba6185fcc",
+    "rotation-outside-ko-window": "ff5840196d4150ce73e38a5ec90a2e23ddf639db799b2072e70bd0a036f77306",
+    "dihedral-ko": "227153ed2ecbe480b1a2df8879ccbf8a4370f918bc1035fec8b0c42a93591fdb",
+    "dihedral-repetition-draw": "7018110537d35d2668fcf2f5c0699a15b2dd83a1e0368626225c2b52574c51a8",
+    "continuation-forced-ejection": "7b845c57b28297e5c6ecd33cd023b734771f0456d86c6cc2a26738884cc6d84a",
+    "continuation-margin-player0": "f99bba9cc0111a44ccd46b3b3ee2afd745eb4543507bc4ab08a4b366fa598bea",
+    "continuation-margin-player1": "f5e69ec2cc09c5aa18f9429ae74c77d9d627f9d1ade1bf81caa036a14b4873b5",
+    "cooldown-validation-aging": "0e43dadbbc3917d6e78218b3cf9839536360434715fa249db2055432412ed109",
+    "cooldown-pushed": "716c6695195fa9f9a2fe1f850ef0869be920c8e4fde18be66d903bcc84134e12",
+    "cooldown-ejected": "6bacb4e363a0992d25938911ac7a556adebba8bf0372e0280a053b5328349df0",
+    "cooldown-ko-rollback": "da5c9c7435f217b313e04c2cae127dc394e962ce61d66785e256155a14c4ef95",
+    "cooldown-breaks-rotation-ko": "d36961151f8adbb6f7e62a25194e10c44e96ac4df8c00e59d057448a658cd508",
+    "cooldown-stalled": "9394bc3d918cf300cebc81526b71445dcb10cdce7a3c95d3f95e51fb310022ad",
+    "momentum-gain-spend": "0a3d3888fd32304d5e68f880decbac30a978867086c0228b309e717597fa3c09",
+    "momentum-breaks-rotation-ko": "7523429433fcd1209cef0d2cc4b94b5ee99e5f95aa2f0163991147639eb5b218",
+    "momentum-saturated-rotation-ko": "e13bcd9395d76fb9cb68cd5ae4da99ceec827ee2bacc6847acbc4c64b0c0e209",
+    "quiescence-push-horizon": "9f1a3de914b447e998087df60686114b142cdb63bc7ad544945ed053eaea45ef",
+    "quiescence-momentum-gate": "3f28c474a6c9de4a465d2db9181ff05a8e43def597a84afec4ac06b173859b67",
+    "continuation-momentum-player0": "e5b30c0e21a79662160cbe4ad5fc841675ac9ee5be494b22da6f53f29147de00",
+    "continuation-momentum-player1": "efba3b700bc7c889dea9f9ccfe0d58c70b620909961b31dd713bfa6c43b79cd0",
+}
+
+def make_case(
+    marbles,
+    moves,
+    *,
+    players=("black", "white"),
+    radius=3,
+    max_group=3,
+    target=6,
+    repetition=0,
+    repetition_equivalence="exact",
+    ko_window=0,
+    no_progress=0,
+    move_limit=0,
+    continuation=2,
+    quiescence=0,
+    tempo_cooldown=0,
+    momentum_cap=0,
+    momentum=None,
+    cooldowns=None,
+    next_player=None,
+    scores=None,
+):
+    players = list(players)
+    return {
+        "players": players,
+        "rules": {
+            "radius": radius,
+            "max_group": max_group,
+            "target_ejections": target,
+            "repetition_limit": repetition,
+            "repetition_equivalence": repetition_equivalence,
+            "ko_window": ko_window,
+            "no_progress_limit": no_progress,
+            "move_limit": move_limit,
+            "continuation_depth": continuation,
+            "quiescence_depth": quiescence,
+            "tempo_cooldown": tempo_cooldown,
+            "momentum_cap": momentum_cap,
+        },
+        "initial": {
+            "next_player": next_player or players[0],
+            "ejections": scores or {players[0]: 0, players[1]: 0},
+            "momentum": momentum or {players[0]: 0, players[1]: 0},
+            "cooldowns": [
+                {"q": q, "r": r, "player": player, "remaining": remaining}
+                for q, r, player, remaining in (cooldowns or [])
+            ],
+            "marbles": [
+                {"q": q, "r": r, "player": player}
+                for q, r, player in marbles
+            ],
+        },
+        "moves": moves,
+    }
 
 
-# --------------------------------------------------------------- candidate runner
-# The candidate is re-run against many cohorts, and several cohorts recur across the accuracy,
-# wrong-baseline, and metamorphic tests (the committed cohort alone appears in a dozen). The
-# staged cohorts are deterministic — the same cohort seed writes byte-identical CSVs on every
-# staging — so a run keyed on the data-directory content is reproducible: caching returns the
-# same number a re-run would, and only removes redundant executions. The determinism test
-# opts out (use_cache=False) so it still forces three real runs.
-_CACHE = {}
+def mv(mid, player, cells, direction):
+    return {"id": mid, "player": player, "marbles": cells, "direction": direction}
 
 
-def _data_key(data_dir):
-    h = hashlib.sha256()
-    for fn in ("enrollment.csv", "followup.csv", "site_calendar.csv"):
-        with open(os.path.join(data_dir, fn), "rb") as fh:
-            h.update(fh.read())
-        h.update(b"\0")
-    return h.hexdigest()
+def hidden_cases():
+    cases = {}
+    cases["empty-radius-two"] = make_case(
+        [(-2, 0, "black"), (2, 0, "white")], [], radius=2, continuation=4
+    )
+    cases["validation-precedence"] = make_case(
+        [(-2, 0, "black"), (-1, 0, "black"), (0, 0, "black"), (1, 0, "white")],
+        [
+            mv("wrong-before-empty", "white", [], "E"),
+            mv("empty", "black", [], "E"),
+            mv("too-many", "black", [[-2, 0], [-1, 0], [0, 0], [0, 0]], "E"),
+            mv("duplicate", "black", [[-1, 0], [-1, 0]], "E"),
+            mv("not-owned", "black", [[1, 0], [1, -1]], "E"),
+            mv("not-collinear", "black", [[-2, 0], [-1, 0], [0, 0]], "NE"),
+        ],
+        max_group=3,
+    )
+    cases["noncollinear-and-gap"] = make_case(
+        [(-2, 0, "black"), (0, 0, "black"), (0, 1, "black"), (2, -1, "white")],
+        [
+            mv("bent", "black", [[-2, 0], [0, 0], [0, 1]], "E"),
+            mv("gap", "black", [[0, 0], [-2, 0]], "E"),
+        ],
+    )
+    cases["sidestep-matrix"] = make_case(
+        [(-1, 0, "black"), (0, 0, "black"), (0, -1, "white"), (2, -1, "white")],
+        [
+            mv("occupied-broadside", "black", [[0, 0], [-1, 0]], "NE"),
+            mv("valid-broadside", "black", [[0, 0], [-1, 0]], "SE"),
+            mv("white-single", "white", [[2, -1]], "W"),
+        ],
+    )
+    cases["broadside-edge-priority"] = make_case(
+        [(0, -3, "black"), (1, -3, "black"), (0, -2, "white")],
+        [mv("edge", "black", [[1, -3], [0, -3]], "NE")],
+    )
+    cases["inline-rejections"] = make_case(
+        [(-3, 0, "black"), (-1, 0, "black"), (0, 0, "black"), (1, 0, "white"), (2, 0, "white")],
+        [
+            mv("own-off", "black", [[-3, 0]], "W"),
+            mv("own-block", "black", [[-1, 0]], "E"),
+            mv("weak", "black", [[-1, 0], [0, 0]], "E"),
+        ],
+    )
+    cases["push-blocked-behind"] = make_case(
+        [(-2, 0, "black"), (-1, 0, "black"), (0, 0, "white"), (1, 0, "black"), (2, -1, "white")],
+        [mv("sandwich", "black", [[-1, 0], [-2, 0]], "E")],
+    )
+    cases["three-push-two"] = make_case(
+        [(-3, 0, "black"), (-2, 0, "black"), (-1, 0, "black"), (0, 0, "white"), (1, 0, "white")],
+        [mv("sumito", "black", [[-1, 0], [-3, 0], [-2, 0]], "E")],
+    )
+    cases["ejection-win-postgame"] = make_case(
+        [(0, 0, "ember"), (1, 0, "ember"), (2, 0, "frost")],
+        [
+            mv("winning-ejection", "ember", [[1, 0], [0, 0]], "E"),
+            mv("ignored-shape", "frost", [], "NW"),
+        ],
+        players=("ember", "frost"),
+        radius=2,
+        scores={"ember": 1, "frost": 0},
+        target=2,
+    )
+    cycle_moves = [
+        mv("b1", "black", [[-1, -1]], "E"),
+        mv("w1", "white", [[1, 1]], "W"),
+        mv("b2", "black", [[0, -1]], "W"),
+        mv("w2", "white", [[0, 1]], "E"),
+    ]
+    cases["repetition-three"] = make_case(
+        [(-1, -1, "black"), (1, 1, "white")],
+        cycle_moves + copy.deepcopy(cycle_moves) + [mv("after", "black", [[-1, -1]], "E")],
+        repetition=3,
+        no_progress=20,
+        move_limit=20,
+    )
+    cases["repetition-before-no-progress"] = make_case(
+        [(-1, -1, "black"), (1, 1, "white")],
+        cycle_moves,
+        repetition=2,
+        no_progress=4,
+        move_limit=4,
+    )
+    cases["no-progress-before-move-limit"] = make_case(
+        [(-2, -1, "black"), (2, 1, "white")],
+        [
+            mv("a", "black", [[-2, -1]], "E"),
+            mv("b", "white", [[2, 1]], "W"),
+        ],
+        no_progress=2,
+        move_limit=2,
+    )
+    cases["move-limit-only"] = make_case(
+        [(-2, -1, "black"), (2, 1, "white")],
+        [
+            mv("a", "black", [[-2, -1]], "E"),
+            mv("b", "white", [[2, 1]], "W"),
+            mv("post", "black", [[-1, -1]], "W"),
+        ],
+        move_limit=2,
+    )
+    cases["max-group-two"] = make_case(
+        [(-2, 1, "red"), (-1, 1, "red"), (0, 1, "red"), (1, 0, "blue")],
+        [
+            mv("limit", "red", [[-2, 1], [-1, 1], [0, 1]], "E"),
+            mv("axis-s", "red", [[-1, 1], [0, 1]], "NE"),
+            mv("blue", "blue", [[1, 0]], "SE"),
+        ],
+        players=("red", "blue"),
+        radius=2,
+        max_group=2,
+    )
+    cases["no-progress-reset-by-ejection"] = make_case(
+        [(-2, -1, "black"), (1, 0, "black"), (2, 0, "black"), (3, 0, "white"), (2, -1, "white")],
+        [
+            mv("quiet", "black", [[-2, -1]], "E"),
+            mv("white-quiet", "white", [[2, -1]], "W"),
+            mv("eject", "black", [[2, 0], [1, 0]], "E"),
+        ],
+        no_progress=3,
+    )
+    cases["exact-ko-rolls-back-turn"] = make_case(
+        [(-1, -1, "black"), (1, 1, "white")],
+        [
+            mv("b-out", "black", [[-1, -1]], "E"),
+            mv("w-out", "white", [[1, 1]], "W"),
+            mv("b-back", "black", [[0, -1]], "W"),
+            mv("w-repeat", "white", [[0, 1]], "E"),
+            mv("w-alternate", "white", [[0, 1]], "NW"),
+        ],
+        ko_window=4,
+        continuation=4,
+    )
+    rotation_moves = [
+        mv("rotate-black", "black", [[-1, 0]], "NE"),
+        mv("rotate-white", "white", [[1, 0]], "SW"),
+    ]
+    cases["rotation-ko"] = make_case(
+        [(-1, 0, "black"), (1, 0, "white")],
+        rotation_moves,
+        repetition_equivalence="rotations",
+        ko_window=2,
+    )
+    cases["rotation-outside-ko-window"] = make_case(
+        [(-1, 0, "black"), (1, 0, "white")],
+        rotation_moves,
+        repetition_equivalence="rotations",
+        ko_window=1,
+        continuation=4,
+    )
+    reflection_moves = [
+        mv("reflect-black", "black", [[0, 1]], "NE"),
+        mv("reflect-white", "white", [[-1, 0]], "NE"),
+    ]
+    cases["dihedral-ko"] = make_case(
+        [(0, 1, "black"), (-1, 0, "white")],
+        reflection_moves,
+        repetition_equivalence="dihedral",
+        ko_window=2,
+    )
+    cases["dihedral-repetition-draw"] = make_case(
+        [(0, 1, "black"), (-1, 0, "white")],
+        reflection_moves + [mv("after-draw", "black", [[1, 0]], "W")],
+        repetition=2,
+        repetition_equivalence="dihedral",
+    )
+    cases["continuation-forced-ejection"] = make_case(
+        [(0, 0, "black"), (1, 0, "black"), (2, 0, "white"), (-1, 1, "white")],
+        [],
+        radius=2,
+        target=1,
+        continuation=3,
+    )
+    cases["continuation-margin-player0"] = make_case(
+        [(0, 0, "black"), (1, 0, "black"), (2, 0, "white"), (-1, 1, "white")],
+        [],
+        radius=2,
+        target=3,
+        continuation=1,
+    )
+    cases["continuation-margin-player1"] = make_case(
+        [(0, 0, "white"), (1, 0, "white"), (2, 0, "black"), (-1, 1, "black")],
+        [],
+        radius=2,
+        target=3,
+        continuation=1,
+        next_player="white",
+    )
+    cases["cooldown-validation-aging"] = make_case(
+        [
+            (-2, 0, "black"),
+            (0, 0, "black"),
+            (2, -1, "white"),
+            (1, 1, "white"),
+        ],
+        [
+            mv("still-cooling", "black", [[-2, 0]], "E"),
+            mv("age-on-accept", "black", [[0, 0]], "NE"),
+            mv("white-quiet", "white", [[1, 1]], "W"),
+            mv("cooled", "black", [[-2, 0]], "E"),
+            mv("white-again", "white", [[2, -1]], "NW"),
+            mv("remaining-one", "black", [[1, -1]], "W"),
+        ],
+        radius=2,
+        tempo_cooldown=2,
+        cooldowns=[(-2, 0, "black", 1)],
+        continuation=3,
+    )
+    cases["cooldown-pushed"] = make_case(
+        [
+            (-2, 0, "white"),
+            (-1, 0, "white"),
+            (0, 0, "black"),
+            (0, 1, "black"),
+        ],
+        [
+            mv("push-annotation", "white", [[-1, 0], [-2, 0]], "E"),
+            mv("moved-lock", "black", [[1, 0]], "W"),
+            mv("age-other", "black", [[0, 1]], "SE"),
+        ],
+        players=("black", "white"),
+        radius=2,
+        next_player="white",
+        tempo_cooldown=2,
+        cooldowns=[(0, 0, "black", 2)],
+        continuation=3,
+    )
+    cases["cooldown-ejected"] = make_case(
+        [
+            (0, 0, "white"),
+            (1, 0, "white"),
+            (2, 0, "black"),
+            (-1, 1, "black"),
+        ],
+        [
+            mv("eject-cooling", "white", [[1, 0], [0, 0]], "E"),
+            mv("survivor", "black", [[-1, 1]], "E"),
+        ],
+        players=("black", "white"),
+        radius=2,
+        next_player="white",
+        target=3,
+        tempo_cooldown=2,
+        cooldowns=[(2, 0, "black", 2)],
+        continuation=3,
+    )
+    cooldown_cycle = [
+        mv("black-a-out", "black", [[-2, -1]], "E"),
+        mv("white-c-out", "white", [[2, 1]], "W"),
+        mv("black-b-out", "black", [[-2, 1]], "E"),
+        mv("white-d-out", "white", [[2, -1]], "W"),
+        mv("black-a-back", "black", [[-1, -1]], "W"),
+        mv("white-c-back", "white", [[1, 1]], "E"),
+        mv("black-b-back", "black", [[-1, 1]], "W"),
+        mv("white-d-repeat", "white", [[1, -1]], "E"),
+        mv("white-d-alternate", "white", [[1, -1]], "NW"),
+    ]
+    cases["cooldown-ko-rollback"] = make_case(
+        [
+            (-2, -1, "black"),
+            (-2, 1, "black"),
+            (2, 1, "white"),
+            (2, -1, "white"),
+        ],
+        cooldown_cycle,
+        radius=3,
+        ko_window=8,
+        tempo_cooldown=1,
+        cooldowns=[
+            (-2, 1, "black", 1),
+            (2, -1, "white", 1),
+        ],
+        continuation=3,
+    )
+    cases["cooldown-breaks-rotation-ko"] = make_case(
+        [(-1, 0, "black"), (1, 0, "white")],
+        rotation_moves,
+        repetition_equivalence="rotations",
+        ko_window=2,
+        tempo_cooldown=1,
+        continuation=3,
+    )
+    cases["cooldown-stalled"] = make_case(
+        [(0, 0, "black"), (2, 0, "white")],
+        [],
+        radius=2,
+        tempo_cooldown=2,
+        cooldowns=[(0, 0, "black", 2)],
+        continuation=4,
+    )
+    cases["momentum-gain-spend"] = make_case(
+        [
+            (-2, 0, "black"),
+            (-1, 0, "black"),
+            (-2, 1, "black"),
+            (0, 0, "white"),
+            (2, -1, "white"),
+        ],
+        [
+            mv("unfunded-push", "black", [[-2, 0], [-1, 0]], "E"),
+            mv("black-charge", "black", [[-2, 1]], "E"),
+            mv("white-charge", "white", [[2, -1]], "W"),
+            mv("funded-push", "black", [[-2, 0], [-1, 0]], "E"),
+        ],
+        radius=2,
+        momentum_cap=3,
+        continuation=3,
+        quiescence=1,
+    )
+    cases["momentum-breaks-rotation-ko"] = make_case(
+        [(-1, 0, "black"), (1, 0, "white")],
+        rotation_moves,
+        repetition_equivalence="rotations",
+        ko_window=2,
+        momentum_cap=2,
+        continuation=3,
+        quiescence=1,
+    )
+    cases["momentum-saturated-rotation-ko"] = make_case(
+        [(-1, 0, "black"), (1, 0, "white")],
+        rotation_moves + [mv("white-alternate", "white", [[0, 1]], "NW")],
+        repetition_equivalence="rotations",
+        ko_window=2,
+        momentum_cap=1,
+        momentum={"black": 1, "white": 1},
+        continuation=3,
+        quiescence=1,
+    )
+    cases["quiescence-push-horizon"] = make_case(
+        [
+            (0, 0, "black"),
+            (1, 0, "black"),
+            (2, 0, "white"),
+            (-1, 1, "white"),
+        ],
+        [],
+        radius=2,
+        target=2,
+        momentum_cap=3,
+        momentum={"black": 2, "white": 0},
+        continuation=0,
+        quiescence=2,
+    )
+    cases["quiescence-momentum-gate"] = make_case(
+        [
+            (0, 0, "black"),
+            (1, 0, "black"),
+            (2, 0, "white"),
+            (-1, 1, "white"),
+        ],
+        [],
+        radius=2,
+        target=2,
+        momentum_cap=3,
+        continuation=0,
+        quiescence=2,
+    )
+    cases["continuation-momentum-player0"] = make_case(
+        [
+            (-1, 0, "black"),
+            (0, 0, "black"),
+            (1, 0, "black"),
+            (0, 2, "white"),
+        ],
+        [],
+        radius=2,
+        momentum_cap=3,
+        momentum={"black": 0, "white": 1},
+        continuation=1,
+        quiescence=1,
+    )
+    cases["continuation-momentum-player1"] = make_case(
+        [
+            (-1, 0, "white"),
+            (0, 0, "white"),
+            (1, 0, "white"),
+            (0, 2, "black"),
+        ],
+        [],
+        radius=2,
+        next_player="white",
+        momentum_cap=3,
+        momentum={"black": 1, "white": 0},
+        continuation=1,
+        quiescence=1,
+    )
+    return cases
+
+@pytest.fixture(autouse=True)
+def preserve_public_input():
+    """Give every test an independent input and restore it afterward."""
+    original = INPUT.read_bytes()
+    yield
+    INPUT.write_bytes(original)
 
 
-def _run_candidate(data_dir, use_cache=True):
-    if use_cache:
-        key = _data_key(data_dir)
-        if key in _CACHE:
-            return _CACHE[key]
-    if os.path.exists(ESTIMATE):
-        os.remove(ESTIMATE)
-    env = dict(os.environ, CAUSAL_DATA_DIR=data_dir)
-    r = subprocess.run(
-        ["Rscript", ANALYSIS],
+def canonical_report_digest(report):
+    encoded = json.dumps(
+        report, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def run_case(name, case):
+    INPUT.write_text(json.dumps(case, separators=(",", ":")))
+    input_digest = hashlib.sha256(INPUT.read_bytes()).hexdigest()
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT.write_text('{"stale":true}')
+    completed = subprocess.run(
+        [str(BIN)],
         cwd=APP,
-        env=env,
-        capture_output=True,
         text=True,
-        timeout=1200,
+        capture_output=True,
+        timeout=180,
         check=False,
     )
-    assert r.returncode == 0, f"analysis.R failed:\n{r.stderr}"
-    with open(ESTIMATE) as fh:
-        est = float(json.load(fh)["estimate"])
-    if use_cache:
-        _CACHE[key] = est
-    return est
-
-
-# --------------------------------------------------------------- preconditions (zero credit)
-def test_analysis_exists():
-    """The candidate produced an R program at the disclosed path."""
-    assert os.path.exists(ANALYSIS)
-
-
-def test_output_schema():
-    """estimate.json carries a single finite numeric estimate in the plausible range."""
-    est = _run_candidate(COMMITTED_DIR)
-    assert math.isfinite(est) and -1.0 <= est <= 1.0
-
-
-def test_no_forbidden_access():
-    """The candidate source reads the disclosed data and never the verifier tree."""
-    with open(ANALYSIS) as fh:
-        src = fh.read()
-    assert "/tests" not in src and "fixtures" not in src
-    assert any(tok in src for tok in ("CAUSAL_DATA_DIR", "read.csv", "list.files"))
-
-
-def test_estimate_is_recomputed_not_hardcoded():
-    """The estimate differs between the committed cohort and a null-effect cohort, so a
-    hardcoded constant cannot pass."""
-    committed = _run_candidate(COMMITTED_DIR)
-    null_est = _run_candidate(ref.stage(scm.HIDDEN["h_null"]))
-    assert abs(committed - null_est) > 1e-6
-
-
-# --------------------------------------------------------------- candidate accuracy
-_ACCURACY_COHORTS = list(ref.named_cohorts().items())
-
-
-@pytest.mark.parametrize(
-    "name,params", _ACCURACY_COHORTS, ids=[n for n, _ in _ACCURACY_COHORTS]
-)
-def test_candidate_matches_truth(name, params):
-    """On the committed cohort and every held-back cohort the candidate agrees with the
-    independent closed-form structural cure-fraction contrast for that cohort. The truth is
-    derived from the generating parameters (the structural cure logit integrated over the
-    baseline-index distribution), not from a second run of the estimator, so passing does
-    not depend on reproducing any one estimator's implementation."""
-    data_dir = ref.data_dir(name, params)
-    est = _run_candidate(data_dir)
-    assert abs(est - scm.structural_truth(params)) <= scm.TRUTH_ABS_TOL, name
-
-
-# --------------------------------------------------------------- wrong-baseline separation
-# Each case runs the candidate and checks it both agrees with the independent closed-form
-# structural truth AND is displaced from the named wrong baseline on a cohort where that
-# baseline's bias is active. A candidate that took the shortcut lands on the wrong baseline
-# and fails. Correctness is graded against the documented estimand (structural_truth), the
-# same standard as test_candidate_matches_truth, not against any one estimator's realized
-# value; the baseline value is only a distractor the candidate must stay clear of.
-def _assert_candidate_beats(name, baseline):
-    named = ref.named_cohorts()
-    params = named[name]
-    data_dir = ref.data_dir(name, params)
-    dat = scm.load_cohort(data_dir)
-    est = _run_candidate(data_dir)
-    assert abs(est - scm.structural_truth(params)) <= scm.TRUTH_ABS_TOL, (
-        f"{name}: off truth"
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert hashlib.sha256(INPUT.read_bytes()).hexdigest() == input_digest
+    assert OUTPUT.is_file() and not OUTPUT.is_symlink(), (
+        "program did not replace /app/output/report.json with a regular file"
     )
-    assert abs(est - baseline(dat)) >= scm.NAIVE_MIN_ABS, (
-        f"{name}: not clear of baseline"
-    )
+    try:
+        actual = json.loads(OUTPUT.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        pytest.fail(f"report.json is not valid JSON: {exc}")
+    assert canonical_report_digest(actual) == EXPECTED_REPORT_SHA256[name]
 
 
-@pytest.mark.parametrize("name", ref.BIND_FG_ONLY)
-def test_candidate_beats_fg_only(name):
-    """Where the continuous baseline index confounds assignment, the candidate must adjust
-    for it — landing clear of the (F,G)-only plateau that ignores the continuous confounder."""
-    _assert_candidate_beats(name, ref.wb_fg_only)
+def test_public_input_integrity_and_go_artifact():
+    """Preserve the public evidence and require the verifier-built Go binary."""
+    assert hashlib.sha256(INPUT.read_bytes()).hexdigest() == PUBLIC_SHA256
+    assert BIN.is_file() and BIN.read_bytes()[:4] == b"\x7fELF"
 
 
-@pytest.mark.parametrize("name", ref.BIND_C_ONLY)
-def test_candidate_beats_c_only(name):
-    """The candidate must standardize over the registry (F,G) mix, not just balance the
-    continuous index and pool the arms. With a stage-by-marker interaction in the cure
-    structure the four flag cells are non-additive, so the c-only shortcut (inverse-weight
-    the continuous index, skip the (F,G) standardization) lands clear of the truth; the
-    candidate must sit with the truth and away from that shortcut."""
-    _assert_candidate_beats(name, ref.wb_c_only)
+def test_public_match():
+    """Replay the supplied match against its frozen canonical commitment."""
+    run_case("public", json.loads(INPUT.read_text()))
 
 
-@pytest.mark.parametrize("name", ref.BIND_INTERIOR)
-def test_candidate_beats_km_interior(name):
-    """The candidate must read the plateau, not an interior horizon — landing clear of the
-    survival read at LANDMARK that counts not-yet-relapsed susceptibles as event-free."""
-    _assert_candidate_beats(name, ref.wb_km_interior)
-
-
-@pytest.mark.parametrize("name", ref.BIND_LANDMARK)
-def test_candidate_beats_landmark_complete_case(name):
-    """The candidate must use risk-set estimation, not a complete-case landmark proportion —
-    landing clear of the estimate that conflates latency with cure and ignores censoring."""
-    _assert_candidate_beats(name, ref.wb_landmark_complete_case)
-
-
-# --------------------------------------------------------------- metamorphic relations
-META_COHORTS = [
-    "committed",
-    "h_strong_effect",
-    "h_strong_c",
-    "h_nonlin_assign",
-    "h_strong_fg",
-    "h_combo",
-    "h_big_n",
-    "h_high_cure",
-]
-
-
-def _copy_rows(path):
-    import csv as _csv
-
-    with open(path) as fh:
-        return list(_csv.reader(fh))
-
-
-def _rescaled_dir(src_dir, k):
-    import csv as _csv
-
-    dst = tempfile.mkdtemp(prefix="meta_scale_")
-    with open(os.path.join(src_dir, "followup.csv")) as fh:
-        rows = list(_csv.DictReader(fh))
-    with open(os.path.join(dst, "followup.csv"), "w", newline="") as fh:
-        w = _csv.writer(fh)
-        w.writerow(["patient_id", "months_observed", "outcome"])
-        for r in rows:
-            w.writerow(
-                [
-                    r["patient_id"],
-                    round(float(r["months_observed"]) * k, 6),
-                    r["outcome"],
-                ]
-            )
-    for fn in ("enrollment.csv", "site_calendar.csv"):
-        rows = _copy_rows(os.path.join(src_dir, fn))
-        # scale every calendar time by k so the documented administrative window
-        # (site cutoff minus enrolment month) rescales consistently: enrolment
-        # month is column 2 of enrollment.csv, the cutoff is column 1 of
-        # site_calendar.csv
-        col = 2 if fn == "enrollment.csv" else 1
-        for i in range(1, len(rows)):
-            rows[i][col] = str(round(float(rows[i][col]) * k, 6))
-        with open(os.path.join(dst, fn), "w", newline="") as fh:
-            _csv.writer(fh).writerows(rows)
-    return dst
-
-
-def _permuted_dir(src_dir, seed):
-    import csv as _csv
-
-    dst = tempfile.mkdtemp(prefix="meta_perm_")
-    rng = np.random.RandomState(seed)
-    with open(os.path.join(src_dir, "enrollment.csv")) as fh:
-        enr = list(_csv.DictReader(fh))
-    with open(os.path.join(src_dir, "followup.csv")) as fh:
-        fol = {r["patient_id"]: r for r in _csv.DictReader(fh)}
-    relabel = {r["patient_id"]: f"Q{i:06d}" for i, r in enumerate(enr)}
-    order = list(range(len(enr)))
-    rng.shuffle(order)
-    with open(os.path.join(dst, "enrollment.csv"), "w", newline="") as fh:
-        w = _csv.writer(fh)
-        w.writerow(
-            [
-                "patient_id",
-                "site_id",
-                "enroll_month",
-                "therapy",
-                "stage_high",
-                "marker_high",
-                "baseline_index",
-            ]
-        )
-        for i in order:
-            r = enr[i]
-            w.writerow(
-                [
-                    relabel[r["patient_id"]],
-                    r["site_id"],
-                    r["enroll_month"],
-                    r["therapy"],
-                    r["stage_high"],
-                    r["marker_high"],
-                    r["baseline_index"],
-                ]
-            )
-    order2 = list(range(len(enr)))
-    rng.shuffle(order2)
-    with open(os.path.join(dst, "followup.csv"), "w", newline="") as fh:
-        w = _csv.writer(fh)
-        w.writerow(["patient_id", "months_observed", "outcome"])
-        for i in order2:
-            r = fol[enr[i]["patient_id"]]
-            w.writerow(
-                [relabel[enr[i]["patient_id"]], r["months_observed"], r["outcome"]]
-            )
-    import shutil
-
-    shutil.copy(
-        os.path.join(src_dir, "site_calendar.csv"),
-        os.path.join(dst, "site_calendar.csv"),
-    )
-    return dst
-
-
-def _transform_baseline_index(src_dir, fn):
-    import csv as _csv
-
-    dst = tempfile.mkdtemp(prefix="meta_c_")
-    with open(os.path.join(src_dir, "enrollment.csv")) as fh:
-        rows = list(_csv.DictReader(fh))
-    with open(os.path.join(dst, "enrollment.csv"), "w", newline="") as fh:
-        w = _csv.writer(fh)
-        w.writerow(
-            [
-                "patient_id",
-                "site_id",
-                "enroll_month",
-                "therapy",
-                "stage_high",
-                "marker_high",
-                "baseline_index",
-            ]
-        )
-        for r in rows:
-            w.writerow(
-                [
-                    r["patient_id"],
-                    r["site_id"],
-                    r["enroll_month"],
-                    r["therapy"],
-                    r["stage_high"],
-                    r["marker_high"],
-                    round(fn(float(r["baseline_index"])), 6),
-                ]
-            )
-    import shutil
-
-    for f in ("followup.csv", "site_calendar.csv"):
-        shutil.copy(os.path.join(src_dir, f), os.path.join(dst, f))
-    return dst
-
-
-def _latency_regen_dir(params):
-    return ref.stage(dict(params, beta_a=1.0, beta_b=1.0))
-
-
-@pytest.mark.parametrize("name", META_COHORTS[:6])
-def test_metamorphic_time_rescale(name):
-    """Scaling every recorded time by a constant -- enrolment month, follow-up time,
-    and the site administrative cutoff together, so the administrative window is
-    preserved -- leaves the plateau-based estimate unchanged."""
-    p = ref.named_cohorts()[name]
-    base_dir = ref.data_dir(name, p)
-    assert (
-        abs(_run_candidate(base_dir) - _run_candidate(_rescaled_dir(base_dir, 4.0)))
-        <= scm.META_EXACT_TOL
-    ), name
-
-
-@pytest.mark.parametrize(
-    "i,name", list(enumerate(META_COHORTS[:6])), ids=META_COHORTS[:6]
-)
-def test_metamorphic_permutation(i, name):
-    """Shuffling rows and relabeling patient ids leaves the estimate unchanged."""
-    p = ref.named_cohorts()[name]
-    base_dir = ref.data_dir(name, p)
-    assert (
-        abs(
-            _run_candidate(base_dir) - _run_candidate(_permuted_dir(base_dir, 7000 + i))
-        )
-        <= scm.META_EXACT_TOL
-    ), name
-
-
-@pytest.mark.parametrize("name", ["committed", "h_strong_effect", "h_high_cure"])
-def test_metamorphic_latency_shape(name):
-    """Changing only the susceptible latency shape (same cure and censoring) leaves the
-    cure-fraction estimate invariant, confirming incidence is separated from latency."""
-    p = ref.named_cohorts()[name]
-    base = _run_candidate(ref.data_dir(name, p))
-    assert abs(base - _run_candidate(_latency_regen_dir(p))) <= scm.META_LATENCY_TOL, (
-        name
-    )
-
-
-@pytest.mark.parametrize("name", ["committed", "h_strong_c", "h_big_n"])
-def test_metamorphic_baseline_shift(name):
-    """Shifting the baseline index by a constant leaves the estimate invariant (a correct
-    covariate adjustment absorbs an affine reparameterization; a hardcoded threshold does not)."""
-    p = ref.named_cohorts()[name]
-    base_dir = ref.data_dir(name, p)
-    base = _run_candidate(base_dir)
-    shifted = _run_candidate(_transform_baseline_index(base_dir, lambda c: c + 2.0))
-    assert abs(base - shifted) <= scm.META_LATENCY_TOL, name
-
-
-@pytest.mark.parametrize("name", ["committed", "h_strong_c", "h_high_cure"])
-def test_metamorphic_baseline_scale(name):
-    """Rescaling the baseline index by a constant leaves the estimate invariant, rejecting
-    solvers that threshold the index at a hardcoded value."""
-    p = ref.named_cohorts()[name]
-    base_dir = ref.data_dir(name, p)
-    base = _run_candidate(base_dir)
-    scaled = _run_candidate(_transform_baseline_index(base_dir, lambda c: c * 1.5))
-    assert abs(base - scaled) <= scm.META_LATENCY_TOL, name
-
-
-# --------------------------------------------------------------- determinism
-def test_deterministic_over_three_runs():
-    """Three runs on the committed cohort produce identical estimate.json bytes."""
-    outs = []
-    for _ in range(3):
-        _run_candidate(COMMITTED_DIR, use_cache=False)
-        with open(ESTIMATE) as fh:
-            outs.append(fh.read())
-    assert outs[0] == outs[1] == outs[2]
+@pytest.mark.parametrize("name", sorted(hidden_cases()))
+def test_compatible_match_matrix(name):
+    """Check adversarial replays against offline canonical commitments."""
+    run_case(name, hidden_cases()[name])
