@@ -1,622 +1,591 @@
+from __future__ import annotations
+
+import csv
 import hashlib
+import importlib.util
 import json
-import os
+import math
+import re
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
-BIN = "/app/bin/fyop-atlas"
-STATE = "/app/state"
-OUTPUT = "/app/output"
-YARD = "/app/yard-alpha"
-FIXTURES = "/opt/verifier-fixtures/hfsy"
-# Opaque hidden observation dirs (verify-only; never in agent image)
-TB3_OBS_K4M1 = os.environ.get("TB3_OBS_K4M1", os.path.join(FIXTURES, "obs-k4m1"))
-TB3_OBS_P9W2 = os.environ.get("TB3_OBS_P9W2", os.path.join(FIXTURES, "obs-p9w2"))
-TB3_OBS_R7N3 = os.environ.get("TB3_OBS_R7N3", os.path.join(FIXTURES, "obs-r7n3"))
+from case_builder import make_case
+
+APP_INPUT = Path("/app/task_file/input_data")
+APP_OUTPUT = Path("/app/task_file/calibration")
+APP_SOURCE = Path("/app/hall_transport.c")
+
+if APP_INPUT.exists():
+    INPUT_DIR = APP_INPUT
+    OUTPUT_DIR = APP_OUTPUT
+    SOURCE_PATH = APP_SOURCE
+    TASK_FILE = Path("/app/task_file")
+else:
+    ROOT = Path(__file__).resolve().parents[1]
+    INPUT_DIR = ROOT / "environment" / "task_file" / "input_data"
+    OUTPUT_DIR = ROOT / "environment" / "task_file" / "calibration"
+    SOURCE_PATH = ROOT / "solution" / "hall_transport.c"
+    TASK_FILE = ROOT / "environment" / "task_file"
+
+SPEC_SHA256 = "af520a8a1f5aa78662dc409c0989dba6af24e89475071142bf0f1bc602d283f0"
+MODEL_SHA256 = "5853eac6f3b7f89b541f3bde54ae8f513c035544d2dac9bee67ca03b29185328"
+PUBLIC_INPUT_SHA256 = {
+    "carriers.csv": "0fcfff98ed9a70acb2607b3f106a524d3573607e0bb6940641e8d1887e45654b",
+    "case_config.csv": "5a9362d3bd71da942384e85f50c7bd48ca71a463e0e4f91876584d6d444ec4ab",
+    "input_hashes.json": "5a50ba2aaf1a9a393899710e14cf72a2b3e7308aa55ba1bdd7a492486f00bc5c",
+    "observations.csv": "fd03429572661aae688c14fcc46c0878666d2604dfd8c2582db458d87ed7c8d3",
+    "prior_flags.csv": "5cae1ee628e073c240fcfdb8e22281d91fbb2d1b6e987802820467ba2b6d7d37",
+    "runs.csv": "4a33aaa2a81e060a40f9c5d37b7f37af03f5af8f6fd0b2397b9637fb3a7eea5a",
+}
+FINDINGS = [
+    "excluded_observation",
+    "prior_flag",
+    "longitudinal_outlier",
+    "hall_outlier",
+    "run_bias",
+]
+ROUNDING = {
+    "carrier_parameters": 6,
+    "run_parameters": 6,
+    "modeled_uohm_m": 6,
+    "residual_sigma": 6,
+}
+OUTPUT_NAMES = [
+    "transport_parameters.json",
+    "observation_residuals.jsonl",
+    "transport_summary.json",
+]
+
+model_spec = importlib.util.spec_from_file_location(
+    "transport_model", TASK_FILE / "transport_model.py"
+)
+assert model_spec and model_spec.loader
+model = importlib.util.module_from_spec(model_spec)
+model_spec.loader.exec_module(model)
 
 
-def _run(cmd, env_override=None):
-    """Run fyop-atlas via subprocess."""
-    merged = dict(os.environ)
-    if env_override:
-        merged.update(env_override)
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def write_rows(path: Path, fields: list[str], values: list[dict]) -> None:
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(values)
+
+
+def finite_number(value: object) -> bool:
+    return type(value) in (int, float) and math.isfinite(float(value))
+
+
+def six_decimal_number(value: object) -> bool:
+    return finite_number(value) and float(value) == round(float(value), 6)
+
+
+def parse_parameters(output_dir: Path, archive: dict) -> dict:
+    payload = json.loads((output_dir / "transport_parameters.json").read_text())
+    assert set(payload) == {
+        "reference",
+        "rounding",
+        "carriers",
+        "runs",
+        "constraints",
+    }
+    assert payload["reference"] == "carrier input order and run input order"
+    assert payload["rounding"] == ROUNDING
+    assert len(payload["carriers"]) == len(archive["carriers"])
+    assert len(payload["runs"]) == len(archive["runs"])
+
+    carriers = {}
+    carrier_keys = {
+        "carrier_id",
+        "band_index",
+        "charge_sign",
+        "density_1e22_m3",
+        "mobility_cm2_vs",
+        "activation_mev",
+        "alpha",
+    }
+    field_map = {
+        "density_1e22_m3": (
+            "density_min_1e22_m3",
+            "density_max_1e22_m3",
+        ),
+        "mobility_cm2_vs": ("mobility_min_cm2_vs", "mobility_max_cm2_vs"),
+        "activation_mev": ("activation_min_mev", "activation_max_mev"),
+        "alpha": ("alpha_min", "alpha_max"),
+    }
+    for actual, expected in zip(
+        payload["carriers"], archive["carriers"], strict=True
+    ):
+        assert set(actual) == carrier_keys
+        assert actual["carrier_id"] == expected["carrier_id"]
+        assert type(actual["band_index"]) is int
+        assert actual["band_index"] == expected["band_index"]
+        assert type(actual["charge_sign"]) is int
+        assert actual["charge_sign"] == expected["charge_sign"]
+        values = {}
+        for field, (minimum, maximum) in field_map.items():
+            assert six_decimal_number(actual[field])
+            value = float(actual[field])
+            assert expected[minimum] <= value <= expected[maximum]
+            values[field] = value
+        carriers[expected["carrier_id"]] = values
+
+    runs = {}
+    run_keys = {
+        "run_id",
+        "temperature_k",
+        "field_scale",
+        "longitudinal_offset_uohm_m",
+        "hall_offset_uohm_m",
+    }
+    run_field_map = {
+        "field_scale": ("field_scale_min", "field_scale_max"),
+        "longitudinal_offset_uohm_m": (
+            "longitudinal_offset_min_uohm_m",
+            "longitudinal_offset_max_uohm_m",
+        ),
+        "hall_offset_uohm_m": (
+            "hall_offset_min_uohm_m",
+            "hall_offset_max_uohm_m",
+        ),
+    }
+    for actual, expected in zip(payload["runs"], archive["runs"], strict=True):
+        assert set(actual) == run_keys
+        assert actual["run_id"] == expected["run_id"]
+        assert six_decimal_number(actual["temperature_k"])
+        assert float(actual["temperature_k"]) == pytest.approx(
+            expected["temperature_k"], abs=5.1e-7
+        )
+        values = {}
+        for field, (minimum, maximum) in run_field_map.items():
+            assert six_decimal_number(actual[field])
+            value = float(actual[field])
+            assert expected[minimum] <= value <= expected[maximum]
+            values[field] = value
+        runs[expected["run_id"]] = values
+
+    metrics = model.constraint_metrics(archive, carriers, runs)
+    assert set(payload["constraints"]) == set(metrics)
+    for key, expected in metrics.items():
+        assert six_decimal_number(payload["constraints"][key])
+        assert float(payload["constraints"][key]) == pytest.approx(
+            expected, abs=5.1e-7
+        )
+    cfg = archive["cfg"]
+    assert metrics["charge_imbalance"] <= cfg["max_charge_imbalance"] + 1.0e-12
+    assert (
+        cfg["total_density_min_1e22_m3"]
+        <= metrics["total_density_1e22_m3"]
+        <= cfg["total_density_max_1e22_m3"]
+    )
+    assert (
+        metrics["minimum_conductivity_share"]
+        >= cfg["min_conductivity_share"] - 1.0e-12
+    )
+    assert (
+        metrics["minimum_mobility_ratio"]
+        >= cfg["min_mobility_ratio"] - 1.0e-12
+    )
+    assert (
+        metrics["maximum_activation_step_mev"]
+        <= cfg["max_activation_step_mev"] + 1.0e-12
+    )
+    assert (
+        metrics["maximum_field_scale_step"]
+        <= cfg["max_field_scale_step"] + 1.0e-12
+    )
+    assert (
+        abs(metrics["mean_longitudinal_offset_uohm_m"])
+        <= cfg["max_mean_longitudinal_offset_uohm_m"] + 1.0e-12
+    )
+    assert (
+        abs(metrics["mean_hall_offset_uohm_m"])
+        <= cfg["max_mean_hall_offset_uohm_m"] + 1.0e-12
+    )
+    return {"carriers": carriers, "runs": runs, "metrics": metrics}
+
+
+def validate_residuals(output_dir: Path, archive: dict, result: dict) -> None:
+    actual = [
+        json.loads(line)
+        for line in (output_dir / "observation_residuals.jsonl")
+        .read_text()
+        .splitlines()
+        if line.strip()
+    ]
+    ordered = sorted(
+        enumerate(archive["observations"]), key=lambda pair: pair[1]["observation_id"]
+    )
+    expected_keys = {
+        "observation_id",
+        "run_id",
+        "field_t",
+        "modeled_longitudinal_uohm_m",
+        "observed_longitudinal_uohm_m",
+        "longitudinal_residual_sigma",
+        "modeled_hall_uohm_m",
+        "observed_hall_uohm_m",
+        "hall_residual_sigma",
+        "findings",
+    }
+    assert len(actual) == len(ordered)
+    for row, (index, source) in zip(actual, ordered, strict=True):
+        assert set(row) == expected_keys
+        assert row["observation_id"] == source["observation_id"]
+        assert row["run_id"] == source["run_id"]
+        for field in (
+            "field_t",
+            "modeled_longitudinal_uohm_m",
+            "observed_longitudinal_uohm_m",
+            "longitudinal_residual_sigma",
+            "modeled_hall_uohm_m",
+            "observed_hall_uohm_m",
+            "hall_residual_sigma",
+        ):
+            assert six_decimal_number(row[field])
+        assert float(row["field_t"]) == pytest.approx(source["field_t"], abs=5.1e-7)
+        assert float(row["modeled_longitudinal_uohm_m"]) == pytest.approx(
+            result["modeled"][index][0], abs=5.1e-7
+        )
+        assert float(row["modeled_hall_uohm_m"]) == pytest.approx(
+            result["modeled"][index][1], abs=5.1e-7
+        )
+        assert float(row["observed_longitudinal_uohm_m"]) == pytest.approx(
+            source["observed_longitudinal_uohm_m"], abs=5.1e-7
+        )
+        assert float(row["observed_hall_uohm_m"]) == pytest.approx(
+            source["observed_hall_uohm_m"], abs=5.1e-7
+        )
+        replay_longitudinal = (
+            float(row["modeled_longitudinal_uohm_m"])
+            - source["observed_longitudinal_uohm_m"]
+        ) / source["sigma_longitudinal_uohm_m"]
+        replay_hall = (
+            float(row["modeled_hall_uohm_m"]) - source["observed_hall_uohm_m"]
+        ) / source["sigma_hall_uohm_m"]
+        assert min(
+            abs(
+                float(row["longitudinal_residual_sigma"])
+                - result["residuals"][index][0]
+            ),
+            abs(float(row["longitudinal_residual_sigma"]) - replay_longitudinal),
+        ) <= 1.0e-5
+        assert min(
+            abs(float(row["hall_residual_sigma"]) - result["residuals"][index][1]),
+            abs(float(row["hall_residual_sigma"]) - replay_hall),
+        ) <= 1.0e-5
+        assert row["findings"] == result["findings"][index]
+
+
+def validate_summary(
+    output_dir: Path, archive: dict, parameters: dict, result: dict
+) -> None:
+    payload = json.loads((output_dir / "transport_summary.json").read_text())
+    expected_keys = {
+        "carrier_count",
+        "run_count",
+        "observations",
+        "scored_observations",
+        "clean_observations",
+        "combined_rms",
+        "longitudinal_rms",
+        "hall_rms",
+        "residual_p90",
+        "clean_fraction",
+        "charge_imbalance",
+        "total_density_1e22_m3",
+        "minimum_conductivity_share",
+        "minimum_mobility_ratio",
+        "maximum_activation_step_mev",
+        "maximum_field_scale_step",
+        "mean_longitudinal_offset_uohm_m",
+        "mean_hall_offset_uohm_m",
+        "finding_counts",
+    }
+    assert set(payload) == expected_keys
+    counts = {
+        "carrier_count": len(archive["carriers"]),
+        "run_count": len(archive["runs"]),
+        "observations": len(archive["observations"]),
+        "scored_observations": result["scored"],
+        "clean_observations": result["clean"],
+    }
+    for key, expected in counts.items():
+        assert type(payload[key]) is int and payload[key] == expected
+    metrics = {
+        "combined_rms": result["combined_rms"],
+        "longitudinal_rms": result["longitudinal_rms"],
+        "hall_rms": result["hall_rms"],
+        "residual_p90": result["residual_p90"],
+        "clean_fraction": result["clean_fraction"],
+        **parameters["metrics"],
+    }
+    for key, expected in metrics.items():
+        assert six_decimal_number(payload[key])
+        assert float(payload[key]) == pytest.approx(expected, abs=5.1e-7)
+    assert set(payload["finding_counts"]) == set(FINDINGS)
+    assert payload["finding_counts"] == result["finding_counts"]
+
+
+def validate_calibration(input_dir: Path, output_dir: Path) -> dict:
+    archive = model.load_archive(input_dir)
+    parameters = parse_parameters(output_dir, archive)
+    result = model.evaluate(input_dir, output_dir)
+    validate_residuals(output_dir, archive, result)
+    validate_summary(output_dir, archive, parameters, result)
+    cfg = archive["cfg"]
+    assert result["combined_rms"] <= cfg["combined_rms_max"] + 1.0e-12
+    assert (
+        result["longitudinal_rms"] <= cfg["longitudinal_rms_max"] + 1.0e-12
+    )
+    assert result["hall_rms"] <= cfg["hall_rms_max"] + 1.0e-12
+    assert result["residual_p90"] <= cfg["residual_p90_max"] + 1.0e-12
+    assert result["clean_fraction"] >= cfg["min_clean_fraction"] - 1.0e-12
+    return {"archive": archive, "parameters": parameters, "result": result}
+
+
+def run_solver(
+    binary: Path,
+    input_dir: Path,
+    output_dir: Path,
+    *,
+    check: bool = True,
+) -> subprocess.CompletedProcess:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for name in OUTPUT_NAMES:
+        (output_dir / name).unlink(missing_ok=True)
     return subprocess.run(
-        [BIN, *cmd],
-        capture_output=True, text=True, env=merged, timeout=120,
+        [str(binary), str(input_dir), str(output_dir)],
+        check=check,
+        text=True,
+        capture_output=True,
+        timeout=90,
     )
 
 
-def _clean():
-    for d in (STATE, OUTPUT):
-        if os.path.isdir(d):
-            shutil.rmtree(d)
+@pytest.fixture(scope="session")
+def rebuilt_binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Compile the submitted source cleanly and reject process delegation."""
+    build_dir = tmp_path_factory.mktemp("native-build")
+    if not SOURCE_PATH.exists():
+        pytest.skip("hall_transport.c is missing")
+    source = SOURCE_PATH.read_text()
+    assert re.search(r"\bint\s+main\s*\(", source)
+    binary = build_dir / "hall_transport"
+    completed = subprocess.run(
+        [
+            "cc",
+            "-O2",
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-o",
+            str(binary),
+            str(SOURCE_PATH),
+            "-lm",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert completed.stderr == "", f"compiler warnings are not allowed: {completed.stderr}"
+    symbols = subprocess.run(
+        ["nm", "-u", str(binary)],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout
+    forbidden = re.compile(
+        r"\b(system|popen|fork|vfork|clone|execl|execle|execlp|execv|execve|"
+        r"execvp|posix_spawn|posix_spawnp)\b"
+    )
+    assert not forbidden.search(symbols), "the native program links a process API"
+    return binary
 
 
-def _full_pipeline(env=None):
-    _clean()
-    r1 = _run(["ingest"], env)
-    assert r1.returncode == 0, f"ingest failed: {r1.stderr}"
-    r2 = _run(["optimize"], env)
-    assert r2.returncode == 0, f"optimize failed: {r2.stderr}"
-    r3 = _run(["export"], env)
-    assert r3.returncode == 0, f"export failed: {r3.stderr}"
+class TestInputIntegrity:
+    def test_public_archive_hashes(self):
+        """The public transport archive remains unchanged."""
+        manifest = json.loads((INPUT_DIR / "input_hashes.json").read_text())
+        assert set(manifest) == set(PUBLIC_INPUT_SHA256) - {"input_hashes.json"}
+        for name, expected in PUBLIC_INPUT_SHA256.items():
+            assert sha256(INPUT_DIR / name) == expected, f"{name} hash drifted"
+
+    def test_public_contract_hashes(self):
+        """The public specification and numeric model are immutable."""
+        assert sha256(TASK_FILE / "transport_spec.md") == SPEC_SHA256
+        assert sha256(TASK_FILE / "transport_model.py") == MODEL_SHA256
 
 
-def _load(path):
-    with open(path) as f:
-        return json.load(f)
+class TestSubmittedCalibration:
+    def test_required_native_source_exists(self):
+        """The required native C source is present at the documented path."""
+        assert SOURCE_PATH.exists(), "hall_transport.c is missing"
 
+    @pytest.mark.parametrize("filename", OUTPUT_NAMES)
+    def test_required_outputs_exist(self, filename):
+        """Each named output exists and is nonempty."""
+        path = OUTPUT_DIR / filename
+        assert path.exists() and path.stat().st_size > 0
 
-def _canonical(obj):
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    def test_public_calibration_replays_and_meets_every_gate(self):
+        """Canonical public parameters satisfy all physical and quality gates."""
+        validate_calibration(INPUT_DIR, OUTPUT_DIR)
 
-
-def _sha256(text):
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _reference_staging_hash(yard_dir):
-    """Independent reference: compute correct staging_hash from raw inputs."""
-    topo = json.loads(open(os.path.join(yard_dir, "topology.json")).read())
-    consist = json.loads(open(os.path.join(yard_dir, "consist.json")).read())
-    plan = json.loads(open(os.path.join(yard_dir, "plan.json")).read())
-    fail_path = os.path.join(yard_dir, "failures.json")
-    fail = json.loads(open(fail_path).read()) if os.path.exists(fail_path) else {}
-    body = {
-        "train_id": consist["train_id"],
-        "topology": topo,
-        "consist": consist["cars"],
-        "plan": plan,
-        "failures": fail,
-    }
-    return _sha256(_canonical(body))
-
-
-def _reference_topo(yard_dir):
-    return json.loads(open(os.path.join(yard_dir, "topology.json")).read())
-
-
-def _edge_length_lookup(topo):
-    """Undirected (from,to) -> length_m from topology switches."""
-    edges = {}
-    for s in topo["switches"]:
-        edges[(s["from_track"], s["to_track"])] = float(s["length_m"])
-        edges[(s["to_track"], s["from_track"])] = float(s["length_m"])
-    return edges
-
-
-def _reference_total_distance_m(seq, topo):
-    """Independent recomputation: sum length_m for each PUSH/PULL/MOVE_LOCO."""
-    edges = _edge_length_lookup(topo)
-    total = 0.0
-    for cmd in seq["commands"]:
-        if cmd["type"] not in ("PUSH", "PULL", "MOVE_LOCO"):
-            continue
-        key = (cmd["from_track"], cmd["to_track"])
-        assert key in edges, f"no topology edge for move {cmd['from_track']}->{cmd['to_track']}"
-        total += edges[key]
-    return total
-
-
-def _can_reach_lead(topo, failed_switches, start_track):
-    """BFS reachability from start_track to LEAD excluding failed switch ids."""
-    if start_track == "LEAD":
-        return True
-    failed = set(failed_switches or [])
-    adj = {}
-    for s in topo["switches"]:
-        if s["id"] in failed:
-            continue
-        adj.setdefault(s["from_track"], []).append(s["to_track"])
-        adj.setdefault(s["to_track"], []).append(s["from_track"])
-    seen = {start_track}
-    queue = [start_track]
-    while queue:
-        cur = queue.pop(0)
-        for nxt in adj.get(cur, []):
-            if nxt in seen:
+    def test_supplied_priors_are_not_a_solution(self):
+        """The realistic priors miss the public residual-quality surface."""
+        archive = model.load_archive(INPUT_DIR)
+        carriers = {
+            row["carrier_id"]: {
+                "density_1e22_m3": row["prior_density_1e22_m3"],
+                "mobility_cm2_vs": row["prior_mobility_cm2_vs"],
+                "activation_mev": row["prior_activation_mev"],
+                "alpha": row["prior_alpha"],
+            }
+            for row in archive["carriers"]
+        }
+        runs = {
+            row["run_id"]: {
+                "field_scale": row["prior_field_scale"],
+                "longitudinal_offset_uohm_m": row[
+                    "prior_longitudinal_offset_uohm_m"
+                ],
+                "hall_offset_uohm_m": row["prior_hall_offset_uohm_m"],
+            }
+            for row in archive["runs"]
+        }
+        residuals = []
+        for observation in archive["observations"]:
+            if (
+                observation["use_flag"] == 0
+                or observation["observation_id"] in archive["prior_flags"]
+            ):
                 continue
-            if nxt == "LEAD":
-                return True
-            seen.add(nxt)
-            queue.append(nxt)
-    return False
-
-
-def _independent_capacity_ok(seq, topo, consist):
-    """Replay PUSH/PULL and verify dual occupancy inequalities."""
-    track_limits = {t["id"]: t for t in topo["tracks"]}
-    car_map = {c["id"]: c for c in consist["cars"]}
-    track_cars = {t["id"]: [] for t in topo["tracks"]}
-    track_cars["LEAD"] = [c["id"] for c in consist["cars"]]
-    for cmd in seq["commands"]:
-        if cmd["type"] not in ("PUSH", "PULL"):
-            continue
-        fr = cmd["from_track"]
-        to = cmd["to_track"]
-        for cid in cmd.get("car_ids", []):
-            if cid in track_cars.get(fr, []):
-                track_cars[fr].remove(cid)
-            track_cars.setdefault(to, []).append(cid)
-        if to not in track_limits:
-            continue
-        lim = track_limits[to]
-        on_track = track_cars[to]
-        if len(on_track) > lim["max_cars"]:
-            return False
-        total_len = sum(car_map[c]["length_units"] for c in on_track if c in car_map)
-        if total_len > lim["max_length_units"]:
-            return False
-    return True
-
-
-def _assert_no_failed_throws(seq, failed):
-    failed = set(failed or [])
-    for cmd in seq["commands"]:
-        if cmd["type"] == "THROW_SWITCH":
-            assert cmd["switch_id"] not in failed, (
-                f"THROW_SWITCH on failed switch {cmd['switch_id']}"
+            longitudinal, hall = model.modeled_pair(
+                archive, carriers, runs, observation
             )
-
-
-# ── 1. Build succeeds ──────────────────────────────────────────────────
-def test_build_binary_exists():
-    """fyop-atlas launcher must exist after build."""
-    assert os.path.isfile(BIN), f"{BIN} missing after build"
-
-
-# ── 2. Ingest creates staging and snapshot ─────────────────────────────
-def test_ingest_creates_staging_files():
-    """Ingest must produce /app/state/yard-staging.json and /app/state/ingest-snapshot.json."""
-    _clean()
-    r = _run(["ingest"])
-    assert r.returncode == 0
-    assert os.path.isfile("/app/state/yard-staging.json")
-    assert os.path.isfile("/app/state/ingest-snapshot.json")
-
-
-# ── 3. Staging schema has required keys ────────────────────────────────
-def test_staging_schema():
-    """yard-staging.json must contain train_id, topology, consist, plan, failures, staging_hash."""
-    _clean()
-    _run(["ingest"])
-    staging = _load("/app/state/yard-staging.json")
-    for key in ("train_id", "topology", "consist", "plan", "failures", "staging_hash"):
-        assert key in staging, f"staging missing key: {key}"
-
-
-# ── 4. Staging hash uses canonical sorted-key JSON ─────────────────────
-def test_staging_hash_canonical():
-    """staging_hash must equal SHA-256 of canonical compact JSON with sorted keys."""
-    _clean()
-    _run(["ingest"])
-    staging = _load(os.path.join(STATE, "yard-staging.json"))
-    ref_hash = _reference_staging_hash(YARD)
-    assert staging["staging_hash"] == ref_hash, (
-        f"staging_hash mismatch: got {staging['staging_hash']}, expected {ref_hash}"
-    )
-
-
-# ── 5. Ingest snapshot has correct car count ───────────────────────────
-def test_snapshot_car_count():
-    """ingest-snapshot.json car_count must match consist length."""
-    _clean()
-    _run(["ingest"])
-    snap = _load(os.path.join(STATE, "ingest-snapshot.json"))
-    consist = json.loads(open(os.path.join(YARD, "consist.json")).read())
-    assert snap["car_count"] == len(consist["cars"])
-
-
-# ── 6. Validate produces validated output ──────────────────────────────
-def test_validate_creates_validated():
-    """Validate must produce /app/state/shunting-validated.json."""
-    _full_pipeline()
-    assert os.path.isfile("/app/state/shunting-validated.json")
-    validated = _load("/app/state/shunting-validated.json")
-    assert "commands" in validated and "validation_seal" in validated
-
-
-# ── 7. Export produces sequence output ─────────────────────────────────
-def test_export_creates_output():
-    """Export must produce /app/output/shunting-sequence.json, /app/state/export-manifest.json, /app/state/export-ledger.json."""
-    _full_pipeline()
-    assert os.path.isfile("/app/output/shunting-sequence.json")
-    assert os.path.isfile("/app/state/export-manifest.json")
-    assert os.path.isfile("/app/state/export-ledger.json")
-    seq = _load("/app/output/shunting-sequence.json")
-    assert "commands" in seq and "total_distance_m" in seq
-    manifest = _load("/app/state/export-manifest.json")
-    assert "export_fingerprint" in manifest
-    ledger = _load("/app/state/export-ledger.json")
-    assert "exports" in ledger and len(ledger["exports"]) >= 1
-
-
-# ── 8. Distance metric uses meters, not hop count ─────────────────────
-def test_distance_is_meters_not_hops():
-    """total_distance_m must match independent length_m sum for this sequence.
-
-    Graded contract is geometric accounting on the emitted commands only.
-    This is not a check for globally shortest distance or minimal move count.
-    """
-    _full_pipeline()
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    dist = float(seq["total_distance_m"])
-    topo = _reference_topo(YARD)
-    ref = _reference_total_distance_m(seq, topo)
-    assert abs(dist - ref) < 1e-6, (
-        f"total_distance_m={dist} != independent length_m sum {ref} "
-        f"(accounting mismatch; not an optimality check)"
-    )
-    move_count = sum(
-        1 for c in seq["commands"] if c["type"] in ("PUSH", "PULL", "MOVE_LOCO")
-    )
-    assert dist != float(move_count), (
-        "total_distance_m equals hop count — must use edge.length_m accounting"
-    )
-    min_edge = min(s["length_m"] for s in topo["switches"])
-    assert dist >= min_edge, (
-        f"total_distance_m={dist} is smaller than min edge length_m={min_edge}"
-    )
-
-
-# ── 9. Destination blocks follow plan order ────────────────────────────
-def test_outbound_blocks_plan_order():
-    """Within each outbound track, blocks must follow destination_order from plan.json."""
-    _full_pipeline()
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    plan = json.loads(open(os.path.join(YARD, "plan.json")).read())
-    dest_order = plan["destination_order"]
-    for track_id, blocks in seq["outbound_blocks"].items():
-        dests_on_track = [b["destination"] for b in blocks]
-        order_indices = [dest_order.index(d) for d in dests_on_track if d in dest_order]
-        assert order_indices == sorted(order_indices), (
-            f"blocks on {track_id} not in destination_order: {dests_on_track}"
-        )
-
-
-# ── 10. Capacity never exceeded during sequence ───────────────────────
-def test_capacity_never_exceeded():
-    """Simulate the command sequence and verify dual occupancy inequalities."""
-    _full_pipeline()
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    validated = _load(os.path.join(STATE, "shunting-validated.json"))
-    topo = _reference_topo(YARD)
-    consist = json.loads(open(os.path.join(YARD, "consist.json")).read())
-    assert _independent_capacity_ok(seq, topo, consist), (
-        "emitted sequence violates n_cars or length_units capacity inequalities"
-    )
-    assert validated.get("capacity_verified") is True, (
-        "capacity_verified must be true when the dual inequalities hold"
-    )
-
-
-# ── 11. No THROW_SWITCH on a failed switch ────────────────────────────
-def test_no_throw_on_failed_switch():
-    """Sequence must never THROW_SWITCH a switch listed in failures.json."""
-    _full_pipeline()
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    fail = json.loads(open(os.path.join(YARD, "failures.json")).read())
-    _assert_no_failed_throws(seq, fail.get("failed_switches", []))
-
-
-# ── 12. Export fingerprint is stable on re-export ─────────────────────
-def test_export_fingerprint_stable():
-    """Re-running export on unchanged validated data must yield same fingerprint."""
-    _full_pipeline()
-    m1 = _load(os.path.join(STATE, "export-manifest.json"))
-    fp1 = m1["export_fingerprint"]
-    _run(["export"])
-    m2 = _load(os.path.join(STATE, "export-manifest.json"))
-    fp2 = m2["export_fingerprint"]
-    assert fp1 == fp2, f"fingerprint changed: {fp1} -> {fp2}"
-
-
-# ── 13. Staging hash stable on re-ingest ──────────────────────────────
-def test_staging_hash_stable_re_ingest():
-    """Re-running ingest with same inputs must produce same staging_hash."""
-    _clean()
-    _run(["ingest"])
-    s1 = _load(os.path.join(STATE, "yard-staging.json"))
-    h1 = s1["staging_hash"]
-    _run(["ingest"])
-    s2 = _load(os.path.join(STATE, "yard-staging.json"))
-    h2 = s2["staging_hash"]
-    assert h1 == h2, f"staging_hash changed on re-ingest: {h1} -> {h2}"
-
-
-# ── 14. HFSY_YARD_DIR override works for full pipeline ────────────────
-def test_hfsy_yard_dir_override():
-    """Pipeline with HFSY_YARD_DIR pointing to a hidden observation set must succeed."""
-    obs_dir = TB3_OBS_K4M1
-    if not os.path.isdir(obs_dir):
-        pytest.skip("obs-k4m1 fixture not found")
-    _full_pipeline(env={"HFSY_YARD_DIR": obs_dir})
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    assert seq["train_id"] == "HEAVY-REAR-9901"
-
-
-# ── 15. Hidden obs-k4m1: dual capacity inequalities under tight outbound ─
-def test_hidden_obs_k4m1_capacity():
-    """obs-k4m1 shares O1 across A+B so length_units pressure exceeds car-count pressure."""
-    obs_dir = TB3_OBS_K4M1
-    if not os.path.isdir(obs_dir):
-        pytest.skip("obs-k4m1 fixture not found")
-    _full_pipeline(env={"HFSY_YARD_DIR": obs_dir})
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    validated = _load(os.path.join(STATE, "shunting-validated.json"))
-    topo = json.loads(open(os.path.join(obs_dir, "topology.json")).read())
-    consist = json.loads(open(os.path.join(obs_dir, "consist.json")).read())
-    independent = _independent_capacity_ok(seq, topo, consist)
-    assert independent, (
-        "obs-k4m1 sequence violates max_cars or max_length_units"
-    )
-    # Never claim capacity_verified when the emitted sequence already breaches inequalities.
-    if validated.get("capacity_verified") is True:
-        assert independent
-
-
-# ── 16. Hidden obs-p9w2: failed switch lies on the short C2→O1 path ───
-def test_hidden_obs_p9w2_no_failed_throw():
-    """obs-p9w2 fails SW5 while destination B must leave C2 toward O1."""
-    obs_dir = TB3_OBS_P9W2
-    if not os.path.isdir(obs_dir):
-        pytest.skip("obs-p9w2 fixture not found")
-    _full_pipeline(env={"HFSY_YARD_DIR": obs_dir})
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    validated = _load(os.path.join(STATE, "shunting-validated.json"))
-    fail = json.loads(open(os.path.join(obs_dir, "failures.json")).read())
-    failed = set(fail.get("failed_switches", []))
-    assert "SW5" in failed
-    _assert_no_failed_throws(seq, failed)
-    assert validated.get("capacity_verified") is True
-
-
-# ── 17. Hidden obs-r7n3: closure is residual reachability, not end-on-LEAD ─
-def test_hidden_obs_r7n3_closure_reachability():
-    """obs-r7n3 leaves loco off LEAD; closure_verified requires residual BFS, not equality."""
-    obs_dir = TB3_OBS_R7N3
-    if not os.path.isdir(obs_dir):
-        pytest.skip("obs-r7n3 fixture not found")
-    _full_pipeline(env={"HFSY_YARD_DIR": obs_dir})
-    validated = _load(os.path.join(STATE, "shunting-validated.json"))
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    topo = json.loads(open(os.path.join(obs_dir, "topology.json")).read())
-    fail = json.loads(open(os.path.join(obs_dir, "failures.json")).read())
-    loco = seq["loco_end_track"]
-    assert loco != "LEAD", (
-        "obs-r7n3 must leave loco_end_track off LEAD so reachability (not equality) is graded"
-    )
-    assert validated.get("closure_verified") is True, "closure_verified must be true"
-    assert _can_reach_lead(topo, fail.get("failed_switches", []), loco), (
-        f"loco_end_track={loco} has no non-failed path to LEAD "
-        f"(reachability required; ending on LEAD is not required)"
-    )
-
-
-# ── 18. Full pipeline emits a non-empty command list ──────────────────
-def test_pipeline_emits_commands():
-    """End-to-end ingest/validate/export must emit at least one shunting command."""
-    _full_pipeline()
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    assert "commands" in seq
-    assert len(seq["commands"]) > 0
-
-
-# ── 19. NOP: missing staging means validate and export fail ───────────
-def test_nop_no_staging_fails():
-    """Without ingest, validate must fail (no staging file)."""
-    _clean()
-    r = _run(["optimize"])
-    assert r.returncode != 0 or not os.path.isfile(
-        os.path.join(STATE, "shunting-validated.json")
-    )
-
-
-# ── 20. Export reads from validated, not raw yard ─────────────────────
-def test_export_reads_validated_not_raw():
-    """Export output must match validated data, not re-derive from raw yard."""
-    _full_pipeline()
-    validated = _load(os.path.join(STATE, "shunting-validated.json"))
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    assert seq["total_distance_m"] == validated["total_distance_m"]
-    assert seq["loco_end_track"] == validated["loco_end_track"]
-    assert seq["train_id"] == validated["train_id"]
-
-
-# ── 21. Loco closure: able to reach LEAD (not required to end on LEAD) ─
-def test_loco_closure_can_reach_lead():
-    """Closure requires a non-failed path from loco_end_track to LEAD.
-
-    Docs and grading agree: LEAD is a reachability target, not a required end track.
-    loco_end_track may differ from LEAD when a path still exists.
-    """
-    _full_pipeline()
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    validated = _load(os.path.join(STATE, "shunting-validated.json"))
-    topo = _reference_topo(YARD)
-    fail = json.loads(open(os.path.join(YARD, "failures.json")).read())
-    loco = seq["loco_end_track"]
-    assert validated.get("closure_verified") is True, "closure_verified must be true"
-    assert _can_reach_lead(topo, fail.get("failed_switches", []), loco), (
-        f"loco_end_track={loco} has no non-failed path to LEAD"
-    )
-    # Fairness: ending on LEAD is sufficient but not required by the contract.
-    assert "loco_end_track" in seq
-
-
-# ── 22. Cars preserve relative inbound order within destination block ─
-def test_cars_stable_sort_within_block():
-    """Within each destination block, car order must match inbound consist order."""
-    _full_pipeline()
-    seq = _load(os.path.join(OUTPUT, "shunting-sequence.json"))
-    consist = json.loads(open(os.path.join(YARD, "consist.json")).read())
-    inbound_order = [c["id"] for c in consist["cars"]]
-    for track_id, blocks in seq["outbound_blocks"].items():
-        for block in blocks:
-            car_ids = block["car_ids"]
-            indices = [inbound_order.index(cid) for cid in car_ids]
-            assert indices == sorted(indices), (
-                f"cars in block {block['destination']} on {track_id} not in consist order"
+            residuals.append(
+                (
+                    (longitudinal - observation["observed_longitudinal_uohm_m"])
+                    / observation["sigma_longitudinal_uohm_m"],
+                    (hall - observation["observed_hall_uohm_m"])
+                    / observation["sigma_hall_uohm_m"],
+                )
             )
-
-
-# ── 23. Cross-run export-ledger accumulates entries ───────────────────
-def test_cross_run_ledger():
-    """Running full pipeline twice should create two ledger entries."""
-    _full_pipeline()
-    _run(["export"])
-    ledger = _load(os.path.join(STATE, "export-ledger.json"))
-    assert len(ledger["exports"]) >= 2
-
-
-# ── 24. Agent staging_hash for hidden observation differs from default ─
-def test_hidden_fixture_staging_hash_differs():
-    """Agent fyop-atlas ingest must seal distinct staging_hash for obs-k4m1 vs yard-alpha."""
-    assert os.path.isfile(BIN), f"missing agent binary: {BIN}"
-    obs_dir = TB3_OBS_K4M1
-    if not os.path.isdir(obs_dir):
-        pytest.skip("obs-k4m1 fixture not found")
-
-    _clean()
-    r_alpha = _run(["ingest"])
-    assert r_alpha.returncode == 0, f"default ingest failed: {r_alpha.stderr}"
-    staging_alpha = os.path.join(STATE, "yard-staging.json")
-    assert os.path.isfile(staging_alpha), "agent did not write yard-staging.json for yard-alpha"
-    hash_alpha = _load(staging_alpha)["staging_hash"]
-    assert isinstance(hash_alpha, str) and len(hash_alpha) == 64
-
-    _clean()
-    r_obs = _run(["ingest"], env_override={"HFSY_YARD_DIR": obs_dir})
-    assert r_obs.returncode == 0, f"hidden ingest failed: {r_obs.stderr}"
-    staging_obs = os.path.join(STATE, "yard-staging.json")
-    assert os.path.isfile(staging_obs), "agent did not write yard-staging.json for hidden obs"
-    hash_obs = _load(staging_obs)["staging_hash"]
-    assert isinstance(hash_obs, str) and len(hash_obs) == 64
-
-    assert hash_alpha != hash_obs
-    assert hash_alpha == _reference_staging_hash(YARD)
-    assert hash_obs == _reference_staging_hash(obs_dir)
-
-
-# ── 25. OccupancyGuard must enforce max_length_units, not car-count alone ─
-def test_occupancy_guard_enforces_length_units():
-    """Direct contract: can_push rejects length overflow even when max_cars still has slack."""
-    from fyop.consist.cars import FreightCar
-    from fyop.occupancy.guard import OccupancyGuard, TrackState
-    from fyop.topology.graph import TrackNode
-
-    track = TrackNode(id="T1", type="classification", max_cars=4, max_length_units=20)
-    state = TrackState("T1")
-    state.add_car(FreightCar(id="A", destination="X", length_units=12, mass_t=10.0))
-    incoming = FreightCar(id="B", destination="X", length_units=10, mass_t=10.0)
-    # car-count allows (2 <= 4) but length 22 > 20
-    assert OccupancyGuard.can_push(track, state, incoming) is False
-
-
-# ── 26. Residual reachability is BFS, not loco_end_track == LEAD ───────
-def test_reachability_helper_is_bfs_not_equality():
-    """Direct contract: loco off LEAD with a residual path must still close."""
-    from fyop.residual.reach import can_loco_reach_lead
-    from fyop.topology.graph import SwitchEdge, TrackNode, YardGraph
-
-    tracks = {
-        "LEAD": TrackNode(id="LEAD", type="lead", max_cars=10, max_length_units=100),
-        "C1": TrackNode(id="C1", type="classification", max_cars=4, max_length_units=40),
-        "DEAD": TrackNode(id="DEAD", type="classification", max_cars=2, max_length_units=20),
-    }
-    edges = [
-        SwitchEdge(id="SW1", from_track="LEAD", to_track="C1", length_m=100.0),
-        SwitchEdge(id="SWX", from_track="LEAD", to_track="DEAD", length_m=50.0),
-    ]
-    graph = YardGraph(tracks, edges)
-    assert can_loco_reach_lead(graph, "C1", set()) is True
-    assert can_loco_reach_lead(graph, "DEAD", {"SWX"}) is False
-    assert can_loco_reach_lead(graph, "LEAD", set()) is True
-
-
-# ── 27. Optimize capacity replay must enforce length_units ─────────────
-def test_optimize_simulate_capacity_enforces_length():
-    """Direct contract: optimize-stage replay rejects length overflow with car-count slack."""
-    from fyop.consist.cars import FreightCar
-    from fyop.residual.physics_gate import _simulate_capacity
-    from fyop.topology.graph import SwitchEdge, TrackNode, YardGraph
-    from fyop.trajectory.solver import TrajectoryCommand
-
-    tracks = {
-        "LEAD": TrackNode(id="LEAD", type="lead", max_cars=10, max_length_units=100),
-        "O1": TrackNode(id="O1", type="outbound", max_cars=4, max_length_units=20),
-    }
-    edges = [SwitchEdge(id="SW1", from_track="LEAD", to_track="O1", length_m=100.0)]
-    graph = YardGraph(tracks, edges)
-    cars = [
-        FreightCar(id="A", destination="X", length_units=12, mass_t=10.0),
-        FreightCar(id="B", destination="X", length_units=10, mass_t=10.0),
-    ]
-    commands = [
-        TrajectoryCommand.push("LEAD", "O1", ["A"]),
-        TrajectoryCommand.push("LEAD", "O1", ["B"]),
-    ]
-    assert _simulate_capacity(graph, cars, commands) is False
-
-
-# ── 28. Optimize stage must fail capacity when THROW hits a failed switch ─
-def test_optimize_flags_throw_on_failed_switch():
-    """Direct contract: capacity_verified is false when commands THROW a failed switch."""
-    from pathlib import Path
-
-    from fyop.residual.physics_gate import optimize
-    from fyop.trajectory.solver import OccupancyTrajectory, TrajectoryCommand
-
-    obs_dir = TB3_OBS_P9W2
-    if not os.path.isdir(obs_dir):
-        pytest.skip("obs-p9w2 fixture not found")
-
-    original = OccupancyTrajectory.sequence
-
-    def _inject_failed_throw(self):
-        self._commands = [TrajectoryCommand.throw_switch("SW5")]
-        self._loco_track = "LEAD"
-        self._capacity_ok = True
-        self._total_distance_m = 0.0
-
-    OccupancyTrajectory.sequence = _inject_failed_throw
-    try:
-        _clean()
-        r1 = _run(["ingest"], env_override={"HFSY_YARD_DIR": obs_dir})
-        assert r1.returncode == 0, r1.stderr
-        # Call optimize in-process so the trajectory monkeypatch applies.
-        optimize(Path(STATE), Path(obs_dir))
-        validated = _load(os.path.join(STATE, "shunting-validated.json"))
-        assert validated.get("capacity_verified") is False, (
-            "optimize must set capacity_verified false when THROW_SWITCH targets a failed switch"
+        combined = math.sqrt(
+            sum(left * left + right * right for left, right in residuals)
+            / (2 * len(residuals))
         )
-    finally:
-        OccupancyTrajectory.sequence = original
+        assert combined > archive["cfg"]["combined_rms_max"]
 
 
-# ── 29. Path search must skip failed switch edges ─────────────────────
-def test_path_search_skips_failed_switches():
-    """Direct contract: trajectory path finder must not traverse failed switch ids."""
-    from fyop.consist.cars import FreightCar
-    from fyop.topology.graph import SwitchEdge, TrackNode, YardGraph
-    from fyop.trajectory.solver import OccupancyTrajectory
+class TestNativeGeneralization:
+    def test_rebuilt_source_handles_public_archive(
+        self, rebuilt_binary: Path, tmp_path: Path
+    ):
+        """A clean native rebuild regenerates a valid public calibration."""
+        input_copy = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        shutil.copytree(INPUT_DIR, input_copy)
+        run_solver(rebuilt_binary, input_copy, output_dir)
+        validate_calibration(input_copy, output_dir)
+        wrong_args = subprocess.run(
+            [str(rebuilt_binary)], text=True, capture_output=True
+        )
+        assert wrong_args.returncode != 0
 
-    tracks = {
-        "LEAD": TrackNode(id="LEAD", type="lead", max_cars=10, max_length_units=100),
-        "C1": TrackNode(id="C1", type="classification", max_cars=4, max_length_units=40),
-        "O1": TrackNode(id="O1", type="outbound", max_cars=4, max_length_units=40),
-    }
-    edges = [
-        SwitchEdge(id="SW_BAD", from_track="C1", to_track="O1", length_m=50.0),
-        SwitchEdge(id="SW_OK1", from_track="C1", to_track="LEAD", length_m=100.0),
-        SwitchEdge(id="SW_OK2", from_track="LEAD", to_track="O1", length_m=100.0),
-    ]
-    graph = YardGraph(tracks, edges)
-    cars = [FreightCar(id="A", destination="X", length_units=5, mass_t=10.0)]
-    traj = OccupancyTrajectory(graph, cars, ["X"], {"X": "O1"}, {"SW_BAD"})
-    path = traj._find_path("C1", "O1")
-    assert path is not None, "alternate residual path via LEAD must exist"
-    assert all(e.id != "SW_BAD" for e in path), "failed switch SW_BAD must be skipped"
-    assert [e.id for e in path] == ["SW_OK1", "SW_OK2"]
+    def test_runtime_starts_no_other_process(
+        self, rebuilt_binary: Path, tmp_path: Path
+    ):
+        """Process tracing permits only the initial exec of the solver."""
+        input_copy = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        trace_path = tmp_path / "process.trace"
+        shutil.copytree(INPUT_DIR, input_copy)
+        output_dir.mkdir()
+        completed = subprocess.run(
+            [
+                "strace",
+                "-f",
+                "-qq",
+                "-e",
+                "trace=process",
+                "-o",
+                str(trace_path),
+                str(rebuilt_binary),
+                str(input_copy),
+                str(output_dir),
+            ],
+            text=True,
+            capture_output=True,
+            timeout=90,
+        )
+        assert completed.returncode == 0, completed.stderr
+        trace = trace_path.read_text()
+        assert not re.search(r"\b(clone|clone3|fork|vfork)\(", trace)
+        assert len(re.findall(r"\bexecve\(", trace)) <= 1
+        validate_calibration(input_copy, output_dir)
+
+    @pytest.mark.parametrize("mode", list(range(1, 17)))
+    def test_compatible_scientific_matrix(
+        self, rebuilt_binary: Path, tmp_path: Path, mode: int
+    ):
+        """The same C solver handles every documented scientific regime."""
+        input_dir = tmp_path / f"case-{mode}"
+        output_dir = tmp_path / f"output-{mode}"
+        make_case(mode, input_dir)
+        run_solver(rebuilt_binary, input_dir, output_dir)
+        validate_calibration(input_dir, output_dir)
+
+    def test_outputs_respond_to_changed_scientific_inputs(
+        self, rebuilt_binary: Path, tmp_path: Path
+    ):
+        """Changed carrier topology and temperature coverage change the fit."""
+        first_input = tmp_path / "first-input"
+        second_input = tmp_path / "second-input"
+        first_output = tmp_path / "first-output"
+        second_output = tmp_path / "second-output"
+        make_case(3, first_input)
+        make_case(14, second_input)
+        run_solver(rebuilt_binary, first_input, first_output)
+        run_solver(rebuilt_binary, second_input, second_output)
+        first = validate_calibration(first_input, first_output)
+        second = validate_calibration(second_input, second_output)
+        assert len(first["archive"]["carriers"]) != len(second["archive"]["carriers"])
+        assert first["parameters"]["carriers"] != second["parameters"]["carriers"]
+
+    def test_infeasible_archive_leaves_no_outputs(
+        self, rebuilt_binary: Path, tmp_path: Path
+    ):
+        """An impossible configured density interval fails atomically."""
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        make_case(5, input_dir)
+        carrier_rows = rows(input_dir / "carriers.csv")
+        impossible_minimum = (
+            sum(float(row["density_max_1e22_m3"]) for row in carrier_rows) + 1.0
+        )
+        config_rows = rows(input_dir / "case_config.csv")
+        for row in config_rows:
+            if row["key"] == "total_density_min_1e22_m3":
+                row["value"] = f"{impossible_minimum:.12f}"
+        write_rows(input_dir / "case_config.csv", ["key", "value"], config_rows)
+        output_dir.mkdir()
+        for name in OUTPUT_NAMES:
+            (output_dir / name).write_text("stale\n")
+        completed = run_solver(
+            rebuilt_binary, input_dir, output_dir, check=False
+        )
+        assert completed.returncode != 0
+        assert all(not (output_dir / name).exists() for name in OUTPUT_NAMES)
