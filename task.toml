@@ -8,20 +8,25 @@ subcategories = []
 difficulty = "hard"
 codebase_size = "small"
 number_of_milestones = 0
-languages = ["go", "bash"]
-tags = ["numerical-simulation", "mass-conservation", "calibration", "darcy-flux", "hydrogeology"]
-expert_time_estimate_min = 120.0
-junior_time_estimate_min = 300.0
+languages = ["cpp"]
+tags = ["matrix-square-root", "denman-beavers", "determinant-scaling", "numerical-linear-algebra", "iterative-methods"]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 540
 
-[environment]
-allow_internet = false
-build_timeout_sec = 600
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
+[verifier]
+timeout_sec = 1800
+user = "root"
 
 [agent]
 timeout_sec = 1800
+user = "agent"
 
-[verifier]
-timeout_sec = 900
+[environment]
+build_timeout_sec = 1800
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+allow_internet = false
+docker_flags = []
+gpus = 0
+gpu_types = []

@@ -1,9 +1,0 @@
-{
-  "cell_id": "C03",
-  "basin_id": "GW-Basin-12",
-  "area_m2": 1250000.0,
-  "face_area_m2": 10000.0,
-  "sat_thickness_m": 50.0,
-  "archival_k_m_per_d": 5.76,
-  "archival_sy": 0.2
-}
