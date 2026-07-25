@@ -1,4 +1,0 @@
-kind	root	subspec	value	detail
-license_allow	*	*	MIT,Apache-2.0,BSD-3-Clause,Proprietary	-
-override	MetricsKit	*	3.0.0	crash-symbol-pin
-source_block	NetStack	*	trunk	trunk-quarantine

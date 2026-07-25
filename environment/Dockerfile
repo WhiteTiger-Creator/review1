@@ -1,14 +1,24 @@
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        perl \
-        python3 \
-        python3-pytest \
+WORKDIR /app
+
+ENV GOFLAGS=-mod=mod \
+    GOTOOLCHAIN=local \
+    CGO_ENABLED=0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
         tmux \
+        asciinema \
+        python3 \
+        python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/pod-lock-desk
-COPY task_file/pod-lock-desk/ /opt/pod-lock-desk/
+RUN pip3 install --no-cache-dir --break-system-packages pytest==8.2.0
+
+COPY go.mod /app/go.mod
+COPY src/ /app/src/
+COPY docs/ /app/docs/
+COPY data/ /app/data/
+COPY README.md /app/README.md
+
+RUN go build -o /app/posixmatch ./src

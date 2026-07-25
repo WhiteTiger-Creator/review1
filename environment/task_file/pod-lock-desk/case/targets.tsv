@@ -1,6 +1,0 @@
-target	inherit	platform	platform_version	pod	requirement	subspecs	configurations	linkage	source_pin	checksum_required
-App	none	ios	14.0	NetStack	~> 2.1	Core,Reachability	Debug,Release	framework	-	true
-App	none	ios	14.0	ImageFlow	>=1.4 <2.0	-	Release	static	corp	true
-App	none	ios	14.0	MetricsKit	~> 3.0	Crash	Debug	static	-	true
-AppTests	search_paths	ios	14.0	TestHarness	~> 1.2	XCTest	Debug	framework	trunk	true
-Widget	none	ios	15.0	WidgetBridge	~> 1.0	-	Release	framework	-	true

@@ -1,0 +1,6 @@
+PATTERN: x(a|ab)(bc|c)y
+SUBJECT: xabcy
+EXPECTED:
+MATCH 0 5
+GROUP 1 1 2
+GROUP 2 2 4

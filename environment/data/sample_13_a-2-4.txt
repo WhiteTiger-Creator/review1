@@ -1,0 +1,4 @@
+PATTERN: a{2,4}
+SUBJECT: aaaaa
+EXPECTED:
+MATCH 0 4

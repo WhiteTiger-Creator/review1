@@ -1,0 +1,4 @@
+PATTERN: ^abc$
+SUBJECT: abc
+EXPECTED:
+MATCH 0 3

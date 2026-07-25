@@ -1,514 +1,633 @@
-#!/usr/bin/env sh
-set -eu
+#!/bin/bash
+set -euo pipefail
 
-cat > /opt/pod-lock-desk/pod-source-lock <<'PERL'
-#!/usr/bin/env perl
-use strict;
-use warnings;
-use Digest::SHA qw(sha256_hex);
-use File::Path qw(remove_tree make_path);
+cd /app
 
-my $ROOT = "/opt/pod-lock-desk";
-my $CASE = "$ROOT/case";
-my $OUT = "$ROOT/out";
+cat > /app/src/parser.go <<'GOEOF'
+package main
 
-sub read_tsv {
-    my ($path) = @_;
-    open my $fh, "<", $path or die "cannot read $path: $!";
-    chomp(my $header = <$fh>);
-    my @cols = split /\t/, $header, -1;
-    my @rows;
-    while (defined(my $line = <$fh>)) {
-        chomp $line;
-        next if $line eq "";
-        my @vals = split /\t/, $line, -1;
-        my %row;
-        for my $i (0 .. $#cols) {
-            $row{$cols[$i]} = defined $vals[$i] ? $vals[$i] : "";
-        }
-        push @rows, \%row;
-    }
-    close $fh;
-    return @rows;
+import "fmt"
+
+type Node interface{}
+
+type Lit struct{ Ch byte }
+type AnyChar struct{}
+type BracketItem struct{ Lo, Hi byte }
+type Bracket struct {
+	Negate bool
+	Items  []BracketItem
+}
+type Concat struct{ Parts []Node }
+type Alt struct{ Branches []Node }
+type Group struct {
+	Idx   int
+	Child Node
+}
+type Repeat struct {
+	Child Node
+	Lo    int
+	Hi    int // -1 means unbounded
+}
+type AnchorStart struct{}
+type AnchorEnd struct{}
+
+type ParseError struct{ Msg string }
+
+func (e *ParseError) Error() string { return e.Msg }
+
+type Parser struct {
+	p          string
+	i          int
+	n          int
+	groupCount int
 }
 
-sub list_values {
-    my ($cell, $sep) = @_;
-    return () if !defined($cell) || $cell eq "" || $cell eq "-";
-    return grep { $_ ne "" } split /\Q$sep\E/, $cell;
+func NewParser(pattern string) *Parser {
+	return &Parser{p: pattern, n: len(pattern)}
 }
 
-sub vparts {
-    my ($v) = @_;
-    my @p = split /\./, $v;
-    push @p, 0 while @p < 3;
-    return map { int($_ || 0) } @p[0..2];
+func (p *Parser) peek() (byte, bool) {
+	if p.i < p.n {
+		return p.p[p.i], true
+	}
+	return 0, false
 }
 
-sub vcmp {
-    my ($a, $b) = @_;
-    my @a = vparts($a);
-    my @b = vparts($b);
-    for my $i (0..2) {
-        return $a[$i] <=> $b[$i] if $a[$i] != $b[$i];
-    }
-    return 0;
+func (p *Parser) Parse() (Node, int, error) {
+	node, err := p.parseAlt()
+	if err != nil {
+		return nil, 0, err
+	}
+	if p.i != p.n {
+		return nil, 0, &ParseError{fmt.Sprintf("unexpected char at %d", p.i)}
+	}
+	return node, p.groupCount, nil
 }
 
-sub satisfies {
-    my ($version, $req) = @_;
-    return 1 if !defined($req) || $req eq "" || $req eq "*" || $req eq "-";
-    if ($req =~ /^~> (\d+)\.(\d+)\.(\d+)$/) {
-        my $lo = "$1.$2.$3";
-        my $hi = "$1." . ($2 + 1) . ".0";
-        return vcmp($version, $lo) >= 0 && vcmp($version, $hi) < 0;
-    }
-    if ($req =~ /^~> (\d+)\.(\d+)$/) {
-        my $lo = "$1.$2.0";
-        my $hi = ($1 + 1) . ".0.0";
-        return vcmp($version, $lo) >= 0 && vcmp($version, $hi) < 0;
-    }
-    if ($req =~ /^>=(\d+(?:\.\d+){0,2}) <(\d+(?:\.\d+){0,2})$/) {
-        return vcmp($version, $1) >= 0 && vcmp($version, $2) < 0;
-    }
-    if ($req =~ /^>=(\d+(?:\.\d+){0,2})$/) {
-        return vcmp($version, $1) >= 0;
-    }
-    if ($req =~ /^(\d+(?:\.\d+){0,2})$/) {
-        return vcmp($version, $1) == 0;
-    }
-    return 0;
+func (p *Parser) parseAlt() (Node, error) {
+	first, err := p.parseConcat()
+	if err != nil {
+		return nil, err
+	}
+	branches := []Node{first}
+	for {
+		c, ok := p.peek()
+		if !ok || c != '|' {
+			break
+		}
+		p.i++
+		nxt, err := p.parseConcat()
+		if err != nil {
+			return nil, err
+		}
+		branches = append(branches, nxt)
+	}
+	if len(branches) == 1 {
+		return branches[0], nil
+	}
+	return &Alt{Branches: branches}, nil
 }
 
-sub version_ge {
-    my ($actual, $minimum) = @_;
-    return vcmp($actual, $minimum) >= 0;
+func (p *Parser) parseConcat() (Node, error) {
+	var parts []Node
+	for {
+		c, ok := p.peek()
+		if !ok || c == '|' || c == ')' {
+			break
+		}
+		part, err := p.parseRepeat()
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 1 {
+		return parts[0], nil
+	}
+	return &Concat{Parts: parts}, nil
 }
 
-my %policy;
-for my $r (read_tsv("$CASE/policy.tsv")) {
-    $policy{$r->{key}} = $r->{value};
-}
-my @source_order = list_values($policy{source_order}, ",");
-my %source_rank;
-for my $i (0..$#source_order) {
-    $source_rank{$source_order[$i]} = $i;
-}
-
-my @targets = read_tsv("$CASE/targets.tsv");
-my @spec_rows = read_tsv("$CASE/specs.tsv");
-my @rule_rows = read_tsv("$CASE/rules.tsv");
-
-my %spec;
-my %tuples;
-for my $s (@spec_rows) {
-    my $tk = join("|", $s->{source}, $s->{root}, $s->{version});
-    $spec{$tk}{$s->{subspec}} = $s;
-    $tuples{$s->{root}}{$tk} = { source => $s->{source}, root => $s->{root}, version => $s->{version} };
+func (p *Parser) looksLikeInterval() bool {
+	j := p.i + 1
+	sawDigit := false
+	for j < p.n && p.p[j] >= '0' && p.p[j] <= '9' {
+		sawDigit = true
+		j++
+	}
+	if j < p.n && p.p[j] == ',' {
+		j++
+		for j < p.n && p.p[j] >= '0' && p.p[j] <= '9' {
+			j++
+		}
+	}
+	return sawDigit && j < p.n && p.p[j] == '}'
 }
 
-my %override;
-my %source_block;
-my %license_allow;
-for my $r (@rule_rows) {
-    if ($r->{kind} eq "override") {
-        $override{$r->{root}} = $r->{value};
-    } elsif ($r->{kind} eq "source_block") {
-        $source_block{$r->{root}}{$r->{subspec}}{$r->{value}} = 1;
-    } elsif ($r->{kind} eq "license_allow") {
-        $license_allow{$_} = 1 for list_values($r->{value}, ",");
-    }
+func (p *Parser) parseInterval() (int, int) {
+	// assumes p.p[p.i] == '{'
+	p.i++
+	start := p.i
+	for p.p[p.i] >= '0' && p.p[p.i] <= '9' {
+		p.i++
+	}
+	lo := atoi(p.p[start:p.i])
+	hi := lo
+	if c, ok := p.peek(); ok && c == ',' {
+		p.i++
+		start2 := p.i
+		for p.i < p.n && p.p[p.i] >= '0' && p.p[p.i] <= '9' {
+			p.i++
+		}
+		if p.i > start2 {
+			hi = atoi(p.p[start2:p.i])
+		} else {
+			hi = -1
+		}
+	}
+	p.i++ // consume '}'
+	return lo, hi
 }
 
-sub tuple_key {
-    my ($t) = @_;
-    return join("|", $t->{source}, $t->{root}, $t->{version});
+func atoi(s string) int {
+	n := 0
+	for i := 0; i < len(s); i++ {
+		n = n*10 + int(s[i]-'0')
+	}
+	return n
 }
 
-sub default_subspecs {
-    my ($t) = @_;
-    my $tk = tuple_key($t);
-    my @subs = sort grep { $spec{$tk}{$_}{default} eq "true" } keys %{ $spec{$tk} || {} };
-    return @subs;
+func (p *Parser) parseRepeat() (Node, error) {
+	atom, err := p.parseAtom()
+	if err != nil {
+		return nil, err
+	}
+	c, ok := p.peek()
+	if !ok {
+		return atom, nil
+	}
+	var result Node
+	consumed := true
+	switch {
+	case c == '*':
+		p.i++
+		result = &Repeat{Child: atom, Lo: 0, Hi: -1}
+	case c == '+':
+		p.i++
+		result = &Repeat{Child: atom, Lo: 1, Hi: -1}
+	case c == '?':
+		p.i++
+		result = &Repeat{Child: atom, Lo: 0, Hi: 1}
+	case c == '{' && p.looksLikeInterval():
+		lo, hi := p.parseInterval()
+		result = &Repeat{Child: atom, Lo: lo, Hi: hi}
+	default:
+		consumed = false
+	}
+	if !consumed {
+		return atom, nil
+	}
+	// Reject a stacked second duplication symbol directly on the same atom:
+	// undefined by POSIX ERE without an intervening group.
+	if c2, ok := p.peek(); ok {
+		if c2 == '*' || c2 == '+' || c2 == '?' || (c2 == '{' && p.looksLikeInterval()) {
+			return nil, &ParseError{fmt.Sprintf("stacked duplication symbol at %d is undefined by POSIX ERE", p.i)}
+		}
+	}
+	return result, nil
 }
 
-sub parse_dep {
-    my ($dep) = @_;
-    my @p = split /\|/, $dep, -1;
-    my ($root, $subs) = split /\//, $p[0], 2;
-    return {
-        root => $root,
-        subspecs => defined($subs) && $subs ne "" ? $subs : "-",
-        requirement => $p[1],
-        source_pin => $p[2],
-        checksum_required => $p[3],
-    };
+func (p *Parser) parseAtom() (Node, error) {
+	c, ok := p.peek()
+	if !ok {
+		return nil, &ParseError{"unexpected end of pattern"}
+	}
+	switch c {
+	case '(':
+		p.i++
+		p.groupCount++
+		idx := p.groupCount
+		child, err := p.parseAlt()
+		if err != nil {
+			return nil, err
+		}
+		if c2, ok := p.peek(); !ok || c2 != ')' {
+			return nil, &ParseError{"missing )"}
+		}
+		p.i++
+		return &Group{Idx: idx, Child: child}, nil
+	case '^':
+		p.i++
+		return &AnchorStart{}, nil
+	case '$':
+		p.i++
+		return &AnchorEnd{}, nil
+	case '.':
+		p.i++
+		return &AnyChar{}, nil
+	case '[':
+		return p.parseBracket()
+	case '\\':
+		p.i++
+		nc, ok := p.peek()
+		if !ok {
+			return nil, &ParseError{"dangling backslash"}
+		}
+		p.i++
+		return &Lit{Ch: nc}, nil
+	case '*', '+', '?':
+		return nil, &ParseError{fmt.Sprintf("nothing to repeat at %d", p.i)}
+	}
+	p.i++
+	return &Lit{Ch: c}, nil
 }
 
-sub platform_ok {
-    my ($row, $platform, $version) = @_;
-    for my $p (list_values($row->{platforms}, ",")) {
-        if ($p =~ /^([a-z]+)>=(\d+(?:\.\d+){0,2})$/) {
-            return 1 if $1 eq $platform && version_ge($version, $2);
-        }
-    }
-    return 0;
+func (p *Parser) parseBracket() (Node, error) {
+	// assumes p.p[p.i] == '['
+	p.i++
+	negate := false
+	if c, ok := p.peek(); ok && c == '^' {
+		negate = true
+		p.i++
+	}
+	var items []BracketItem
+	first := true
+	for {
+		c, ok := p.peek()
+		if !ok {
+			return nil, &ParseError{"unterminated bracket expression"}
+		}
+		if c == ']' && !first {
+			p.i++
+			break
+		}
+		first = false
+		var lo byte
+		if c == ']' {
+			p.i++
+			lo = ']'
+		} else {
+			p.i++
+			lo = c
+		}
+		if c2, ok := p.peek(); ok && c2 == '-' && p.i+1 < p.n && p.p[p.i+1] != ']' {
+			p.i++
+			hi, _ := p.peek()
+			p.i++
+			if lo > hi {
+				return nil, &ParseError{fmt.Sprintf("reversed bracket range %c-%c: start collates after end", lo, hi)}
+			}
+			items = append(items, BracketItem{Lo: lo, Hi: hi})
+		} else {
+			items = append(items, BracketItem{Lo: lo, Hi: lo})
+		}
+	}
+	return &Bracket{Negate: negate, Items: items}, nil
+}
+GOEOF
+
+cat > /app/src/match.go <<'GOEOF'
+package main
+
+type reachKey struct {
+	node Node
+	pos  int
 }
 
-my @audit;
-my @edges;
-my %unsat;
-
-sub add_audit {
-    my (@fields) = @_;
-    push @audit, [map { defined($_) ? "$_" : "" } @fields];
+type Span struct {
+	Start, End int
+	Set        bool
 }
 
-sub expand_subspecs {
-    my ($t, $subspec_cell) = @_;
-    return sort { $a cmp $b } default_subspecs($t) if !defined($subspec_cell) || $subspec_cell eq "" || $subspec_cell eq "-";
-    return sort { $a cmp $b } list_values($subspec_cell, ",");
+func bracketMatches(b *Bracket, c byte) bool {
+	inside := false
+	for _, it := range b.Items {
+		if it.Lo <= c && c <= it.Hi {
+			inside = true
+			break
+		}
+	}
+	if b.Negate {
+		return !inside
+	}
+	return inside
 }
 
-sub candidate_size {
-    my ($t, $subs) = @_;
-    my $tk = tuple_key($t);
-    my $sum = 0;
-    for my $sub (@$subs) {
-        $sum += int($spec{$tk}{$sub}{size} || 0);
-    }
-    return $sum;
+// reachable returns the set of end positions node can reach starting at i,
+// against subject s, memoized on (node, i).
+func reachable(node Node, i int, s string, memo map[reachKey]map[int]bool) map[int]bool {
+	key := reachKey{node, i}
+	if v, ok := memo[key]; ok {
+		return v
+	}
+	memo[key] = map[int]bool{} // break cycles defensively
+	result := reachableUncached(node, i, s, memo)
+	memo[key] = result
+	return result
 }
 
-sub reject_tuple {
-    my ($t, $version, $subspec, $reason, $detail) = @_;
-    add_audit("rejected", $t->{root}, $t->{source}, $version, $subspec, "rejected", $reason, $detail);
+func reachableUncached(node Node, i int, s string, memo map[reachKey]map[int]bool) map[int]bool {
+	n := len(s)
+	switch nd := node.(type) {
+	case *Lit:
+		if i < n && s[i] == nd.Ch {
+			return map[int]bool{i + 1: true}
+		}
+		return map[int]bool{}
+	case *AnyChar:
+		if i < n {
+			return map[int]bool{i + 1: true}
+		}
+		return map[int]bool{}
+	case *Bracket:
+		if i < n && bracketMatches(nd, s[i]) {
+			return map[int]bool{i + 1: true}
+		}
+		return map[int]bool{}
+	case *AnchorStart:
+		if i == 0 {
+			return map[int]bool{i: true}
+		}
+		return map[int]bool{}
+	case *AnchorEnd:
+		if i == n {
+			return map[int]bool{i: true}
+		}
+		return map[int]bool{}
+	case *Group:
+		return reachable(nd.Child, i, s, memo)
+	case *Alt:
+		out := map[int]bool{}
+		for _, b := range nd.Branches {
+			for k := range reachable(b, i, s, memo) {
+				out[k] = true
+			}
+		}
+		return out
+	case *Concat:
+		frontier := map[int]bool{i: true}
+		for _, part := range nd.Parts {
+			nxt := map[int]bool{}
+			for j := range frontier {
+				for k := range reachable(part, j, s, memo) {
+					nxt[k] = true
+				}
+			}
+			frontier = nxt
+			if len(frontier) == 0 {
+				break
+			}
+		}
+		return frontier
+	case *Repeat:
+		lo, hi := nd.Lo, nd.Hi
+		cap := hi
+		if hi == -1 {
+			cap = n + 1
+		}
+		allEnds := map[int]bool{}
+		if lo == 0 {
+			allEnds[i] = true
+		}
+		frontier := map[int]bool{i: true}
+		k := 0
+		for k < cap {
+			nxt := map[int]bool{}
+			for j := range frontier {
+				for e := range reachable(nd.Child, j, s, memo) {
+					nxt[e] = true
+				}
+			}
+			k++
+			if len(nxt) == 0 {
+				break
+			}
+			if k >= lo {
+				for e := range nxt {
+					allEnds[e] = true
+				}
+			}
+			if setsEqual(nxt, frontier) && k >= lo {
+				break
+			}
+			frontier = nxt
+		}
+		return allEnds
+	}
+	panic("unknown node type")
 }
 
-sub evaluate_tuple {
-    my ($t, $req) = @_;
-    my $tk = tuple_key($t);
-    return (0, [], "source", $t->{source}) if !exists $source_rank{$t->{source}};
-    return (0, [], "source_pin", $req->{source_pin}) if $req->{source_pin} ne "-" && $req->{source_pin} ne $t->{source};
-    return (0, [], "range", $req->{requirement}) if !satisfies($t->{version}, $req->{requirement});
-    return (0, [], "source_block", $t->{source}) if $source_block{$t->{root}}{"*"}{$t->{source}};
-    my @subs = expand_subspecs($t, $req->{subspecs});
-    for my $sub (@subs) {
-        return (0, \@subs, "source_block", $t->{source}) if $source_block{$t->{root}}{$sub}{$t->{source}};
-    }
-    for my $sub (@subs) {
-        my $row = $spec{$tk}{$sub};
-        return (0, \@subs, "missing_subspec", $sub) if !$row;
-        return (0, \@subs, "platform", $req->{platform} . ">=" . $req->{platform_version}) if !platform_ok($row, $req->{platform}, $req->{platform_version});
-        return (0, \@subs, "status", $row->{status}) if $row->{status} eq "deprecated";
-        return (0, \@subs, "status", $row->{status}) if $row->{status} eq "prerelease" && $policy{allow_prerelease} ne "true";
-        return (0, \@subs, "trust", $row->{trust}) if int($row->{trust}) < int($policy{min_trust});
-        return (0, \@subs, "license", $row->{license}) if !exists $license_allow{$row->{license}};
-        return (0, \@subs, "checksum", $sub) if $req->{checksum_required} eq "true" && $row->{checksum_present} ne "true";
-    }
-    return (1, \@subs, "", "");
+func setsEqual(a, b map[int]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
 }
 
-sub candidate_cmp {
-    my ($a, $b) = @_;
-    my $vc = vcmp($b->{tuple}{version}, $a->{tuple}{version});
-    return $vc if $vc;
-    my $sr = ($source_rank{$a->{tuple}{source}} // 999) <=> ($source_rank{$b->{tuple}{source}} // 999);
-    return $sr if $sr;
-    return $a->{size} <=> $b->{size} if $a->{size} != $b->{size};
-    return tuple_key($a->{tuple}) cmp tuple_key($b->{tuple});
+// FindOverallMatch returns the leftmost-longest (start, end) span, or ok=false.
+func FindOverallMatch(node Node, s string) (start, end int, ok bool) {
+	memo := map[reachKey]map[int]bool{}
+	for st := 0; st <= len(s); st++ {
+		ends := reachable(node, st, s, memo)
+		if len(ends) > 0 {
+			mx := -1
+			for e := range ends {
+				if e > mx {
+					mx = e
+				}
+			}
+			return st, mx, true
+		}
+	}
+	return 0, 0, false
 }
 
-sub normalize_target_request {
-    my ($r) = @_;
-    my $platform = $r->{platform} eq "-" ? $policy{platform} : $r->{platform};
-    my $platform_version = $r->{platform_version} eq "-" ? $policy{platform_version} : $r->{platform_version};
-    return {
-        target => $r->{target},
-        direct => 1,
-        from => "target:$r->{target}",
-        root => $r->{pod},
-        requirement => $r->{requirement},
-        original_requirement => $r->{requirement},
-        subspecs => $r->{subspecs},
-        configurations => $r->{configurations},
-        linkage => $r->{linkage},
-        source_pin => $r->{source_pin},
-        checksum_required => $r->{checksum_required},
-        platform => $platform,
-        platform_version => $platform_version,
-        reason => "target",
-    };
+// ReconstructGroups performs the constrained backtracking parse described in
+// the task documentation: given the fixed overall (start, end) span, prefer
+// earlier-listed alternatives and maximal (greedy) repetition counts,
+// backtracking only as needed to consume exactly [start, end).
+func ReconstructGroups(node Node, ngroups int, s string, start, end int) ([]Span, bool) {
+	groups := make([]Span, ngroups+1) // 1-indexed
+
+	var m func(nd Node, i int, cont func(int) bool) bool
+	m = func(nd Node, i int, cont func(int) bool) bool {
+		switch v := nd.(type) {
+		case *Lit:
+			if i < end && s[i] == v.Ch {
+				return cont(i + 1)
+			}
+			return false
+		case *AnyChar:
+			if i < end {
+				return cont(i + 1)
+			}
+			return false
+		case *Bracket:
+			if i < end && bracketMatches(v, s[i]) {
+				return cont(i + 1)
+			}
+			return false
+		case *AnchorStart:
+			if i == 0 {
+				return cont(i)
+			}
+			return false
+		case *AnchorEnd:
+			if i == len(s) {
+				return cont(i)
+			}
+			return false
+		case *Group:
+			saved := groups[v.Idx]
+			wrapped := func(j int) bool {
+				groups[v.Idx] = Span{i, j, true}
+				if cont(j) {
+					return true
+				}
+				groups[v.Idx] = saved
+				return false
+			}
+			ok := m(v.Child, i, wrapped)
+			if !ok {
+				groups[v.Idx] = saved
+			}
+			return ok
+		case *Alt:
+			for _, b := range v.Branches {
+				if m(b, i, cont) {
+					return true
+				}
+			}
+			return false
+		case *Concat:
+			var build func(idx int) func(int) bool
+			build = func(idx int) func(int) bool {
+				if idx == len(v.Parts) {
+					return cont
+				}
+				return func(j int) bool {
+					return m(v.Parts[idx], j, build(idx+1))
+				}
+			}
+			return build(0)(i)
+		case *Repeat:
+			if v.Hi != -1 {
+				return matchBoundedRepeat(m, v.Child, i, v.Lo, v.Hi, cont)
+			}
+			return matchUnboundedRepeat(m, v, i, 0, cont)
+		}
+		panic("unknown node type")
+	}
+
+	ok := m(node, start, func(j int) bool { return j == end })
+	return groups, ok
 }
 
-my @queue = map { normalize_target_request($_) } @targets;
-my @root_requests = @queue;
-my %seen_req;
-my %selected;
-my %enabled;
-my %target_by_sub;
-my %config_by_root;
-my %linkage_by_root;
-
-while (@queue) {
-    my $req = shift @queue;
-    my $root = $req->{root};
-    if (exists $override{$root} && $override{$root} ne $req->{requirement}) {
-        add_audit("override", $root, "-", $override{$root}, "*", "selected", "override", "from=$req->{requirement};to=$override{$root}");
-        $req->{requirement} = $override{$root};
-    }
-    my $sig = join("|", $req->{from}, $root, $req->{requirement}, $req->{subspecs}, $req->{source_pin}, $req->{checksum_required}, $req->{platform}, $req->{platform_version});
-    next if $seen_req{$sig}++;
-    my @eligible;
-    for my $tk (keys %{ $tuples{$root} || {} }) {
-        my $t = $tuples{$root}{$tk};
-        my ($ok, $subs, $reason, $detail) = evaluate_tuple($t, $req);
-        if (!$ok) {
-            my $sub = @$subs ? join(",", @$subs) : "-";
-            reject_tuple($t, $t->{version}, $sub, $reason, $detail);
-            next;
-        }
-        push @eligible, { tuple => $t, subs => $subs, size => candidate_size($t, $subs) };
-    }
-    if (!@eligible) {
-        $unsat{"no_eligible:$root"} = 1;
-        next;
-    }
-    @eligible = sort { candidate_cmp($a, $b) } @eligible;
-    my $winner = $eligible[0];
-    my $old = $selected{$root};
-    if (!$old || candidate_cmp($winner, { tuple => $old, size => candidate_size($old, $winner->{subs}) }) < 0) {
-        $selected{$root} = $winner->{tuple};
-    }
-    my $current = $selected{$root};
-    my $current_tk = tuple_key($current);
-    my @subs = expand_subspecs($current, $req->{subspecs});
-    my $to_subs = join(",", @subs);
-    push @edges, [$req->{from}, "pod:$root/$to_subs\@$current->{version}", $req->{requirement}, $req->{reason}];
-    for my $sub (@subs) {
-        $enabled{$root}{$sub} = 1;
-        $target_by_sub{$root}{$sub}{$req->{target}} = 1 if $req->{target};
-        $config_by_root{$root}{$_} = 1 for list_values($req->{configurations}, ",");
-        $linkage_by_root{$root}{$req->{linkage}} = 1 if $req->{linkage} ne "-";
-    }
-    for my $sub (@subs) {
-        my $row = $spec{$current_tk}{$sub};
-        next if !$row;
-        for my $dep_cell (list_values($row->{dependencies}, ";")) {
-            my $dep = parse_dep($dep_cell);
-            my $dep_req = {
-                target => $req->{target},
-                direct => 0,
-                from => "pod:$root/$sub\@$current->{version}",
-                root => $dep->{root},
-                requirement => $dep->{requirement},
-                original_requirement => $dep->{requirement},
-                subspecs => $dep->{subspecs},
-                configurations => $req->{configurations},
-                linkage => $req->{linkage},
-                source_pin => $dep->{source_pin},
-                checksum_required => $dep->{checksum_required},
-                platform => $req->{platform},
-                platform_version => $req->{platform_version},
-                reason => "dependency",
-            };
-            push @queue, $dep_req;
-        }
-    }
+func matchBoundedRepeat(m func(Node, int, func(int) bool) bool, child Node, i, lo, hi int, cont func(int) bool) bool {
+	var mandatory func(i, remaining int, cont func(int) bool) bool
+	var optional func(i, remaining int, cont func(int) bool) bool
+	mandatory = func(i, remaining int, cont func(int) bool) bool {
+		if remaining == 0 {
+			return optional(i, hi-lo, cont)
+		}
+		return m(child, i, func(j int) bool { return mandatory(j, remaining-1, cont) })
+	}
+	optional = func(i, remaining int, cont func(int) bool) bool {
+		if remaining == 0 {
+			return cont(i)
+		}
+		take := func(j int) bool { return optional(j, remaining-1, cont) }
+		if m(child, i, take) {
+			return true
+		}
+		return cont(i)
+	}
+	return mandatory(i, lo, cont)
 }
 
-@edges = ();
-%enabled = ();
-%target_by_sub = ();
-%config_by_root = ();
-%linkage_by_root = ();
-my @rebuild_queue = @root_requests;
-my %rebuilt_req;
-while (@rebuild_queue) {
-    my $req = shift @rebuild_queue;
-    my $root = $req->{root};
-    if (exists $override{$root} && $override{$root} ne $req->{requirement}) {
-        $req = { %$req, requirement => $override{$root} };
-    }
-    next if !$selected{$root};
-    my $t = $selected{$root};
-    my $tk = tuple_key($t);
-    my @subs = expand_subspecs($t, $req->{subspecs});
-    my $sig = join("|", $req->{from}, $root, $t->{source}, $t->{version}, $req->{requirement}, join(",", @subs), $req->{target});
-    next if $rebuilt_req{$sig}++;
-    my $to_subs = join(",", @subs);
-    push @edges, [$req->{from}, "pod:$root/$to_subs\@$t->{version}", $req->{requirement}, $req->{reason}];
-    for my $sub (@subs) {
-        $enabled{$root}{$sub} = 1;
-        $target_by_sub{$root}{$sub}{$req->{target}} = 1 if $req->{target};
-        $config_by_root{$root}{$_} = 1 for list_values($req->{configurations}, ",");
-        $linkage_by_root{$root}{$req->{linkage}} = 1 if $req->{linkage} ne "-";
-    }
-    for my $sub (@subs) {
-        my $row = $spec{$tk}{$sub};
-        next if !$row;
-        for my $dep_cell (list_values($row->{dependencies}, ";")) {
-            my $dep = parse_dep($dep_cell);
-            push @rebuild_queue, {
-                target => $req->{target},
-                direct => 0,
-                from => "pod:$root/$sub\@$t->{version}",
-                root => $dep->{root},
-                requirement => $dep->{requirement},
-                original_requirement => $dep->{requirement},
-                subspecs => $dep->{subspecs},
-                configurations => $req->{configurations},
-                linkage => $req->{linkage},
-                source_pin => $dep->{source_pin},
-                checksum_required => $dep->{checksum_required},
-                platform => $req->{platform},
-                platform_version => $req->{platform_version},
-                reason => "dependency",
-            };
-        }
-    }
+func matchUnboundedRepeat(m func(Node, int, func(int) bool) bool, nd *Repeat, i, count int, cont func(int) bool) bool {
+	lo := nd.Lo
+	if count < lo {
+		return m(nd.Child, i, func(j int) bool {
+			return matchUnboundedRepeat(m, nd, j, count+1, cont)
+		})
+	}
+	after := func(j int) bool {
+		if j == i {
+			if count == 0 {
+				return cont(i)
+			}
+			return false
+		}
+		return matchUnboundedRepeat(m, nd, j, count+1, cont)
+	}
+	if m(nd.Child, i, after) {
+		return true
+	}
+	return cont(i)
 }
+GOEOF
 
-for my $root (keys %selected) {
-    next if $enabled{$root};
-    delete $selected{$root};
+cat > /app/src/main.go <<'GOEOF'
+package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	if len(os.Args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: posixmatch <pattern> <subject>")
+		os.Exit(2)
+	}
+	pattern := os.Args[1]
+	subject := os.Args[2]
+
+	parser := NewParser(pattern)
+	node, ngroups, err := parser.Parse()
+	if err != nil {
+		fmt.Println("PARSE_ERROR")
+		os.Exit(1)
+	}
+
+	start, end, ok := FindOverallMatch(node, subject)
+	if !ok {
+		fmt.Println("NOMATCH")
+		os.Exit(0)
+	}
+	groups, recOk := ReconstructGroups(node, ngroups, subject, start, end)
+	if !recOk {
+		fmt.Println("NOMATCH")
+		os.Exit(0)
+	}
+	fmt.Printf("MATCH %d %d\n", start, end)
+	for idx := 1; idx <= ngroups; idx++ {
+		sp := groups[idx]
+		if sp.Set {
+			fmt.Printf("GROUP %d %d %d\n", idx, sp.Start, sp.End)
+		} else {
+			fmt.Printf("GROUP %d NOMATCH\n", idx)
+		}
+	}
+	os.Exit(0)
 }
+GOEOF
 
-my %selected_audit_seen;
-my $total_size = 0;
-for my $root (sort keys %selected) {
-    my $t = $selected{$root};
-    my $tk = tuple_key($t);
-    for my $sub (sort keys %{ $enabled{$root} || {} }) {
-        my $row = $spec{$tk}{$sub};
-        next if !$row;
-        $total_size += int($row->{size});
-        my $targets = join(",", sort keys %{ $target_by_sub{$root}{$sub} || {} });
-        $targets = "dependency" if $targets eq "";
-        my $sig = join("\t", $root, $t->{source}, $t->{version}, $sub);
-        next if $selected_audit_seen{$sig}++;
-        add_audit("selected", $root, $t->{source}, $t->{version}, $sub, "selected", "selected", $targets);
-    }
-}
+go build -o /app/posixmatch ./src
 
-my $rejected_count = scalar grep { $_->[0] eq "rejected" } @audit;
-if ($total_size > int($policy{max_binary_size})) {
-    $unsat{"no_valid_complete_plan"} = 1;
-    add_audit("limit", "-", "-", "-", "-", "unsatisfied", "max_binary_size", "$total_size/$policy{max_binary_size}");
-}
-if ($rejected_count > int($policy{max_warnings})) {
-    $unsat{"no_valid_complete_plan"} = 1;
-    add_audit("limit", "-", "-", "-", "-", "unsatisfied", "max_warnings", "$rejected_count/$policy{max_warnings}");
-}
+if [ ! -x /app/posixmatch ]; then
+    echo "build smoke failed: binary missing" >&2
+    exit 1
+fi
 
-remove_tree($OUT) if -d $OUT;
-make_path($OUT);
-
-sub pod_lock_lines {
-    my @lines;
-    push @lines, "PODS:";
-    for my $root (sort keys %selected) {
-        my $t = $selected{$root};
-        my $tk = tuple_key($t);
-        for my $sub (sort keys %{ $enabled{$root} || {} }) {
-            push @lines, "  - $root/$sub ($t->{version})";
-            my @deps;
-            for my $dep_cell (list_values($spec{$tk}{$sub}{dependencies}, ";")) {
-                my $dep = parse_dep($dep_cell);
-                my $dep_subs = $dep->{subspecs};
-                if ($dep_subs eq "-" && $selected{$dep->{root}}) {
-                    $dep_subs = join(",", default_subspecs($selected{$dep->{root}}));
-                }
-                push @deps, "$dep->{root}/$dep_subs ($dep->{requirement})";
-            }
-            push @lines, map { "    - $_" } sort @deps;
-        }
-    }
-    push @lines, "DEPENDENCIES:";
-    for my $r (sort { "$a->{target}:$a->{pod}" cmp "$b->{target}:$b->{pod}" } @targets) {
-        my $name = $r->{subspecs} eq "-" ? $r->{pod} : "$r->{pod}/$r->{subspecs}";
-        push @lines, "  - $name ($r->{requirement}) [$r->{target};$r->{configurations};$r->{linkage}]";
-    }
-    push @lines, "SPEC REPOS:";
-    for my $src (@source_order) {
-        my @roots = sort grep { $selected{$_}{source} eq $src } keys %selected;
-        next unless @roots;
-        push @lines, "  $src:";
-        push @lines, map { "    - $_" } @roots;
-    }
-    push @lines, "SPEC CHECKSUMS:";
-    for my $root (sort keys %selected) {
-        my $t = $selected{$root};
-        my $tk = tuple_key($t);
-        for my $sub (sort keys %{ $enabled{$root} || {} }) {
-            push @lines, "  $root/$sub: $spec{$tk}{$sub}{checksum}";
-        }
-    }
-    push @lines, "COCOAPODS: $policy{cocoapods_version}";
-    my $status = keys(%unsat) ? "unsatisfied" : "ok";
-    push @lines, "STATUS: $status";
-    my $unsat = keys(%unsat) ? join(",", sort keys %unsat) : "-";
-    push @lines, "UNSATISFIED: $unsat";
-    return @lines;
-}
-
-open my $pl, ">", "$OUT/Podfile.lock" or die $!;
-print {$pl} join("\n", pod_lock_lines()), "\n";
-close $pl;
-
-open my $pp, ">", "$OUT/pods-plan.tsv" or die $!;
-print {$pp} "root\tsource\tversion\tsubspecs\tsize\ttargets\tconfigurations\tlinkage\tchecksums\n";
-for my $root (sort keys %selected) {
-    my $t = $selected{$root};
-    my $tk = tuple_key($t);
-    my @subs = sort keys %{ $enabled{$root} || {} };
-    my $size = 0;
-    my %checksums;
-    my %targets;
-    for my $sub (@subs) {
-        $size += int($spec{$tk}{$sub}{size});
-        $checksums{$spec{$tk}{$sub}{checksum}} = 1;
-        $targets{$_} = 1 for keys %{ $target_by_sub{$root}{$sub} || {} };
-    }
-    print {$pp} join("\t",
-        $root,
-        $t->{source},
-        $t->{version},
-        @subs ? join(",", @subs) : "-",
-        $size,
-        keys(%targets) ? join(",", sort keys %targets) : "-",
-        keys(%{ $config_by_root{$root} || {} }) ? join(",", sort keys %{ $config_by_root{$root} }) : "-",
-        keys(%{ $linkage_by_root{$root} || {} }) ? join(",", sort keys %{ $linkage_by_root{$root} }) : "-",
-        keys(%checksums) ? join(",", sort keys %checksums) : "-",
-    ), "\n";
-}
-close $pp;
-
-my %edge_seen;
-my @edge_rows = sort { join("\t", @$a) cmp join("\t", @$b) } grep { !$edge_seen{join("\t", @$_)}++ } @edges;
-open my $sg, ">", "$OUT/subspec-graph.tsv" or die $!;
-print {$sg} "from\tto\trequirement\treason\n";
-print {$sg} join("\t", @$_), "\n" for @edge_rows;
-close $sg;
-
-my %audit_seen;
-my @audit_rows = sort { join("\t", @$a) cmp join("\t", @$b) } grep { !$audit_seen{join("\t", @$_)}++ } @audit;
-open my $sa, ">", "$OUT/source-audit.tsv" or die $!;
-print {$sa} "kind\troot\tsource\tversion\tsubspec\tstatus\treason\tdetail\n";
-print {$sa} join("\t", @$_), "\n" for @audit_rows;
-close $sa;
-
-my $seal_input = "";
-for my $f (qw(Podfile.lock pods-plan.tsv subspec-graph.tsv source-audit.tsv)) {
-    open my $fh, "<", "$OUT/$f" or die $!;
-    local $/;
-    $seal_input .= <$fh>;
-    close $fh;
-}
-open my $seal, ">", "$OUT/seal.txt" or die $!;
-print {$seal} sha256_hex($seal_input), "\n";
-close $seal;
-PERL
-
-chmod +x /opt/pod-lock-desk/pod-source-lock
-/opt/pod-lock-desk/pod-source-lock
+OUT=$(/app/posixmatch '(a|ab)(c|bcd)(d*)' 'abcd')
+EXPECTED=$'MATCH 0 4\nGROUP 1 0 1\nGROUP 2 1 4\nGROUP 3 4 4'
+if [ "$OUT" != "$EXPECTED" ]; then
+    echo "build smoke failed: unexpected output for sample case, got: $OUT" >&2
+    exit 1
+fi
