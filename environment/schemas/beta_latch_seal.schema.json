@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hwml.seal/v1",
+  "type": "object",
+  "required": [
+    "scheme", "identity", "beta_digest", "pin_digest", "vault_digest",
+    "pin_seq", "policy_epoch"
+  ],
+  "properties": {
+    "scheme": {"const": "hwml.seal/v1"},
+    "identity": {"type": "string"},
+    "beta_digest": {"type": "string", "minLength": 64, "maxLength": 64},
+    "pin_digest": {"type": "string", "minLength": 64, "maxLength": 64},
+    "vault_digest": {"type": "string", "minLength": 64, "maxLength": 64},
+    "pin_seq": {"type": "integer", "minimum": 1},
+    "policy_epoch": {"type": "integer", "minimum": 1}
+  }
+}

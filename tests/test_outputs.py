@@ -1,264 +1,622 @@
+"""Hallwarden latch poly-OLS verifier — vault/forecast/emit seal + pass-chain.
+PROBE_MARKERS: snapshot load emit trust persistence replay sequence idempotent
+"""
+from __future__ import annotations
+
+import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
-ENV = Path("/app/environment")
-REPORT = Path("/app/output/residual_scope.json")
-INTERIM = next((ENV / "fixtures/interim_snaps").glob("q2_*.json"))
-ANNEX = ENV / "fixtures/annex"
-M1 = Path("/app/output/m1_tables.rds")
-COLS = ["doc_id", "win_ix", "tok_start", "tok_count", "carry_sum", "relevance"]
-OUTPUT_ARTIFACTS = ("m1_" + "tables.rds", "m2_" + "witness.rds", "residual_" + "scope.json")
+from hwml_ref import (
+    chain_digest,
+    load_workbook,
+    reference_pass_chain_row,
+    reference_pin,
+    reference_fit_commit,
+    reference_plaque,
+    reference_run,
+    reference_seal,
+    reference_trust,
+    stage_fingerprint,
+)
+
+APP = Path("/app")
+STATE = APP / "state"
+PLAQUE = APP / "plaque"
+FIX = APP / "fixtures"
+DRIVER = Path("/app/binx/hwml")
 
 
-def _backup_outputs() -> None:
-    for name in OUTPUT_ARTIFACTS:
-        src = Path("/app/output") / name
-        if src.exists():
-            shutil.copy2(src, Path("/app/output") / f"{name}.bak")
-    for src in Path("/app/output").glob(".chain_cache_*.bin"):
-        shutil.copy2(src, Path("/app/output") / f"bak_{src.name}")
+def wipe_outputs() -> None:
+    if STATE.exists():
+        shutil.rmtree(STATE)
+    if PLAQUE.exists():
+        shutil.rmtree(PLAQUE)
+    STATE.mkdir(parents=True)
+    PLAQUE.mkdir(parents=True)
 
 
-def _restore_outputs() -> None:
-    for name in OUTPUT_ARTIFACTS:
-        bak = Path("/app/output") / f"{name}.bak"
-        if bak.exists():
-            shutil.copy2(bak, Path("/app/output") / name)
-            bak.unlink()
-    for bak in Path("/app/output").glob("bak" + "_" + ".chain_cache_*.bin"):
-        orig_name = bak.name[4:]
-        shutil.copy2(bak, Path("/app/output") / orig_name)
-        bak.unlink()
+def drive(*, workbook=None, traces=None, mode: str | None = None) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "/app"
+    if workbook is not None:
+        env["HWML_WORKBOOK"] = str(workbook)
+    else:
+        env.pop("HWML_WORKBOOK", None)
+    if traces is not None:
+        env["HWML_TRACES"] = str(traces)
+    else:
+        env.pop("HWML_TRACES", None)
+    cmd = [str(DRIVER)]
+    if mode:
+        cmd.append(mode)
+    else:
+        cmd.append("eval")
+    return subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
 
 
-def _cleanup_backup() -> None:
-    for name in OUTPUT_ARTIFACTS:
-        bak = Path("/app/output") / f"{name}.bak"
-        if bak.exists():
-            bak.unlink()
-    for bak in Path("/app/output").glob("bak" + "_" + ".chain_cache_*.bin"):
-        bak.unlink()
+def read_json(path: Path):
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-class TestOutputs:
-    def test_cta01_table_shape(self) -> None:
-        """Staged window tables must expose the public column layout."""
-        assert M1.is_file(), "staged tables missing from pipeline output"
-        proc = subprocess.run(
-            ["bash", "/app/environment/scripts/inspect_cols.sh"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise AssertionError(proc.stderr)
-        cols = json.loads(proc.stdout.strip())
-        assert cols == COLS
+def sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
-    def test_cta02_join_keys(self) -> None:
-        """Judgment doc_id keys must appear in staged window tables."""
-        assert M1.is_file(), "staged tables missing from pipeline output"
-        proc = subprocess.run(
-            ["bash", "/app/environment/scripts/inspect_join.sh"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise AssertionError(proc.stderr)
-        assert proc.stdout.strip() == "TRUE"
 
-    def test_cta04_bounds_row(self) -> None:
-        """Witness residual magnitudes must stay inside public tolerance classes."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        rep = json.loads(REPORT.read_text())
-        for bundle in ("w3", "w4", "k5"):
-            for tag in ("strict_mono", "relaxed_fast"):
-                rows = rep["bundles"][bundle][tag]["residual_rows"]
-                floor_v = 0.05
-                eps = 0.001 if tag == "strict_mono" else 0.002
-                for row in rows:
-                    assert abs(float(row["residual"])) <= floor_v + eps + 1e-9
+def test_hwml9_feature_training_inference_eval_artifacts():
+    """Full training/inference eval writes /app/state feature artifacts and plaque."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    assert Path("/app/state/design_matrix.json").is_file()
+    assert Path("/app/state/design_vault.json").is_file()
+    assert Path("/app/state/latch_pin.json").is_file()
+    assert Path("/app/state/beta_hat.json").is_file()
+    assert Path("/app/state/fit_commit.json").is_file()
+    assert Path("/app/state/beta_latch_seal.json").is_file()
+    assert Path("/app/state/forecast_tape.json").is_file()
+    assert Path("/app/state/emit_trust.json").is_file()
+    assert Path("/app/state/run_log.jsonl").is_file()
+    assert Path("/app/state/pass_chain.jsonl").is_file()
+    assert Path("/app/plaque/promotion_plaque.json").is_file()
+    trust = json.loads((STATE / "emit_trust.json").read_text(encoding="utf-8"))
+    assert trust["scheme"] == "hwml.trust/v1"
+    assert len(trust["vault_digest"]) == 64
+    assert len(trust["seal_digest"]) == 64
 
-    def test_cta05_band_row(self) -> None:
-        """Monotonic score ordering must hold on training folds per active profile."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        rep = json.loads(REPORT.read_text())
-        for bundle in ("w3", "w4", "k5"):
-            for tag in ("strict_mono", "relaxed_fast"):
-                band = float(rep["bundles"][bundle][tag]["mono_band"])
-                profile = (ENV / "profiles" / f"{tag}.toml").read_text()
-                for line in profile.splitlines():
-                    if line.startswith("band_eps"):
-                        expected = float(line.split("=", 1)[1].strip())
-                        break
-                else:
-                    raise AssertionError(f"missing band_eps in {tag}")
-                assert abs(band - expected) <= 1e-9
 
-    def test_cta06_grid_row(self) -> None:
-        """strict_mono and relaxed_fast suite semantics must differ as documented."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        rep = json.loads(REPORT.read_text())
-        w3_strict = rep["bundles"]["w3"]["strict_mono"]["chain_hex"]
-        w3_fast = rep["bundles"]["w3"]["relaxed_fast"]["chain_hex"]
-        assert w3_strict != w3_fast
+def test_hwml9_feature_design_matrix_agrees_refml():
+    """Quadratic design columns agree with independent reference."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
+    assert read_json(STATE / "design_matrix.json")["rows"] == exp["design"]["rows"]
+    assert read_json(STATE / "design_matrix.json")["column_names"] == exp["design"]["column_names"]
+    assert int(read_json(STATE / "design_matrix.json")["policy_epoch"]) == int(exp["workbook"]["policy_epoch"])
 
-        def _fold_order(name: str) -> list[str]:
-            text = (ENV / "profiles" / f"{name}.toml").read_text()
-            for line in text.splitlines():
-                if line.startswith("fold_order"):
-                    inner = line.split("=", 1)[1].strip()
-                    return [x.strip().strip('"') for x in inner.strip("[]").split(",")]
-            raise AssertionError(f"missing fold_order in {name}")
 
-        assert _fold_order("strict_mono") != _fold_order("relaxed_fast")
+def test_hwml9_vault_mirrors_design_rows():
+    """Vault rows mirror design_matrix rows after id sort."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    d = read_json(STATE / "design_matrix.json")
+    v = read_json(STATE / "design_vault.json")
+    assert v["scheme"] == "hwml.vault/v1"
+    assert v["rows"] == d["rows"]
+    assert v["column_names"] == d["column_names"]
+    assert v["source_trace_count"] >= 1
+    assert int(v["policy_epoch"]) == int(d["policy_epoch"])
 
-    def test_cta07_chain_hex(self) -> None:
-        """chain_hex must match sha256 over rebuilt replay bytes for each bundle and tag."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        rep = json.loads(REPORT.read_text())
-        for bundle in ("w3", "w4", "k5"):
-            for tag in ("strict_mono", "relaxed_fast"):
-                reported = rep["bundles"][bundle][tag]["chain_hex"]
-                proc_r = subprocess.run(
-                    ["bash", "/app/environment/scripts/inspect_chain.sh", bundle, tag],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    check=False,
-                )
-                if proc_r.returncode != 0:
-                    raise AssertionError(proc_r.stderr)
-                assert reported == proc_r.stdout.strip()
 
-    def test_cta08_fold_agree(self) -> None:
-        """Training witness rows and certificate replay must agree on holdout folds."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        rep = json.loads(REPORT.read_text())
-        for bundle in ("w3", "w4", "k5"):
-            for tag in ("strict_mono", "relaxed_fast"):
-                rows = rep["bundles"][bundle][tag]["residual_rows"]
-                assert len(rows) == 3
-                proc_r = subprocess.run(
-                    ["bash", "/app/environment/scripts/inspect_mono.sh", bundle, tag],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    check=False,
-                )
-                if proc_r.returncode != 0:
-                    raise AssertionError(proc_r.stderr)
-                assert proc_r.stdout.strip() == "TRUE"
+def test_hwml9_vault_latch_pin_binds_on_disk_vault():
+    """Attest scheme, digest, and row_count match the on-disk design vault."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    vault = read_json(STATE / "design_vault.json")
+    latch_pin = read_json(STATE / "latch_pin.json")
+    exp = reference_pin(vault, STATE / "design_vault.json")
+    assert latch_pin["scheme"] == "hwml.pin/v1"
+    assert latch_pin["vault_digest"] == exp["vault_digest"]
+    assert latch_pin["vault_digest"] == sha(STATE / "design_vault.json")
+    assert latch_pin["row_count"] == len(vault["rows"])
+    assert int(latch_pin["pin_seq"]) >= 1
+    assert int(latch_pin["policy_epoch"]) == int(vault["policy_epoch"])
 
-    def test_cta09_repeat_guard(self) -> None:
-        """Repeat cache wipe without documented recovery must fail cross-run bands."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        _backup_outputs()
-        try:
-            wipe = subprocess.run(
-                ["bash", "/app/environment/migrations/cln4.sh"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-            )
-            if wipe.returncode != 0:
-                raise AssertionError(wipe.stderr)
-            fail_proc = subprocess.run(
-                [
-                    "bash",
-                    "/app/environment/scripts/run_scope_chk.sh",
-                    "--suite",
-                    "all",
-                    "--tags",
-                    "strict_mono,relaxed_fast",
-                    "--bundle-out",
-                    "/app/output/residual_scope.json",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=90,
-                check=False,
-            )
-            if fail_proc.returncode == 0:
-                raise AssertionError("expected checker failure after cache wipe")
-        finally:
-            _restore_outputs()
-            _cleanup_backup()
 
-    def test_cta10_q4_trap(self) -> None:
-        """Interim snap tallies alone must not satisfy terminal grading."""
-        snap = json.loads(INTERIM.read_text())
-        assert snap.get("headline_ok") is True
-        _backup_outputs()
-        try:
-            for name in OUTPUT_ARTIFACTS:
-                artifact = Path("/app/output") / name
-                if artifact.exists():
-                    artifact.unlink()
-            fail_proc = subprocess.run(
-                [
-                    "bash",
-                    "/app/environment/scripts/run_scope_chk.sh",
-                    "--suite",
-                    "all",
-                    "--tags",
-                    "strict_mono,relaxed_fast",
-                    "--bundle-out",
-                    "/app/output/residual_scope.json",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=90,
-                check=False,
-            )
-            if fail_proc.returncode == 0:
-                raise AssertionError("expected checker failure without pipeline output")
-        finally:
-            _restore_outputs()
-            _cleanup_backup()
+def test_hwml9_beta_latch_seal_binds():
+    """Beta–latch seal binds beta/pin/vault digests and policy_epoch."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    pin = read_json(STATE / "latch_pin.json")
+    wb = load_workbook(FIX / "eval_workbook.json")
+    got = read_json(STATE / "beta_latch_seal.json")
+    want = reference_seal(wb, STATE / "design_vault.json", STATE / "latch_pin.json", STATE / "beta_hat.json", pin)
+    assert got == want
+    assert got["scheme"] == "hwml.seal/v1"
 
-    def test_cta11_clean_rebuild(self) -> None:
-        """Pipeline must regenerate valid outputs from scratch after a cache wipe."""
-        _backup_outputs()
-        try:
-            subprocess.run(
-                ["bash", "/app/environment/migrations/cln4.sh"],
-                check=True,
-                timeout=60,
-            )
-            subprocess.run(
-                ["bash", "/app/environment/scripts/stage_tables.sh"],
-                check=True,
-                timeout=120,
-            )
-            subprocess.run(
-                ["bash", "/app/environment/scripts/drive_suite.sh"],
-                check=True,
-                timeout=120,
-            )
-            proc = subprocess.run(
-                [
-                    "bash",
-                    "/app/environment/scripts/run_scope_chk.sh",
-                    "--suite",
-                    "all",
-                    "--tags",
-                    "strict_mono,relaxed_fast",
-                    "--bundle-out",
-                    "/app/output/residual_scope.json",
-                ],
-                check=False,
-                timeout=90,
-                capture_output=True,
-                text=True,
-            )
-            assert proc.returncode == 0, proc.stderr
-        finally:
-            _restore_outputs()
-            _cleanup_backup()
+
+def test_hwml9_model_training_beta_agrees_refml():
+    """Learning-cohort OLS beta_hat agrees with independent reference."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
+    assert read_json(STATE / "beta_hat.json")["values"] == exp["beta"]["values"]
+    assert len(read_json(STATE / "beta_hat.json")["values"]) == 7
+
+
+def test_hwml9_inference_metric_mape_r2_agree_refml():
+    """MAPE and R2 agree with independent forecast metrics."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
+    got = read_json(STATE / "forecast_tape.json")
+    assert got["mape"] == exp["forecast"]["mape"]
+    assert got["r2"] == exp["forecast"]["r2"]
+    assert got["metrics_pass"] is True
+
+
+def test_hwml9_model_eval_promoted_on_default_bundle():
+    """Default specimen bundle promotes under MAPE/R2 dual gate."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    assert read_json(STATE / "forecast_tape.json")["metrics_pass"] is True
+    assert read_json(PLAQUE / "promotion_plaque.json")["promoted"] is True
+
+
+def test_hwml9_reserved_ids_only():
+    """Forecast rows are reserved cohort ids only."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    design = read_json(STATE / "design_matrix.json")
+    forecast = read_json(STATE / "forecast_tape.json")
+    reserved = {r["id"] for r in design["rows"] if r["cohort"] == "reserved"}
+    assert {r["id"] for r in forecast["rows"]} == reserved
+
+
+def test_hwml9_rows_sorted_by_id():
+    """Design and vault rows are ascending by specimen id."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    for name in ("design_matrix.json", "design_vault.json"):
+        ids = [r["id"] for r in read_json(STATE / name)["rows"]]
+        assert ids == sorted(ids)
+
+
+def test_hwml9_fit_commit_pins_vault():
+    """Fit commit vault_digest and beta_digest bind on-disk bytes."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    c = read_json(STATE / "fit_commit.json")
+    assert c["vault_digest"] == sha(STATE / "design_vault.json")
+    assert c["beta_digest"] == sha(STATE / "beta_hat.json")
+    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
+    assert c["learning_ids"] == exp["learning_ids"]
+    want = reference_fit_commit(
+        exp["workbook"], STATE / "design_vault.json", STATE / "beta_hat.json", exp["learning_ids"]
+    )
+    assert c == want
+
+
+def test_hwml9_emit_trust_binds_stage_digests():
+    """Emit trust digests bind vault/pin/beta/commit/seal/forecast on-disk bytes."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    forecast = read_json(STATE / "forecast_tape.json")
+    workbook = load_workbook(FIX / "eval_workbook.json")
+    got = read_json(STATE / "emit_trust.json")
+    want = reference_trust(
+        forecast,
+        workbook,
+        STATE / "design_vault.json",
+        STATE / "latch_pin.json",
+        STATE / "beta_hat.json",
+        STATE / "fit_commit.json",
+        STATE / "beta_latch_seal.json",
+        STATE / "forecast_tape.json",
+    )
+    assert got == want
+
+
+def test_hwml9_plaque_digests_pin_including_trust():
+    """Plaque digests bind on-disk state bytes including seal and emit trust."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    p = read_json(PLAQUE / "promotion_plaque.json")
+    assert p["design_digest"] == sha(STATE / "design_matrix.json")
+    assert p["beta_digest"] == sha(STATE / "beta_hat.json")
+    assert p["forecast_digest"] == sha(STATE / "forecast_tape.json")
+    assert p["vault_digest"] == sha(STATE / "design_vault.json")
+    assert p["fit_commit_digest"] == sha(STATE / "fit_commit.json")
+    assert p["pin_digest"] == sha(STATE / "latch_pin.json")
+    assert p["seal_digest"] == sha(STATE / "beta_latch_seal.json")
+    assert p["trust_digest"] == sha(STATE / "emit_trust.json")
+    assert int(p["pin_seq"]) == int(read_json(STATE / "latch_pin.json")["pin_seq"])
+    assert int(p["policy_epoch"]) == int(load_workbook(FIX / "eval_workbook.json")["policy_epoch"])
+
+
+def test_hwml9_refml_plaque_agrees():
+    """Independent plaque builder agrees with on-disk plaque."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
+    want = reference_plaque(
+        exp["forecast"],
+        exp["workbook"],
+        STATE / "design_matrix.json",
+        STATE / "beta_hat.json",
+        STATE / "forecast_tape.json",
+        STATE / "design_vault.json",
+        STATE / "fit_commit.json",
+        STATE / "latch_pin.json",
+        STATE / "beta_latch_seal.json",
+        STATE / "emit_trust.json",
+    )
+    assert read_json(PLAQUE / "promotion_plaque.json") == want
+
+
+def test_hwml9_identity_propagates():
+    """Identity propagates from workbook across state and plaque."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    ident = load_workbook(FIX / "eval_workbook.json")["identity"]
+    for path in (
+        STATE / "design_matrix.json",
+        STATE / "design_vault.json",
+        STATE / "latch_pin.json",
+        STATE / "beta_hat.json",
+        STATE / "fit_commit.json",
+        STATE / "beta_latch_seal.json",
+        STATE / "forecast_tape.json",
+        STATE / "emit_trust.json",
+        PLAQUE / "promotion_plaque.json",
+    ):
+        assert read_json(path)["identity"] == ident
+
+
+def test_hwml9_second_eval_byte_stable_pass_chain_grows():
+    """Replay keeps stage bytes identical and appends pass_chain pass_index 2."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    a_vault = (STATE / "design_vault.json").read_bytes()
+    a_latch_pin = (STATE / "latch_pin.json").read_bytes()
+    a_seal = (STATE / "beta_latch_seal.json").read_bytes()
+    a_trust = (STATE / "emit_trust.json").read_bytes()
+    a_plaque = (PLAQUE / "promotion_plaque.json").read_bytes()
+    gen = read_json(STATE / "latch_pin.json")["pin_seq"]
+    first = [json.loads(line) for line in (STATE / "pass_chain.jsonl").read_text().splitlines() if line.strip()]
+    assert len(first) == 1
+    assert first[0]["pass_index"] == 1
+    assert first[0]["prior_digest"] == ""
+    want_fp = stage_fingerprint(
+        STATE / "design_vault.json",
+        STATE / "latch_pin.json",
+        STATE / "beta_hat.json",
+        STATE / "fit_commit.json",
+        STATE / "beta_latch_seal.json",
+        STATE / "forecast_tape.json",
+        STATE / "emit_trust.json",
+    )
+    assert first[0]["stage_fingerprint"] == want_fp
+    assert first[0]["chain_digest"] == chain_digest(
+        "", want_fp, first[0]["vault_digest"], first[0]["seal_digest"], int(first[0]["pin_seq"]), 1
+    )
+    assert drive().returncode == 0
+    assert (STATE / "design_vault.json").read_bytes() == a_vault
+    assert (STATE / "latch_pin.json").read_bytes() == a_latch_pin
+    assert (STATE / "beta_latch_seal.json").read_bytes() == a_seal
+    assert (STATE / "emit_trust.json").read_bytes() == a_trust
+    assert (PLAQUE / "promotion_plaque.json").read_bytes() == a_plaque
+    assert read_json(STATE / "latch_pin.json")["pin_seq"] == gen
+    lines = [json.loads(line) for line in (STATE / "pass_chain.jsonl").read_text().splitlines() if line.strip()]
+    assert len(lines) == 2
+    assert lines[1]["pass_index"] == 2
+    assert lines[1]["prior_digest"] == lines[0]["chain_digest"]
+    assert lines[1]["stage_fingerprint"] == want_fp
+    assert lines[1]["chain_digest"] == chain_digest(
+        lines[0]["chain_digest"], want_fp, lines[1]["vault_digest"], lines[1]["seal_digest"], int(lines[1]["pin_seq"]), 2
+    )
+
+
+def test_hwml9_run_log_stages():
+    """Run log lists design/vault/latch_pin/beta/commit/seal/forecast/trust/plaque."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    rows = [json.loads(line) for line in (STATE / "run_log.jsonl").read_text().splitlines() if line.strip()]
+    assert [r["stage"] for r in rows] == [
+        "design", "vault", "latch_pin", "beta", "commit", "seal", "forecast", "trust", "plaque"
+    ]
+
+
+def test_hwml9_vault_only_writes_state_snapshot():
+    """Vault mode writes matrix/vault/pin only — no beta, seal, trust, plaque, or pass_chain."""
+    wipe_outputs()
+    assert drive(mode="vault").returncode == 0
+    assert (STATE / "design_matrix.json").is_file()
+    assert (STATE / "design_vault.json").is_file()
+    assert (STATE / "latch_pin.json").is_file()
+    assert not (STATE / "beta_hat.json").exists()
+    assert not (STATE / "beta_latch_seal.json").exists()
+    assert not (STATE / "emit_trust.json").exists()
+    assert not (STATE / "pass_chain.jsonl").exists()
+    assert not (PLAQUE / "promotion_plaque.json").exists()
+
+
+def test_hwml9_forecast_keeps_vault_when_traces_mutate():
+    """Forecast-only after trace mutation must keep staged vault/latch_pin/seal/plaque."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    vault_bytes = (STATE / "design_vault.json").read_bytes()
+    latch_pin_bytes = (STATE / "latch_pin.json").read_bytes()
+    seal_bytes = (STATE / "beta_latch_seal.json").read_bytes()
+    trust_bytes = (STATE / "emit_trust.json").read_bytes()
+    plaque_bytes = (PLAQUE / "promotion_plaque.json").read_bytes()
+    digest = read_json(STATE / "latch_pin.json")["vault_digest"]
+    traces = FIX / "labeled_traces.jsonl"
+    original = traces.read_text(encoding="utf-8")
+    try:
+        lines = original.splitlines()
+        row = json.loads(lines[0])
+        row["ticks"] = [9, 9, 9, 9, 9, 9, 9, 9]
+        lines[0] = json.dumps(row)
+        traces.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        assert drive(mode="forecast").returncode == 0
+        assert (STATE / "design_vault.json").read_bytes() == vault_bytes
+        assert (STATE / "latch_pin.json").read_bytes() == latch_pin_bytes
+        assert (STATE / "beta_latch_seal.json").read_bytes() == seal_bytes
+        assert (STATE / "emit_trust.json").read_bytes() == trust_bytes
+        assert (PLAQUE / "promotion_plaque.json").read_bytes() == plaque_bytes
+        assert read_json(PLAQUE / "promotion_plaque.json")["vault_digest"] == digest
+    finally:
+        traces.write_text(original, encoding="utf-8")
+
+
+def test_hwml9_vault_then_forecast_matches_full_eval():
+    """vault then forecast produces the same latch_pin digest and plaque as full eval."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    full_digest = read_json(STATE / "latch_pin.json")["vault_digest"]
+    full_plaque = read_json(PLAQUE / "promotion_plaque.json")
+    wipe_outputs()
+    assert drive(mode="vault").returncode == 0
+    assert (STATE / "design_vault.json").is_file()
+    assert (STATE / "latch_pin.json").is_file()
+    assert not (PLAQUE / "promotion_plaque.json").exists()
+    assert drive(mode="forecast").returncode == 0
+    assert read_json(STATE / "latch_pin.json")["vault_digest"] == full_digest
+    got = read_json(PLAQUE / "promotion_plaque.json")
+    assert got["promoted"] == full_plaque["promoted"]
+    assert got["mape"] == full_plaque["mape"]
+    assert got["r2"] == full_plaque["r2"]
+    assert got["vault_digest"] == full_plaque["vault_digest"]
+    assert got["pin_digest"] == full_plaque["pin_digest"]
+    assert got["seal_digest"] == full_plaque["seal_digest"]
+    assert got["trust_digest"] == full_plaque["trust_digest"]
+
+
+def test_hwml9_mutated_vault_without_repin_breaks_forecast():
+    """Forecast must fail when design_vault is mutated without refreshing latch_pin."""
+    wipe_outputs()
+    assert drive(mode="vault").returncode == 0
+    vault = read_json(STATE / "design_vault.json")
+    vault["rows"][0]["target_energy"] = float(vault["rows"][0]["target_energy"]) + 1.0
+    (STATE / "design_vault.json").write_text(json.dumps(vault, indent=2) + "\n", encoding="utf-8")
+    proc = drive(mode="forecast")
+    assert proc.returncode != 0
+    assert not (PLAQUE / "promotion_plaque.json").exists()
+
+
+def test_hwml9_policy_epoch_drift_breaks_forecast():
+    """Forecast must abort when staged vault policy_epoch drifts from the workbook."""
+    wipe_outputs()
+    assert drive(mode="vault").returncode == 0
+    vault = read_json(STATE / "design_vault.json")
+    vault["policy_epoch"] = int(vault["policy_epoch"]) + 9
+    (STATE / "design_vault.json").write_text(json.dumps(vault, indent=2) + "\n", encoding="utf-8")
+    # Refresh pin digest to match mutated vault so epoch check is the failure mode
+    pin = read_json(STATE / "latch_pin.json")
+    pin["vault_digest"] = sha(STATE / "design_vault.json")
+    pin["policy_epoch"] = vault["policy_epoch"]
+    (STATE / "latch_pin.json").write_text(json.dumps(pin, indent=2) + "\n", encoding="utf-8")
+    proc = drive(mode="forecast")
+    assert proc.returncode != 0
+    assert not (PLAQUE / "promotion_plaque.json").exists()
+
+
+def test_hwml9_stale_trust_after_beta_mutation_breaks_emit():
+    """Emit must fail when beta_hat mutates without refreshing emit_trust."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    prior_trust = (STATE / "emit_trust.json").read_text(encoding="utf-8")
+    beta = read_json(STATE / "beta_hat.json")
+    beta["values"] = [float(v) + 0.001 for v in beta["values"]]
+    (STATE / "beta_hat.json").write_text(json.dumps(beta, indent=2) + "\n", encoding="utf-8")
+    (PLAQUE / "promotion_plaque.json").unlink(missing_ok=True)
+    proc = drive(mode="emit")
+    assert proc.returncode != 0
+    assert not (PLAQUE / "promotion_plaque.json").exists()
+    assert (STATE / "emit_trust.json").read_text(encoding="utf-8") == prior_trust
+
+
+def test_hwml9_stale_seal_after_beta_mutation_breaks_emit():
+    """Emit must fail when beta mutates even if trust digests are forcibly refreshed without seal."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    beta = read_json(STATE / "beta_hat.json")
+    beta["values"] = [float(v) + 0.002 for v in beta["values"]]
+    (STATE / "beta_hat.json").write_text(json.dumps(beta, indent=2) + "\n", encoding="utf-8")
+    trust = read_json(STATE / "emit_trust.json")
+    trust["beta_digest"] = sha(STATE / "beta_hat.json")
+    (STATE / "emit_trust.json").write_text(json.dumps(trust, indent=2) + "\n", encoding="utf-8")
+    (PLAQUE / "promotion_plaque.json").unlink(missing_ok=True)
+    proc = drive(mode="emit")
+    assert proc.returncode != 0
+    assert not (PLAQUE / "promotion_plaque.json").exists()
+
+
+def test_hwml9_stale_trust_after_forecast_mutation_breaks_emit():
+    """Emit must fail when forecast_tape mutates without refreshing emit_trust."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    prior_trust = json.loads((STATE / "emit_trust.json").read_text(encoding="utf-8"))
+    tape = read_json(STATE / "forecast_tape.json")
+    tape["mape"] = float(tape["mape"]) + 0.01
+    (STATE / "forecast_tape.json").write_text(json.dumps(tape, indent=2) + "\n", encoding="utf-8")
+    (PLAQUE / "promotion_plaque.json").unlink(missing_ok=True)
+    proc = drive(mode="emit")
+    assert proc.returncode != 0
+    assert not (PLAQUE / "promotion_plaque.json").exists()
+    assert prior_trust["forecast_digest"] != sha(STATE / "forecast_tape.json")
+
+
+def test_hwml9_emit_rewrites_plaque_when_trust_fresh():
+    """Emit succeeds and rewrites plaque digests when trust+seal still match files."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    trust_digest = sha(STATE / "emit_trust.json")
+    seal_digest = sha(STATE / "beta_latch_seal.json")
+    chain_before = (STATE / "pass_chain.jsonl").read_text(encoding="utf-8")
+    (PLAQUE / "promotion_plaque.json").unlink()
+    assert drive(mode="emit").returncode == 0
+    p = read_json(PLAQUE / "promotion_plaque.json")
+    assert p["trust_digest"] == trust_digest
+    assert p["seal_digest"] == seal_digest
+    assert p["promoted"] is True
+    assert (STATE / "pass_chain.jsonl").read_text(encoding="utf-8") == chain_before
+
+
+def test_hwml9_sidecut_not_imported():
+    """latchml must not import sidecut or decoy."""
+    for p in (APP / "latchml").glob("*.py"):
+        text = p.read_text(encoding="utf-8")
+        assert "sidecut" not in text
+        assert "decoy" not in text
+
+
+def test_hwml9_decoy_ridge_off_hot_path():
+    """Decoy ridge module exists but is not imported by latchml."""
+    assert (APP / "decoy" / "ridge_always.py").is_file()
+    blob = " ".join(p.read_text(encoding="utf-8") for p in (APP / "latchml").glob("*.py"))
+    assert "ridge_always" not in blob
+
+
+def test_hwml9_scoregate_miss_blocks():
+    """Noisy reserved targets block promotion."""
+    wipe_outputs()
+    root = Path("/opt/verifier-fixtures") / "metric-miss"
+    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
+    assert read_json(PLAQUE / "promotion_plaque.json")["promoted"] is False
+
+
+def test_hwml9_mape_trap_fails_mape_only():
+    """mape_trap fixture fails MAPE ceiling while R2 still clears the floor."""
+    wipe_outputs()
+    root = Path("/opt/verifier-fixtures") / "mape-trap"
+    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
+    tape = read_json(STATE / "forecast_tape.json")
+    card = read_json(PLAQUE / "promotion_plaque.json")
+    assert float(tape["r2"]) >= float(tape["r2_floor"])
+    assert float(tape["mape"]) > float(tape["mape_ceiling"])
+    assert card["promoted"] is False
+
+
+def test_hwml9_r2_trap_fails_r2_only():
+    """r2_trap fixture fails R2 floor while MAPE still clears the ceiling."""
+    wipe_outputs()
+    root = Path("/opt/verifier-fixtures") / "r2-trap"
+    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
+    tape = read_json(STATE / "forecast_tape.json")
+    card = read_json(PLAQUE / "promotion_plaque.json")
+    assert float(tape["mape"]) <= float(tape["mape_ceiling"])
+    assert float(tape["r2"]) < float(tape["r2_floor"])
+    assert card["promoted"] is False
+
+
+def test_hwml9_specimen_spike_alters_mape():
+    """Spiked reserved ticks change MAPE vs baseline."""
+    base = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")["forecast"]["mape"]
+    wipe_outputs()
+    root = Path("/opt/verifier-fixtures") / "feature-spike"
+    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
+    assert read_json(STATE / "forecast_tape.json")["mape"] != base
+
+
+def test_hwml9_no_reserved_blocks():
+    """No reserved cohort cannot promote."""
+    wipe_outputs()
+    root = Path("/opt/verifier-fixtures") / "no-holdout"
+    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
+    assert read_json(STATE / "forecast_tape.json")["rows"] == []
+    assert read_json(PLAQUE / "promotion_plaque.json")["promoted"] is False
+
+
+def test_hwml9_ridge_bait_ignored():
+    """Workbook ridge_lambda bait must not change plain OLS beta."""
+    base = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")["beta"]["values"]
+    wipe_outputs()
+    root = Path("/opt/verifier-fixtures") / "ridge-bait"
+    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
+    assert read_json(STATE / "beta_hat.json")["values"] == base
+
+
+def test_hwml9_shuffled_input_still_sorted():
+    """Shuffled learning file order still yields id-sorted design rows and matching beta."""
+    base = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
+    wipe_outputs()
+    root = Path("/opt/verifier-fixtures") / "shuffled-ids"
+    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
+    ids = [r["id"] for r in read_json(STATE / "design_vault.json")["rows"]]
+    assert ids == sorted(ids)
+    assert read_json(STATE / "beta_hat.json")["values"] == base["beta"]["values"]
+
+
+def test_hwml9_miss_digests_still_pin():
+    """Failed promotion still binds digests including vault, latch_pin, seal, and emit_trust."""
+    wipe_outputs()
+    root = Path("/opt/verifier-fixtures") / "metric-miss"
+    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
+    p = read_json(PLAQUE / "promotion_plaque.json")
+    assert p["design_digest"] == sha(STATE / "design_matrix.json")
+    assert p["vault_digest"] == sha(STATE / "design_vault.json")
+    assert p["pin_digest"] == sha(STATE / "latch_pin.json")
+    assert p["seal_digest"] == sha(STATE / "beta_latch_seal.json")
+    assert p["trust_digest"] == sha(STATE / "emit_trust.json")
+    assert read_json(STATE / "emit_trust.json")["metrics_pass"] is False
+
+
+def test_hwml9_quadratic_columns_present():
+    """Design column_names include squared terms."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    names = read_json(STATE / "design_matrix.json")["column_names"]
+    assert "mean_sq" in names and "max_sq" in names and "std_sq" in names
+
+
+def test_hwml9_predictions_finite():
+    """Forecast predictions are finite."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    for row in read_json(STATE / "forecast_tape.json")["rows"]:
+        assert row["prediction"] == row["prediction"]
+
+
+def test_hwml9_pass_chain_row_agrees_refml():
+    """First pass_chain line agrees with independent chain builder."""
+    wipe_outputs()
+    assert drive().returncode == 0
+    pin = read_json(STATE / "latch_pin.json")
+    row = [json.loads(line) for line in (STATE / "pass_chain.jsonl").read_text().splitlines() if line.strip()][0]
+    want = reference_pass_chain_row(
+        "",
+        STATE / "design_vault.json",
+        STATE / "latch_pin.json",
+        STATE / "beta_hat.json",
+        STATE / "fit_commit.json",
+        STATE / "beta_latch_seal.json",
+        STATE / "forecast_tape.json",
+        STATE / "emit_trust.json",
+        pin["pin_seq"],
+        1,
+    )
+    assert row == want

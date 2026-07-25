@@ -6,6 +6,5 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-.env
-solution/
-tests/
+**/jobs
+**/output
