@@ -1,0 +1,153 @@
+{
+  "providers": [
+    {
+      "provider_config_id": "prov-default",
+      "intercept_find_package": true,
+      "intercept_fetchcontent": true
+    },
+    {
+      "provider_config_id": "prov-find-only",
+      "intercept_find_package": true,
+      "intercept_fetchcontent": false
+    },
+    {
+      "provider_config_id": "prov-off",
+      "intercept_find_package": false,
+      "intercept_fetchcontent": false
+    }
+  ],
+  "responses": [
+    {
+      "response_id": "resp-fmt-provide",
+      "provider_config_id": "prov-default",
+      "dependency_name": "fmt",
+      "request_kind": "find_package",
+      "satisfies": true,
+      "version_or_null": "10.2.1",
+      "provided_components": ["default"],
+      "produced_targets": ["fmt::fmt"],
+      "source_identity": "provider://fmt/10.2.1",
+      "content_digest": "8181818181818181818181818181818181818181818181818181818181818181"
+    },
+    {
+      "response_id": "resp-curl-decline",
+      "provider_config_id": "prov-default",
+      "dependency_name": "CURL",
+      "request_kind": "find_package",
+      "satisfies": false,
+      "version_or_null": null,
+      "provided_components": [],
+      "produced_targets": [],
+      "source_identity": "provider://curl/declined",
+      "content_digest": "8282828282828282828282828282828282828282828282828282828282828282"
+    },
+    {
+      "response_id": "resp-spdlog-provide",
+      "provider_config_id": "prov-default",
+      "dependency_name": "spdlog",
+      "request_kind": "find_package",
+      "satisfies": true,
+      "version_or_null": "1.14.1",
+      "provided_components": ["default"],
+      "produced_targets": ["spdlog::spdlog"],
+      "source_identity": "provider://spdlog/1.14.1",
+      "content_digest": "8383838383838383838383838383838383838383838383838383838383838383"
+    },
+    {
+      "response_id": "resp-json-decline",
+      "provider_config_id": "prov-default",
+      "dependency_name": "nlohmann_json",
+      "request_kind": "find_package",
+      "satisfies": false,
+      "version_or_null": null,
+      "provided_components": [],
+      "produced_targets": [],
+      "source_identity": "provider://json/declined",
+      "content_digest": "8484848484848484848484848484848484848484848484848484848484848484"
+    },
+    {
+      "response_id": "resp-absl-fc",
+      "provider_config_id": "prov-default",
+      "dependency_name": "abseil",
+      "request_kind": "make_available",
+      "satisfies": true,
+      "version_or_null": "20240116.0",
+      "provided_components": ["default"],
+      "produced_targets": ["absl::base"],
+      "source_identity": "provider://abseil/20240116",
+      "content_digest": "8585858585858585858585858585858585858585858585858585858585858585"
+    },
+    {
+      "response_id": "resp-proto-provide",
+      "provider_config_id": "prov-default",
+      "dependency_name": "protobuf",
+      "request_kind": "find_package",
+      "satisfies": true,
+      "version_or_null": "25.3.0",
+      "provided_components": ["libprotobuf"],
+      "produced_targets": ["protobuf::libprotobuf"],
+      "source_identity": "provider://protobuf/25.3",
+      "content_digest": "8686868686868686868686868686868686868686868686868686868686868686"
+    },
+    {
+      "response_id": "resp-grpc-decline",
+      "provider_config_id": "prov-default",
+      "dependency_name": "grpc",
+      "request_kind": "find_package",
+      "satisfies": false,
+      "version_or_null": null,
+      "provided_components": [],
+      "produced_targets": [],
+      "source_identity": "provider://grpc/declined",
+      "content_digest": "8787878787878787878787878787878787878787878787878787878787878787"
+    },
+    {
+      "response_id": "resp-fmt-findonly",
+      "provider_config_id": "prov-find-only",
+      "dependency_name": "fmt",
+      "request_kind": "find_package",
+      "satisfies": true,
+      "version_or_null": "10.2.1",
+      "provided_components": ["default"],
+      "produced_targets": ["fmt::fmt"],
+      "source_identity": "provider://fmt/find-only",
+      "content_digest": "8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    {
+      "response_id": "resp-zlib-provide",
+      "provider_config_id": "prov-default",
+      "dependency_name": "zlib",
+      "request_kind": "find_package",
+      "satisfies": true,
+      "version_or_null": "1.3.1",
+      "provided_components": ["default"],
+      "produced_targets": ["ZLIB::ZLIB"],
+      "source_identity": "provider://zlib/1.3.1",
+      "content_digest": "8989898989898989898989898989898989898989898989898989898989898989"
+    },
+    {
+      "response_id": "resp-openssl-provide",
+      "provider_config_id": "prov-default",
+      "dependency_name": "OpenSSL",
+      "request_kind": "find_package",
+      "satisfies": true,
+      "version_or_null": "3.0.13",
+      "provided_components": ["SSL", "Crypto"],
+      "produced_targets": ["OpenSSL::SSL", "OpenSSL::Crypto"],
+      "source_identity": "provider://openssl/3.0.13",
+      "content_digest": "8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a"
+    },
+    {
+      "response_id": "resp-fmt-util-ma",
+      "provider_config_id": "prov-default",
+      "dependency_name": "fmt",
+      "request_kind": "make_available",
+      "satisfies": false,
+      "version_or_null": null,
+      "provided_components": [],
+      "produced_targets": [],
+      "source_identity": "provider://fmt/util-declined",
+      "content_digest": "8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b"
+    }
+  ]
+}

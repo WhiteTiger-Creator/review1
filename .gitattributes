@@ -1,0 +1,9 @@
+# Keep Cargo vendor trees byte-identical to .cargo-checksum.json.
+# Converting CRLF/LF in vendor markdown breaks offline `cargo build` and
+# fails Terminus environment image builds (reported as oracle/AutoEval failure).
+environment/app/vendor/** -text
+solution/oracle_src/vendor/** -text
+
+# Shell/entrypoint scripts stay LF for Linux containers.
+*.sh text eol=lf
+environment/Dockerfile text eol=lf

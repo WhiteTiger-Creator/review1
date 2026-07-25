@@ -1,8 +1,0 @@
-{
-  "name": "@ridge/telemetry",
-  "version": "0.8.0",
-  "license": "MIT",
-  "dependencies": {
-    "debug": "^4.3.4"
-  }
-}

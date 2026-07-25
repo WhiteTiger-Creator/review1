@@ -1,0 +1,38 @@
+{
+  "targets": [
+    {"target_id": "ZLIB::ZLIB", "producer_dependency": "zlib"},
+    {"target_id": "OpenSSL::SSL", "producer_dependency": "openssl"},
+    {"target_id": "OpenSSL::Crypto", "producer_dependency": "openssl"},
+    {"target_id": "CURL::libcurl", "producer_dependency": "curl"},
+    {"target_id": "CURL::curl_extra", "producer_dependency": "curl"},
+    {"target_id": "fmt::fmt", "producer_dependency": "fmt"},
+    {"target_id": "spdlog::spdlog", "producer_dependency": "spdlog"},
+    {"target_id": "nlohmann_json::nlohmann_json", "producer_dependency": "nlohmann_json"},
+    {"target_id": "absl::base", "producer_dependency": "abseil"},
+    {"target_id": "protobuf::libprotobuf", "producer_dependency": "protobuf"},
+    {"target_id": "gRPC::grpc++", "producer_dependency": "grpc"},
+    {"target_id": "OpenSSL::applink", "producer_dependency": "openssl"},
+    {"target_id": "absl::strings", "producer_dependency": "abseil"},
+    {"target_id": "protobuf::libprotoc", "producer_dependency": "protobuf"}
+  ],
+  "edges": [
+    {"from_target": "OpenSSL::SSL", "to_target": "OpenSSL::Crypto"},
+    {"from_target": "CURL::libcurl", "to_target": "ZLIB::ZLIB"},
+    {"from_target": "CURL::libcurl", "to_target": "OpenSSL::SSL"},
+    {"from_target": "CURL::curl_extra", "to_target": "CURL::libcurl"},
+    {"from_target": "spdlog::spdlog", "to_target": "fmt::fmt"},
+    {"from_target": "protobuf::libprotobuf", "to_target": "absl::base"},
+    {"from_target": "protobuf::libprotoc", "to_target": "protobuf::libprotobuf"},
+    {"from_target": "gRPC::grpc++", "to_target": "protobuf::libprotobuf"},
+    {"from_target": "gRPC::grpc++", "to_target": "absl::base"},
+    {"from_target": "gRPC::grpc++", "to_target": "OpenSSL::SSL"},
+    {"from_target": "absl::strings", "to_target": "absl::base"},
+    {"from_target": "OpenSSL::applink", "to_target": "OpenSSL::Crypto"},
+    {"from_target": "protobuf::libprotobuf", "to_target": "absl::strings"},
+    {"from_target": "CURL::libcurl", "to_target": "OpenSSL::Crypto"},
+    {"from_target": "spdlog::spdlog", "to_target": "ZLIB::ZLIB"},
+    {"from_target": "gRPC::grpc++", "to_target": "ZLIB::ZLIB"},
+    {"from_target": "protobuf::libprotoc", "to_target": "absl::strings"},
+    {"from_target": "CURL::curl_extra", "to_target": "ZLIB::ZLIB"}
+  ]
+}
