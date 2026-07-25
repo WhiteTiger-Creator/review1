@@ -1,13 +1,16 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
-cd "$(dirname "$0")"
-bash ./fix_briar.sh
-bash ./fix_flume.sh
-bash ./fix_kerf.sh
-chmod +x /app/environment/scripts/compile_lane.sh
-/app/environment/scripts/compile_lane.sh
-mkdir -p /app/output
-exec /app/environment/tools/rivet_gate \
-  --pack /app/environment/fixtures/ax025_pack \
-  --db /app/output/shift_ledger.db \
-  --bundle-out /app/output/evidence_bundle.tar
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCH="${SCRIPT_DIR}/modal-stiffness-calibration.patch"
+cd /opt/spanforge
+
+if patch -p1 --dry-run < "$PATCH" >/dev/null 2>&1; then
+  patch -p1 < "$PATCH"
+elif patch -p1 -R --dry-run < "$PATCH" >/dev/null 2>&1; then
+  echo "patch already applied"
+else
+  echo "patch applies in neither direction" >&2
+  exit 1
+fi
+
+/opt/spanforge/build-modal-reconciler.sh

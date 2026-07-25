@@ -1,40 +1,43 @@
-# Digest-pinned canonical Ruby bookworm base.
-FROM ruby:3.3-slim-bookworm@sha256:e76733e94b3a5893e4a141024ef3a583dc10781dc24becebf74f9c9f9a33e3df
+FROM public.ecr.aws/docker/library/rust:1.85-slim-bookworm@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
-WORKDIR /app
+ENV PATH="/usr/local/cargo/bin:/usr/local/rustup/bin:${PATH}"
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
 
+# Layer 1: operating packages
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3=3.11.2-1+b1 \
-        python3-venv=3.11.2-1+b1 \
-        ca-certificates=20230311+deb12u1 \
-        libssl3=3.0.20-1~deb12u2 \
-        sqlite3=3.40.1-2+deb12u2 \
-        tmux=3.3a-3 \
-        asciinema=2.2.0-1 \
+        asciinema \
+        ca-certificates \
+        patch \
+        python3 \
+        python3-pip \
+        python3-venv \
+        tmux \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.lock /tmp/requirements.txt
-RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.txt
-RUN rm -f /tmp/requirements.txt
+WORKDIR /opt
 
-ENV PATH=/opt/verifier/bin:${PATH}
+# Layer 2: verifier wheelhouse and lock (installed only by tests/test.sh)
+COPY requirements.lock /opt/verifier-requirements.lock
+COPY verifier-wheels /verifier-wheels
 
-RUN mkdir -p /app/output /app/environment
+# Layer 3: Rust manifest, lockfile, Cargo source replacement, and vendored dependencies
+COPY spanforge/Cargo.toml spanforge/Cargo.lock /opt/spanforge/
+COPY spanforge/.cargo /opt/spanforge/.cargo
+COPY spanforge/vendor /opt/spanforge/vendor
 
-COPY Gemfile /app/environment/Gemfile
-COPY briar /app/environment/briar
-COPY db /app/environment/db
-COPY docs /app/environment/docs
-COPY fixtures /app/environment/fixtures
-COPY flume /app/environment/flume
-COPY kerf /app/environment/kerf
-COPY scripts /app/environment/scripts
-COPY tools /app/environment/tools
+# Layer 4: Rust source, modal-code documents, wrapper, build script, and examples
+COPY spanforge/src /opt/spanforge/src
+COPY spanforge/modal-code /opt/spanforge/modal-code
+COPY spanforge/examples /opt/spanforge/examples
+COPY spanforge/build-modal-reconciler.sh /opt/spanforge/build-modal-reconciler.sh
+COPY spanforge/bin /opt/spanforge/bin
+RUN chmod +x /opt/spanforge/build-modal-reconciler.sh /opt/spanforge/bin/modal-reconciler \
+    && mkdir -p /opt/spanforge/libexec
 
-RUN sqlite3 /app/environment/db/shift_ledger_seed.db < /app/environment/db/shift_ledger_seed.sql \
-    && chmod +x /app/environment/scripts/compile_lane.sh \
-    && /app/environment/scripts/compile_lane.sh
+# Layer 5: application build
+RUN /opt/spanforge/build-modal-reconciler.sh
 
-CMD ["bash"]
+WORKDIR /workspace

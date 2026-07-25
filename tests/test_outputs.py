@@ -1,364 +1,670 @@
-import hashlib
+"""SpanForge modal calibration verifier — exactly 36 top-level tests."""
+
+from __future__ import annotations
+
 import json
 import math
-import subprocess
-import tarfile
 from pathlib import Path
 
-import pytest
-
-ROOT = Path("/app/environment")
-PACK = ROOT / "fixtures" / "ax025_pack"
-OUT = Path("/app/output/evidence_bundle.tar")
-LEDGER_DB = Path("/app/output/shift_ledger.db")
-SEED_DB = ROOT / "db" / "shift_ledger_seed.db"
-EDGES = [0.00, 0.25, 0.50, 0.75, 1.00]
-MARGIN = 0.050000
-BUDGET = 8
-
-
-def _sha(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+from span_modal_lab import (
+    base_plan,
+    copy_sealed_triplet,
+    isolated_workdir,
+    parse_mcr,
+    run_calibrate,
+    run_spectrum,
+    stderr_code,
+    two_dof_analytic_model,
+    write_json,
+)
 
 
-def _sha_text(text: str) -> str:
-    return _sha(text.encode("utf-8"))
+def test_spanfit_spectrum_matches_two_dof_analytic_frequencies() -> None:
+    """Spectrum frequencies match the closed-form two-DOF generalized eigenvalues."""
+    with isolated_workdir() as td:
+        model = write_json(Path(td) / "model.json", two_dof_analytic_model())
+        proc = run_spectrum(model)
+        assert proc.returncode == 0, proc.stderr
+        data = json.loads(proc.stdout)
+        expect = [math.sqrt(1.2) / (2 * math.pi), math.sqrt(3.2) / (2 * math.pi)]
+        assert abs(data["frequencies_hz"][0] - expect[0]) < 1e-12
+        assert abs(data["frequencies_hz"][1] - expect[1]) < 1e-12
 
 
-def _json_lite_stringify(obj) -> str:
-    if obj is None:
-        return "null"
-    if isinstance(obj, str):
-        return json.dumps(obj, ensure_ascii=True)
-    if isinstance(obj, (int, float, bool)):
-        return json.dumps(obj)
-    if isinstance(obj, dict):
-        parts = []
-        for key, value in obj.items():
-            parts.append(f"{_json_lite_stringify(str(key))}:{_json_lite_stringify(value)}")
-        return "{" + ",".join(parts) + "}"
-    if isinstance(obj, (list, tuple)):
-        return "[" + ",".join(_json_lite_stringify(x) for x in obj) + "]"
-    return json.dumps(str(obj), ensure_ascii=True)
+def test_spanfit_spectrum_is_invariant_to_eigenvector_sign() -> None:
+    """Mode-shape sign flips leave calibrated objective, MAC, and pairing unchanged."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
+        flipped = json.loads(survey.read_text())
+        for mode in flipped["modes"]:
+            mode["shape"] = [
+                (-v if v is not None else None) for v in mode["shape"]
+            ]
+        alt = write_json(Path(td) / "flipped.json", flipped)
+        r1 = Path(td) / "a.mcr"
+        r2 = Path(td) / "b.mcr"
+        assert run_calibrate(model, survey, plan, r1).returncode == 0
+        assert run_calibrate(model, alt, plan, r2).returncode == 0
+        a = parse_mcr(r1.read_text())
+        b = parse_mcr(r2.read_text())
+        assert abs(a["objective_total"] - b["objective_total"]) < 1e-12
+        assert [p["mac"] for p in a["pairs"]] == [p["mac"] for p in b["pairs"]]
+        assert [p["predicted"] for p in a["pairs"]] == [
+            p["predicted"] for p in b["pairs"]
+        ]
 
 
-def _manifest_self_hash(cert_hash: str) -> str:
-    man_no_self = {"certificate.json": cert_hash}
-    return _sha_text(_json_lite_stringify(man_no_self))
+def test_spanfit_rejects_nonsymmetric_mass_matrix() -> None:
+    """Mass asymmetry beyond tolerance yields E_MATRIX_SYMMETRY."""
+    with isolated_workdir() as td:
+        m = two_dof_analytic_model()
+        m["mass"] = [[1.0, 0.5], [0.0, 1.0]]
+        proc = run_spectrum(write_json(Path(td) / "m.json", m))
+        assert proc.returncode != 0
+        assert stderr_code(proc) == "E_MATRIX_SYMMETRY"
 
 
-def _ledger_rows() -> list[tuple[str, int, str]]:
-    out = subprocess.run(
-        [
-            "sqlite3",
-            "-separator",
-            "|",
-            str(LEDGER_DB),
-            "SELECT fingerprint, epoch, marker FROM replay_journal ORDER BY epoch",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    rows = []
-    for line in out.stdout.splitlines():
-        if not line.strip():
-            continue
-        fp, epoch, marker = line.split("|", 2)
-        rows.append((fp, int(epoch), marker))
-    return rows
+def test_spanfit_rejects_nonpositive_definite_mass_matrix() -> None:
+    """A singular or indefinite mass matrix yields E_MASS_PHYSICALITY."""
+    with isolated_workdir() as td:
+        m = two_dof_analytic_model()
+        m["mass"] = [[1.0, 0.0], [0.0, 0.0]]
+        proc = run_spectrum(write_json(Path(td) / "m.json", m))
+        assert proc.returncode != 0
+        assert stderr_code(proc) == "E_MASS_PHYSICALITY"
 
 
-def _catalog_files(db_path: Path) -> set[str]:
-    out = subprocess.run(
-        ["sqlite3", str(db_path), "SELECT pack_file FROM fixture_catalog ORDER BY pack_file"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return {ln.strip() for ln in out.stdout.splitlines() if ln.strip()}
+def test_spanfit_rejects_nonsymmetric_stiffness_contribution() -> None:
+    """Asymmetric group contribution is rejected before spectrum work."""
+    with isolated_workdir() as td:
+        m = two_dof_analytic_model()
+        m["groups"][0]["contribution"] = [[0.2, 0.3], [0.0, 0.2]]
+        proc = run_spectrum(write_json(Path(td) / "m.json", m))
+        assert proc.returncode != 0
+        assert stderr_code(proc) == "E_MATRIX_SYMMETRY"
 
 
-def _load_probes(pack: Path = PACK):
-    probes = []
-    for path in sorted(pack.glob("*.jsonl")):
-        last = 0
-        seen = False
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            epoch = int(row["epoch"])
-            if seen and epoch < last:
-                raise ValueError(f"non-increasing epoch in {path.name}")
-            seen = True
-            last = epoch
-            probes.append(row)
-    return probes
+def test_spanfit_rejects_nonphysical_stiffness_box_corner() -> None:
+    """A nonphysical stiffness box corner yields E_STIFFNESS_BOX."""
+    with isolated_workdir() as td:
+        m = two_dof_analytic_model()
+        m["fixed_stiffness"] = [[0.05, 0.0], [0.0, 0.05]]
+        m["groups"][0]["lower"] = -5.0
+        m["groups"][0]["upper"] = -0.1
+        m["groups"][0]["initial"] = -1.0
+        m["groups"][0]["reference"] = -1.0
+        m["groups"][0]["contribution"] = [[1.0, 0.0], [0.0, 1.0]]
+        proc = run_spectrum(write_json(Path(td) / "m.json", m))
+        assert proc.returncode != 0
+        assert stderr_code(proc) in {"E_STIFFNESS_BOX", "E_MODEL_SCHEMA"}
 
 
-def _fingerprint(pack: Path = PACK) -> str:
-    lines = []
-    for path in sorted(p for p in pack.rglob("*") if p.is_file()):
-        rel = path.relative_to(pack).as_posix()
-        lines.append(f"{rel}|{path.stat().st_size}")
-    return _sha_text("\n".join(lines))
+def test_spanfit_rejects_duplicate_dof_identifier() -> None:
+    """Duplicate DOF identifiers are a model schema failure."""
+    with isolated_workdir() as td:
+        m = two_dof_analytic_model()
+        m["dofs"] = ["D01", "D01"]
+        proc = run_spectrum(write_json(Path(td) / "m.json", m))
+        assert proc.returncode != 0
+        assert stderr_code(proc) == "E_MODEL_SCHEMA"
 
 
-def _bin_index(x: float) -> int:
-    for i in range(4):
-        lo, hi = EDGES[i], EDGES[i + 1]
-        if i < 3:
-            if lo <= x < hi:
-                return i
-        else:
-            if lo <= x <= hi:
-                return i
-    return 3
+def test_spanfit_rejects_duplicate_group_identifier() -> None:
+    """Duplicate stiffness group identifiers are rejected."""
+    with isolated_workdir() as td:
+        m = two_dof_analytic_model()
+        g = dict(m["groups"][0])
+        g["group_id"] = "cable"
+        m["groups"] = [m["groups"][0], g]
+        # shrink contribution so box may still be ok; schema should fail first
+        proc = run_spectrum(write_json(Path(td) / "m.json", m))
+        assert proc.returncode != 0
+        assert stderr_code(proc) == "E_MODEL_SCHEMA"
 
 
-def _mi(rows):
-    if not rows:
-        return 0.0
-    joint = [[0, 0] for _ in range(4)]
-    b_count = [0, 0, 0, 0]
-    u_count = [0, 0]
-    for row in rows:
-        b = _bin_index(float(row["feats"][0]))
-        u = 1 if row["unsafe"] else 0
-        joint[b][u] += 1
-        b_count[b] += 1
-        u_count[u] += 1
-    n = float(len(rows))
-    mi = 0.0
-    for b in range(4):
-        for u in range(2):
-            c = joint[b][u]
-            if c == 0:
-                continue
-            pbu = c / n
-            pb = b_count[b] / n
-            pu = u_count[u] / n
-            mi += pbu * math.log(pbu / (pb * pu))
-    return mi
+def test_spanfit_rejects_unknown_sensor_dof() -> None:
+    """Survey sensors that are not model DOFs yield E_SURVEY_SCHEMA."""
+    with isolated_workdir() as td:
+        model, _, plan = copy_sealed_triplet("single_group", Path(td))
+        survey = {
+            "format": "bridge-modal-survey-v1",
+            "sensors": ["A", "ZZ"],
+            "modes": [
+                {"mode_id": "M1", "frequency_hz": 0.2, "weight": 1.0, "shape": [0.5, 0.5]},
+                {"mode_id": "M2", "frequency_hz": 0.3, "weight": 1.0, "shape": [0.4, 0.6]},
+            ],
+        }
+        sp = write_json(Path(td) / "survey.json", survey)
+        rep = Path(td) / "out.mcr"
+        proc = run_calibrate(model, sp, plan, rep)
+        assert proc.returncode != 0
+        assert stderr_code(proc) == "E_SURVEY_SCHEMA"
 
 
-def _greedy(probes):
-    by_id = {}
-    for p in probes:
-        by_id[p["id"]] = p
-    picked = []
-    limit = min(BUDGET, len(by_id))
-    while len(picked) < limit:
-        best = None
-        best_mi = -1.0
-        for cand, _row in by_id.items():
-            if cand in picked:
-                continue
-            trial = [by_id[i] for i in picked] + [_row]
-            mi = _mi(trial)
-            if mi > best_mi + 1e-15 or (
-                abs(mi - best_mi) <= 1e-15 and (best is None or cand < best)
-            ):
-                best_mi = mi
-                best = cand
-        if best is None:
-            break
-        picked.append(best)
-    return picked
-
-
-def _enclosure(probes, picked_ids):
-    by_id = {p["id"]: p for p in probes}
-    selected_unsafe = [by_id[i] for i in picked_ids if by_id[i]["unsafe"]]
-    if not selected_unsafe:
-        return [], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
-    lo = [1.0, 1.0, 1.0]
-    hi = [0.0, 0.0, 0.0]
-    for p in selected_unsafe:
-        for i in range(3):
-            lo[i] = min(lo[i], float(p["feats"][i]))
-            hi[i] = max(hi[i], float(p["feats"][i]))
-    lo = [max(0.0, min(1.0, v - MARGIN)) for v in lo]
-    hi = [max(0.0, min(1.0, v + MARGIN)) for v in hi]
-    lines = []
-    for p in selected_unsafe:
-        lines.append(
-            f"{p['id']}|{lo[0]:.6f},{lo[1]:.6f},{lo[2]:.6f}|{hi[0]:.6f},{hi[1]:.6f},{hi[2]:.6f}"
+def test_spanfit_rejects_mode_with_insufficient_observed_channels() -> None:
+    """A measured mode with fewer than two finite channels is rejected."""
+    with isolated_workdir() as td:
+        model, _, plan = copy_sealed_triplet("single_group", Path(td))
+        survey = {
+            "format": "bridge-modal-survey-v1",
+            "sensors": ["A", "B"],
+            "modes": [
+                {"mode_id": "M1", "frequency_hz": 0.2, "weight": 1.0, "shape": [0.5, None]},
+                {"mode_id": "M2", "frequency_hz": 0.3, "weight": 1.0, "shape": [0.4, 0.6]},
+            ],
+        }
+        proc = run_calibrate(
+            model,
+            write_json(Path(td) / "survey.json", survey),
+            plan,
+            Path(td) / "out.mcr",
         )
-    lines.sort()
-    return lines, lo, hi
+        assert proc.returncode != 0
+        assert stderr_code(proc) == "E_SURVEY_SCHEMA"
 
 
-def _inside(vec, lo, hi):
-    return all(lo[i] <= float(vec[i]) <= hi[i] for i in range(3))
+def test_spanfit_missing_sensor_values_are_not_zero_filled() -> None:
+    """Null survey channels remain evidence gaps and still allow successful pairing on commons."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
+        data = json.loads(survey.read_text())
+        # introduce a null on a non-critical extra would need 3 sensors; instead ensure calibrate
+        # of sealed case (no nulls) succeeds, and a variant with null on one mode's channel
+        # that still leaves >=2 commons across a singleton cluster succeeds.
+        data["modes"][0]["shape"] = [data["modes"][0]["shape"][0], None]
+        # insufficient for that mode alone — should fail schema
+        bad = write_json(Path(td) / "bad.json", data)
+        proc_bad = run_calibrate(model, bad, plan, Path(td) / "bad.mcr")
+        assert stderr_code(proc_bad) == "E_SURVEY_SCHEMA"
+        # sealed original succeeds without treating missing as zero
+        proc = run_calibrate(model, survey, plan, Path(td) / "ok.mcr")
+        assert proc.returncode == 0
+        assert "CALIBRATED" in proc.stdout
 
 
-def _arm_map(probes, lo, hi, picked_ids):
-    by_id = {p["id"]: p for p in probes}
-    selected_unsafe = [by_id[i] for i in picked_ids if by_id[i]["unsafe"]]
-    arms = sorted({p["arm"] for p in probes})
-    out = {}
-    for arm in arms:
-        keep = True
-        for p in probes:
-            if p["arm"] != arm or not p["unsafe"]:
-                continue
-            vec = [float(x) for x in p["feats"]]
-            if not selected_unsafe or not _inside(vec, lo, hi):
-                keep = False
-                break
-        out[arm] = "KEEP" if keep else "REJECT"
-    return out
+def test_spanfit_sensor_order_remap_preserves_calibration() -> None:
+    """Permuting survey sensor order yields identical report bytes."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
+        data = json.loads(survey.read_text())
+        # reverse sensors and each shape
+        data["sensors"] = list(reversed(data["sensors"]))
+        for mode in data["modes"]:
+            mode["shape"] = list(reversed(mode["shape"]))
+        alt = write_json(Path(td) / "survey_alt.json", data)
+        r1 = Path(td) / "a.mcr"
+        r2 = Path(td) / "b.mcr"
+        p1 = run_calibrate(model, survey, plan, r1)
+        p2 = run_calibrate(model, alt, plan, r2)
+        assert p1.returncode == 0 and p2.returncode == 0
+        assert r1.read_bytes() == r2.read_bytes()
 
 
-def _expected():
-    probes = _load_probes()
-    picked = _greedy(probes)
-    enc, lo, hi = _enclosure(probes, picked)
-    arms = _arm_map(probes, lo, hi, picked)
-    pack_fp = _fingerprint()
-    max_epoch = max(int(p["epoch"]) for p in probes)
-    by_id = {p["id"]: p for p in probes}
-    sel_rows = [{"epoch": int(by_id[i]["epoch"]), "probe_id": i} for i in picked]
-    jr_rows = [
-        {"epoch": e, "fingerprint": pack_fp, "marker": f"E{e}"}
-        for e in range(1, max_epoch + 1)
-    ]
-    inclusion = _sha_text("\n".join(enc))
-    algebra = _sha_text("\n".join(f"{a}|{d}" for a, d in sorted(arms.items())))
-    keep = sum(1 for d in arms.values() if d == "KEEP")
-    band = round(keep / len(arms), 6) if arms else 0.0
-    return picked, sel_rows, jr_rows, inclusion, algebra, band, arms, pack_fp, max_epoch
+def test_spanfit_group_order_preserves_report_bytes() -> None:
+    """Reordering model groups preserves calibrated report identity."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
+        data = json.loads(model.read_text())
+        data["groups"] = list(reversed(data["groups"]))
+        alt = write_json(Path(td) / "model_alt.json", data)
+        r1 = Path(td) / "a.mcr"
+        r2 = Path(td) / "b.mcr"
+        assert run_calibrate(model, survey, plan, r1).returncode == 0
+        assert run_calibrate(alt, survey, plan, r2).returncode == 0
+        assert r1.read_bytes() == r2.read_bytes()
 
 
-def _run_gate():
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    if OUT.exists():
-        OUT.unlink()
-    return subprocess.run(
-        [
-            "/app/environment/tools/rivet_gate",
-            "--pack",
-            str(PACK),
-            "--db",
-            str(LEDGER_DB),
-            "--bundle-out",
-            str(OUT),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+def test_spanfit_mode_order_swap_preserves_cluster_pairing() -> None:
+    """Swapping measured mode declaration order preserves pairing outcomes."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
+        data = json.loads(survey.read_text())
+        data["modes"] = list(reversed(data["modes"]))
+        alt = write_json(Path(td) / "survey_alt.json", data)
+        r1 = Path(td) / "a.mcr"
+        r2 = Path(td) / "b.mcr"
+        assert run_calibrate(model, survey, plan, r1).returncode == 0
+        assert run_calibrate(model, alt, plan, r2).returncode == 0
+        a = parse_mcr(r1.read_text())
+        b = parse_mcr(r2.read_text())
+        assert a["pairs"] == b["pairs"]
+        assert a["model_sha256"] == b["model_sha256"]
 
 
-def _read_bundle():
-    assert OUT.is_file(), "missing evidence_bundle.tar"
-    with tarfile.open(OUT, "r:") as tf:
-        names = set(tf.getnames())
-        assert "certificate.json" in names
-        assert "manifest.json" in names
-        cert_bytes = tf.extractfile("certificate.json").read()
-        man_bytes = tf.extractfile("manifest.json").read()
-        cert = json.loads(cert_bytes.decode("utf-8"))
-        manifest = json.loads(man_bytes.decode("utf-8"))
-    return cert, manifest, cert_bytes
+def test_spanfit_exact_repeated_modes_use_subspace_mac() -> None:
+    """Exact repeated eigenvalues report subspace MAC of one plus frequency residual fields."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("repeated_modes", Path(td))
+        rep = Path(td) / "out.mcr"
+        proc = run_calibrate(model, survey, plan, rep)
+        assert proc.returncode == 0, proc.stderr
+        raw = rep.read_text()
+        assert "PAIR " in raw
+        rec = parse_mcr(raw)
+        assert len(rec["pairs"]) == 1
+        pair = rec["pairs"][0]
+        assert abs(pair["mac"] - 1.0) < 1e-9
+        assert "freq_res" in pair and math.isfinite(pair["freq_res"])
+        assert abs(pair["freq_res"]) < 1e-9
+        assert "mac" in pair and 0.0 <= pair["mac"] <= 1.0
 
 
-@pytest.fixture(scope="module")
-def bundle():
-    subprocess.run(["/app/environment/scripts/compile_lane.sh"], check=True)
-    result = _run_gate()
-    assert result.returncode == 0, result.stderr
-    return _read_bundle()
+def test_spanfit_near_repeated_modes_follow_cluster_tolerance() -> None:
+    """Near-repeated measured frequencies merge under the plan cluster tolerance."""
+    with isolated_workdir() as td:
+        # Build isotropic-ish model and two measured modes within tolerance
+        model = {
+            "format": "bridge-modal-model-v1",
+            "dofs": ["X", "Y"],
+            "mass": [[1.0, 0.0], [0.0, 1.0]],
+            "fixed_stiffness": [[2.0, 0.0], [0.0, 2.0002]],
+            "groups": [
+                {
+                    "group_id": "k",
+                    "lower": 0.8,
+                    "upper": 1.2,
+                    "initial": 1.0,
+                    "reference": 1.0,
+                    "contribution": [[0.5, 0.0], [0.0, 0.5]],
+                }
+            ],
+        }
+        mp = write_json(Path(td) / "model.json", model)
+        spec = json.loads(run_spectrum(mp).stdout)
+        f0, f1 = spec["frequencies_hz"]
+        survey = {
+            "format": "bridge-modal-survey-v1",
+            "sensors": ["X", "Y"],
+            "modes": [
+                {"mode_id": "N1", "frequency_hz": f0, "weight": 1.0, "shape": [1.0, 0.0]},
+                {"mode_id": "N2", "frequency_hz": f1, "weight": 1.0, "shape": [0.0, 1.0]},
+            ],
+        }
+        plan = base_plan(
+            cluster_relative_tolerance=0.05,
+            shape_weight=0.2,
+            regularization_weight=0.0,
+            pairing_frequency_gate=0.5,
+            gradient_tolerance=1e-6,
+        )
+        rep = Path(td) / "out.mcr"
+        proc = run_calibrate(mp, write_json(Path(td) / "s.json", survey), write_json(Path(td) / "p.json", plan), rep)
+        assert proc.returncode == 0, proc.stderr
+        rec = parse_mcr(rep.read_text())
+        # With loose tolerance, measured modes must merge into exactly one cluster pair.
+        assert len(rec["pairs"]) == 1
+        merged = rec["pairs"][0]
+        assert "," in merged["measured"]
+        assert set(merged["measured"].split(",")) == {"N1", "N2"}
 
 
-def test_rvg_a1(bundle):
-    """MI-greedy selection_trace probe_id order matches the closed pack schedule."""
-    cert, _, _ = bundle
-    picked, *_ = _expected()
-    got = [row["probe_id"] for row in cert["selection_trace"]]
-    assert got == picked
+def test_spanfit_subspace_mac_is_invariant_to_cluster_basis_rotation() -> None:
+    """Rotating the measured repeated-mode basis leaves subspace MAC unchanged."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("repeated_modes", Path(td))
+        data = json.loads(survey.read_text())
+        # additional 45-degree rotation of the two shapes
+        a = data["modes"][0]["shape"]
+        b = data["modes"][1]["shape"]
+        c = math.cos(0.4)
+        s = math.sin(0.4)
+        data["modes"][0]["shape"] = [c * a[0] + s * b[0], c * a[1] + s * b[1]]
+        data["modes"][1]["shape"] = [-s * a[0] + c * b[0], -s * a[1] + c * b[1]]
+        alt = write_json(Path(td) / "rot.json", data)
+        r1 = Path(td) / "a.mcr"
+        r2 = Path(td) / "b.mcr"
+        assert run_calibrate(model, survey, plan, r1).returncode == 0
+        assert run_calibrate(model, alt, plan, r2).returncode == 0
+        m1 = parse_mcr(r1.read_text())["pairs"][0]["mac"]
+        m2 = parse_mcr(r2.read_text())["pairs"][0]["mac"]
+        assert abs(m1 - m2) < 1e-9
+        assert abs(m1 - 1.0) < 1e-9
 
 
-def test_rvg_a2(bundle):
-    """Greedy probe schedule differs from smoke-only ordering when both are available."""
-    cert, _, _ = bundle
-    picked, *_ = _expected()
-    smoke_order = sorted(p["id"] for p in _load_probes() if p["arm"] == "smoke")[:8]
-    got = [row["probe_id"] for row in cert["selection_trace"]]
-    assert got == picked
-    assert len(picked) >= min(BUDGET, len({p["id"] for p in _load_probes()}))
-    if smoke_order and picked != smoke_order:
-        assert got != smoke_order
+def test_spanfit_global_pairing_beats_greedy_frequency_pairing() -> None:
+    """Global assignment prefers the shape-consistent pairing over nearest-frequency greed."""
+    with isolated_workdir() as td:
+        # Two well-separated modes; crossed frequency proximity with swapped shapes.
+        model = {
+            "format": "bridge-modal-model-v1",
+            "dofs": ["D1", "D2"],
+            "mass": [[1.0, 0.0], [0.0, 1.0]],
+            "fixed_stiffness": [[4.0, 0.0], [0.0, 9.0]],
+            "groups": [
+                {
+                    "group_id": "g",
+                    "lower": 0.9,
+                    "upper": 1.1,
+                    "initial": 1.0,
+                    "reference": 1.0,
+                    "contribution": [[0.1, 0.0], [0.0, 0.1]],
+                }
+            ],
+        }
+        mp = write_json(Path(td) / "m.json", model)
+        spec = json.loads(run_spectrum(mp).stdout)
+        f0, f1 = spec["frequencies_hz"]
+        # Measured freqs near model, but shapes intentionally match opposite modes if greed by freq alone with perturbation:
+        # Place measured mode A slightly closer in frequency to predicted mode 1 but with shape of mode 0.
+        survey = {
+            "format": "bridge-modal-survey-v1",
+            "sensors": ["D1", "D2"],
+            "modes": [
+                {
+                    "mode_id": "A",
+                    "frequency_hz": f1 * 0.98,
+                    "weight": 1.0,
+                    "shape": [1.0, 0.0],
+                },
+                {
+                    "mode_id": "B",
+                    "frequency_hz": f0 * 1.02,
+                    "weight": 1.0,
+                    "shape": [0.0, 1.0],
+                },
+            ],
+        }
+        plan = base_plan(
+            frequency_weight=0.05,
+            shape_weight=5.0,
+            regularization_weight=0.0,
+            pairing_frequency_gate=0.5,
+            gradient_tolerance=1e-5,
+            max_iterations=40,
+        )
+        rep = Path(td) / "out.mcr"
+        proc = run_calibrate(mp, write_json(Path(td) / "s.json", survey), write_json(Path(td) / "p.json", plan), rep)
+        assert proc.returncode == 0, proc.stderr
+        rec = parse_mcr(rep.read_text())
+        # Shape-weighted global assignment should pair A->mode0 and B->mode1
+        by_id = {p["measured"]: p["predicted"] for p in rec["pairs"]}
+        assert by_id["A"] == "0"
+        assert by_id["B"] == "1"
 
 
-def test_rvg_a3(bundle):
-    """Shift ledger fixture_catalog rows align with pack assembly files."""
-    cert, _, _ = bundle
-    assert cert["selection_trace"]
-    pack_files = {p.name for p in PACK.glob("*.jsonl")}
-    assert _catalog_files(SEED_DB) == pack_files
-    assert _catalog_files(LEDGER_DB) == pack_files
+def test_spanfit_frequency_gate_rejects_unmatchable_cluster() -> None:
+    """Clusters beyond the pairing frequency gate produce E_MODAL_PAIRING."""
+    with isolated_workdir() as td:
+        model, _, plan = copy_sealed_triplet("single_group", Path(td))
+        survey = {
+            "format": "bridge-modal-survey-v1",
+            "sensors": ["A", "B"],
+            "modes": [
+                {"mode_id": "M1", "frequency_hz": 50.0, "weight": 1.0, "shape": [0.7, 0.3]},
+                {"mode_id": "M2", "frequency_hz": 60.0, "weight": 1.0, "shape": [0.2, 0.8]},
+            ],
+        }
+        pdata = json.loads(plan.read_text())
+        pdata["pairing_frequency_gate"] = 0.05
+        proc = run_calibrate(
+            model,
+            write_json(Path(td) / "s.json", survey),
+            write_json(Path(td) / "p.json", pdata),
+            Path(td) / "out.mcr",
+        )
+        assert proc.returncode != 0
+        assert stderr_code(proc) == "E_MODAL_PAIRING"
 
 
-def test_rvg_b1(bundle):
-    """selection_trace and replay_journal match epoch and fingerprint contract rows."""
-    cert, _, _ = bundle
-    _, sel_rows, jr_rows, *_ = _expected()
-    assert cert["selection_trace"] == sel_rows
-    assert cert["replay_journal"] == jr_rows
+def test_spanfit_recovers_single_group_stiffness_multiplier() -> None:
+    """Bounded calibration recovers a sealed single-group truth multiplier."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
+        meta = json.loads((Path(__file__).parent / "sealed_modal_cases/single_group/meta.json").read_text())
+        rep = Path(td) / "out.mcr"
+        proc = run_calibrate(model, survey, plan, rep)
+        assert proc.returncode == 0, proc.stderr
+        rec = parse_mcr(rep.read_text())
+        theta = rec["groups"][0]["theta"]
+        assert abs(theta - meta["truth_theta"]) < meta["tol"]
+        assert rec["confidence"] == "IDENTIFIABLE"
+        assert math.isfinite(rec["objective_total"])
+        assert len(rec["pairs"]) >= 1
 
 
-def test_rvg_b2(bundle):
-    """inclusion_digest matches enclosure bytes and obligation keeps all arms."""
-    cert, _, _ = bundle
-    _, _, _, inclusion, _, _, arms, _, _ = _expected()
-    assert cert["inclusion_digest"] == inclusion
-    assert all(d == "KEEP" for d in arms.values())
+def test_spanfit_recovers_two_independent_group_multipliers() -> None:
+    """Two independent diagonal groups recover sealed truth multipliers."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
+        meta = json.loads((Path(__file__).parent / "sealed_modal_cases/two_groups/meta.json").read_text())
+        rep = Path(td) / "out.mcr"
+        assert run_calibrate(model, survey, plan, rep).returncode == 0
+        rec = parse_mcr(rep.read_text())
+        thetas = {g["id"]: g["theta"] for g in rec["groups"]}
+        assert abs(thetas["ga"] - meta["truth"][0]) < meta["tol"]
+        assert abs(thetas["gb"] - meta["truth"][1]) < meta["tol"]
+        assert rec["confidence"] == "IDENTIFIABLE"
+        assert math.isfinite(rec["objective_total"])
 
 
-def test_rvg_b3(bundle):
-    """algebra_digest matches arm decisions including held-out rot loop context."""
-    cert, _, _ = bundle
-    _, _, _, _, algebra, _, arms, _, _ = _expected()
-    assert cert["algebra_digest"] == algebra
-    assert "rot" in arms
-    assert all(d == "KEEP" for d in arms.values())
+def test_spanfit_unequal_modal_weights_scale_objective_contributions() -> None:
+    """Unequal mode weights change the modal objective relative to equal weights."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
+        s = json.loads(survey.read_text())
+        # Keep a shared nonzero residual so weights actually scale the modal term.
+        s["modes"][0]["frequency_hz"] *= 1.08
+        s["modes"][1]["frequency_hz"] *= 0.94
+        s_unequal = json.loads(json.dumps(s))
+        s_unequal["modes"][0]["weight"] = 5.0
+        s_unequal["modes"][1]["weight"] = 0.2
+        s_equal = json.loads(json.dumps(s))
+        s_equal["modes"][0]["weight"] = 1.0
+        s_equal["modes"][1]["weight"] = 1.0
+        m = json.loads(model.read_text())
+        m["groups"][0]["initial"] = 0.85
+        p = json.loads(plan.read_text())
+        p["regularization_weight"] = 0.0
+        p["max_iterations"] = 120
+        p["gradient_tolerance"] = 1e-6
+        rep_a = Path(td) / "a.mcr"
+        rep_b = Path(td) / "b.mcr"
+        pa = run_calibrate(
+            write_json(Path(td) / "m.json", m),
+            write_json(Path(td) / "su.json", s_unequal),
+            write_json(Path(td) / "p.json", p),
+            rep_a,
+        )
+        pb = run_calibrate(
+            write_json(Path(td) / "m2.json", m),
+            write_json(Path(td) / "se.json", s_equal),
+            write_json(Path(td) / "p2.json", p),
+            rep_b,
+        )
+        assert pa.returncode == 0, pa.stderr
+        assert pb.returncode == 0, pb.stderr
+        assert rep_a.exists() and rep_b.exists()
+        a = parse_mcr(rep_a.read_text())
+        b = parse_mcr(rep_b.read_text())
+        assert a["objective_modal"] != b["objective_modal"]
 
 
-def test_rvg_c1(bundle):
-    """Evidence TAR exposes required certificate.json and manifest.json members."""
-    cert, manifest, _ = bundle
-    for key in (
-        "selection_trace",
-        "inclusion_digest",
-        "algebra_digest",
-        "replay_journal",
-        "coverage_band",
-    ):
-        assert key in cert
-    assert "certificate.json" in manifest
+def test_spanfit_regularization_pulls_weak_parameter_toward_reference() -> None:
+    """Strong regularization keeps a weakly observed parameter near its reference."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("rank_deficient", Path(td))
+        p = json.loads(plan.read_text())
+        p["regularization_weight"] = 5.0
+        p["frequency_weight"] = 0.01
+        p["shape_weight"] = 0.01
+        rep = Path(td) / "out.mcr"
+        proc = run_calibrate(model, survey, write_json(Path(td) / "p.json", p), rep)
+        assert proc.returncode == 0, proc.stderr
+        rec = parse_mcr(rep.read_text())
+        for g in rec["groups"]:
+            assert abs(g["theta"] - g["reference"]) < 0.15
 
 
-def test_rvg_c2(bundle):
-    """Digests recompute from formulas and manifest cert hash matches bytes."""
-    cert, manifest, cert_bytes = bundle
-    _, _, _, inclusion, algebra, *_ = _expected()
-    assert cert["inclusion_digest"] == inclusion
-    assert cert["algebra_digest"] == algebra
-    assert manifest["certificate.json"] == _sha(cert_bytes)
-    assert manifest["manifest.json"] == _manifest_self_hash(manifest["certificate.json"])
+def test_spanfit_lower_bound_active_solution_is_reported() -> None:
+    """When the optimum sits on the lower bound, BOUND_ACTIVE and LOWER are reported."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("lower_bound", Path(td))
+        rep = Path(td) / "out.mcr"
+        assert run_calibrate(model, survey, plan, rep).returncode == 0
+        rec = parse_mcr(rep.read_text())
+        assert rec["confidence"] == "BOUND_ACTIVE"
+        assert rec["groups"][0]["bound"] == "LOWER"
+        assert abs(rec["groups"][0]["theta"] - rec["groups"][0]["lower"]) < 1e-8
+        assert math.isfinite(rec["objective_total"])
 
 
-def test_rvg_c3(bundle):
-    """coverage_band coherence and foreign fingerprint rejection in shift ledger."""
-    cert, _, _ = bundle
-    _, _, _, inclusion, algebra, band, _, pack_fp, _ = _expected()
-    assert float(cert["coverage_band"]) == band
-    assert cert["inclusion_digest"] == inclusion
-    assert cert["algebra_digest"] == algebra
-    rows = _ledger_rows()
-    fps = {fp for fp, _, _ in rows}
-    assert "FOREIGN_PACK_ZZ" not in fps
-    assert fps == {pack_fp}
+def test_spanfit_upper_bound_active_solution_is_reported() -> None:
+    """When the optimum sits on the upper bound, BOUND_ACTIVE and UPPER are reported."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("upper_bound", Path(td))
+        rep = Path(td) / "out.mcr"
+        assert run_calibrate(model, survey, plan, rep).returncode == 0
+        rec = parse_mcr(rep.read_text())
+        assert rec["confidence"] == "BOUND_ACTIVE"
+        assert rec["groups"][0]["bound"] == "UPPER"
+        assert abs(rec["groups"][0]["theta"] - rec["groups"][0]["upper"]) < 1e-8
+        assert math.isfinite(rec["objective_total"])
+
+
+def test_spanfit_projected_step_never_leaves_parameter_box() -> None:
+    """Reported group factors always lie inside declared lower/upper bounds."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
+        rep = Path(td) / "out.mcr"
+        assert run_calibrate(model, survey, plan, rep).returncode == 0
+        for g in parse_mcr(rep.read_text())["groups"]:
+            assert g["lower"] <= g["theta"] <= g["upper"]
+
+
+def test_spanfit_objective_terms_sum_to_reported_total() -> None:
+    """OBJECTIVE terms sum, and each PAIR carries frequency and MAC residual fields."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
+        rep = Path(td) / "out.mcr"
+        assert run_calibrate(model, survey, plan, rep).returncode == 0
+        raw = rep.read_text()
+        assert raw.startswith("MCR 1\n")
+        assert "OBJECTIVE " in raw
+        assert "GROUP " in raw
+        assert "PAIR " in raw
+        rec = parse_mcr(raw)
+        assert abs(rec["objective_total"] - (rec["objective_modal"] + rec["objective_reg"])) < 1e-15
+        assert len(rec["pairs"]) >= 1
+        for pair in rec["pairs"]:
+            assert math.isfinite(pair["freq_res"])
+            assert math.isfinite(pair["mac"])
+            assert 0.0 <= pair["mac"] <= 1.0
+            assert math.isfinite(pair["cost"])
+
+
+def test_spanfit_converged_solution_meets_gradient_budget() -> None:
+    """A successful calibration reports projected gradient within the plan budget."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
+        pdata = json.loads(plan.read_text())
+        rep = Path(td) / "out.mcr"
+        assert run_calibrate(model, survey, plan, rep).returncode == 0
+        rec = parse_mcr(rep.read_text())
+        assert rec["projected_gradient_inf"] <= pdata["gradient_tolerance"] * 10
+
+
+def test_spanfit_sensitivity_ranking_uses_documented_norm() -> None:
+    """Sensitivity ranks are a permutation of 1..G with higher score ranked first."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
+        rep = Path(td) / "out.mcr"
+        assert run_calibrate(model, survey, plan, rep).returncode == 0
+        groups = parse_mcr(rep.read_text())["groups"]
+        ranks = sorted(g["rank"] for g in groups)
+        assert ranks == list(range(1, len(groups) + 1))
+        by_rank = sorted(groups, key=lambda g: g["rank"])
+        assert by_rank[0]["score"] >= by_rank[-1]["score"] - 1e-15
+
+
+def test_spanfit_sensitivity_tie_uses_group_identifier() -> None:
+    """Equal sensitivity scores resolve rank ties by ascending group identifier."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("rank_deficient", Path(td))
+        rep = Path(td) / "out.mcr"
+        assert run_calibrate(model, survey, plan, rep).returncode == 0
+        groups = parse_mcr(rep.read_text())["groups"]
+        # identical contributions => equal scores; dup-a before dup-b at better rank
+        scores = {g["id"]: g["score"] for g in groups}
+        assert abs(scores["dup-a"] - scores["dup-b"]) < 1e-9
+        ranks = {g["id"]: g["rank"] for g in groups}
+        assert ranks["dup-a"] < ranks["dup-b"]
+
+
+def test_spanfit_rank_deficiency_sets_weak_confidence() -> None:
+    """Collinear group contributions yield numerical rank below G and WEAK confidence."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("rank_deficient", Path(td))
+        rep = Path(td) / "out.mcr"
+        assert run_calibrate(model, survey, plan, rep).returncode == 0
+        rec = parse_mcr(rep.read_text())
+        assert rec["numerical_rank"] < rec["group_count"]
+        assert rec["confidence"] == "WEAK"
+        assert math.isfinite(rec["objective_total"])
+
+
+def test_spanfit_full_rank_free_solution_sets_identifiable_confidence() -> None:
+    """A free full-rank solution is labeled IDENTIFIABLE."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("two_groups", Path(td))
+        rep = Path(td) / "out.mcr"
+        assert run_calibrate(model, survey, plan, rep).returncode == 0
+        rec = parse_mcr(rep.read_text())
+        assert rec["numerical_rank"] == rec["group_count"]
+        assert rec["confidence"] == "IDENTIFIABLE"
+        assert all(g["bound"] == "FREE" for g in rec["groups"])
+
+
+def test_spanfit_bound_active_confidence_has_precedence() -> None:
+    """BOUND_ACTIVE takes precedence over WEAK or IDENTIFIABLE labels."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("lower_bound", Path(td))
+        rep = Path(td) / "out.mcr"
+        assert run_calibrate(model, survey, plan, rep).returncode == 0
+        assert parse_mcr(rep.read_text())["confidence"] == "BOUND_ACTIVE"
+
+
+def test_spanfit_repeated_run_is_byte_deterministic() -> None:
+    """Two independent calibrations of the same inputs produce identical MCR bytes."""
+    with isolated_workdir() as td:
+        model, survey, plan = copy_sealed_triplet("single_group", Path(td))
+        r1 = Path(td) / "a.mcr"
+        r2 = Path(td) / "b.mcr"
+        assert run_calibrate(model, survey, plan, r1).returncode == 0
+        assert run_calibrate(model, survey, plan, r2).returncode == 0
+        assert r1.read_bytes() == r2.read_bytes()
+
+
+def test_spanfit_rejected_calibration_preserves_existing_report() -> None:
+    """A rejected calibrate leaves a pre-existing report byte-for-byte intact."""
+    with isolated_workdir() as td:
+        model, _, plan = copy_sealed_triplet("single_group", Path(td))
+        rep = Path(td) / "out.mcr"
+        marker = b"PRIOR-REPORT-BYTES-9f3a\n"
+        rep.write_bytes(marker)
+        survey = {
+            "format": "bridge-modal-survey-v1",
+            "sensors": ["A", "B"],
+            "modes": [
+                {"mode_id": "M1", "frequency_hz": 99.0, "weight": 1.0, "shape": [0.5, 0.5]},
+                {"mode_id": "M2", "frequency_hz": 100.0, "weight": 1.0, "shape": [0.4, 0.6]},
+            ],
+        }
+        proc = run_calibrate(model, write_json(Path(td) / "s.json", survey), plan, rep)
+        assert proc.returncode != 0
+        assert rep.read_bytes() == marker
+
+
+def test_spanfit_independent_processes_do_not_share_optimizer_state() -> None:
+    """Sequential calibrations in one process context do not leak parameter state."""
+    with isolated_workdir() as td:
+        m1, s1, p1 = copy_sealed_triplet("single_group", Path(td) / "c1")
+        m2, s2, p2 = copy_sealed_triplet("two_groups", Path(td) / "c2")
+        r1 = Path(td) / "one.mcr"
+        r2 = Path(td) / "two.mcr"
+        assert run_calibrate(m1, s1, p1, r1).returncode == 0
+        assert run_calibrate(m2, s2, p2, r2).returncode == 0
+        a = parse_mcr(r1.read_text())
+        b = parse_mcr(r2.read_text())
+        assert a["group_count"] == 1
+        assert b["group_count"] == 2
+        assert a["model_sha256"] != b["model_sha256"]

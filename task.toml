@@ -4,24 +4,32 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "system-administration"
-tags = ["ruby", "release-recovery", "state-reconciliation", "shift-ledger", "fairness-forecast", "step-pmi"]
-languages = ["ruby", "bash"]
-codebase_size = "small"
+category = "scientific-computing"
+subcategories = []
 number_of_milestones = 0
-subcategories = ["db_interaction"]
+codebase_size = "large"
+languages = ["rust"]
+tags = [
+    "bridge-modal-calibration",
+    "eigenmode-pairing-analysis",
+    "bounded-stiffness-inversion",
+    "mac-objective-qualification"
+]
 expert_time_estimate_min = 180
-junior_time_estimate_min = 480
-
-[agent]
-timeout_sec = 1800
+junior_time_estimate_min = 360
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 1800.0
 
 [environment]
-allow_internet = false
-build_timeout_sec = 600
-cpus = 2
-memory_mb = 4096
+build_timeout_sec = 600.0
+docker_flags = []
+cpus = 1
+memory_mb = 2048
 storage_mb = 10240
+gpus = 0
+gpu_types = []
+allow_internet = false

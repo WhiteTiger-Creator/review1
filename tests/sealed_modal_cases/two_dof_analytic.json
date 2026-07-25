@@ -1,0 +1,79 @@
+{
+  "model": {
+    "format": "bridge-modal-model-v1",
+    "dofs": [
+      "D01",
+      "D02"
+    ],
+    "mass": [
+      [
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0
+      ]
+    ],
+    "fixed_stiffness": [
+      [
+        2.0,
+        -1.0
+      ],
+      [
+        -1.0,
+        2.0
+      ]
+    ],
+    "groups": [
+      {
+        "group_id": "cable",
+        "lower": 0.5,
+        "upper": 1.5,
+        "initial": 1.0,
+        "reference": 1.0,
+        "contribution": [
+          [
+            0.2,
+            0.0
+          ],
+          [
+            0.0,
+            0.2
+          ]
+        ]
+      }
+    ]
+  },
+  "expected_frequencies_hz": [
+    0.17434550493976417,
+    0.2847050173668708
+  ],
+  "spectrum_fingerprint": {
+    "model_sha256": "24302a15ef01fc9aea4fa96fbcbd8d1572b38fbf7d393af0ed960d38485c367a",
+    "dof_count": 2,
+    "group_count": 1,
+    "initial_group_values": [
+      1
+    ],
+    "positive_eigenvalue_count": 2,
+    "frequencies_hz": [
+      0.1743455049397642,
+      0.2847050173668708
+    ],
+    "clusters": [
+      {
+        "ordinals": [
+          0
+        ],
+        "centroid_hz": 0.1743455049397642
+      },
+      {
+        "ordinals": [
+          1
+        ],
+        "centroid_hz": 0.2847050173668708
+      }
+    ]
+  }
+}
