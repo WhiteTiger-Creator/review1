@@ -1,0 +1,211 @@
+{
+  "packages": {
+    "debug": {
+      "4.3.3": {
+        "license": "MIT",
+        "integrity": "sha512-debug433",
+        "tarball": "https://mirror.local/debug/-/debug-4.3.3.tgz",
+        "engines": { "node": ">=12.0.0" },
+        "dependencies": { "ms": "2.1.2" }
+      },
+      "4.3.5": {
+        "license": "MIT",
+        "integrity": "sha512-debug435",
+        "tarball": "https://mirror.local/debug/-/debug-4.3.5.tgz",
+        "engines": { "node": ">=14.0.0 <23.0.0" },
+        "dependencies": { "ms": "2.1.3" }
+      },
+      "5.0.0": {
+        "license": "MIT",
+        "integrity": "sha512-debug500",
+        "tarball": "https://mirror.local/debug/-/debug-5.0.0.tgz",
+        "engines": { "node": ">=22.0.0" },
+        "dependencies": { "ms": "^3.0.0" }
+      }
+    },
+    "ansi-regex": {
+      "5.0.1": {
+        "license": "MIT",
+        "integrity": "sha512-ansi501",
+        "tarball": "https://mirror.local/ansi-regex/-/ansi-regex-5.0.1.tgz",
+        "engines": { "node": ">=10.0.0" },
+        "dependencies": {}
+      },
+      "6.0.1": {
+        "license": "MIT",
+        "integrity": "sha512-ansi601",
+        "tarball": "https://mirror.local/ansi-regex/-/ansi-regex-6.0.1.tgz",
+        "engines": { "node": ">=12.0.0" },
+        "dependencies": {}
+      },
+      "6.1.0": {
+        "license": "MIT",
+        "integrity": "sha512-ansi610",
+        "tarball": "https://cdn.badmirror.test/ansi-regex-6.1.0.tgz",
+        "engines": { "node": ">=18.0.0" },
+        "dependencies": {}
+      }
+    },
+    "left-pad": {
+      "1.1.3": {
+        "license": "WTFPL",
+        "integrity": "sha512-left113",
+        "tarball": "https://mirror.local/left-pad/-/left-pad-1.1.3.tgz",
+        "engines": { "node": ">=6.0.0" },
+        "dependencies": {}
+      },
+      "1.3.0": {
+        "license": "MIT",
+        "integrity": "sha512-left130",
+        "tarball": "https://mirror.local/left-pad/-/left-pad-1.3.0.tgz",
+        "engines": { "node": ">=6.0.0" },
+        "dependencies": {}
+      }
+    },
+    "ms": {
+      "2.1.1": {
+        "license": "MIT",
+        "integrity": "sha512-ms211",
+        "tarball": "https://mirror.local/ms/-/ms-2.1.1.tgz",
+        "engines": { "node": ">=6.0.0" },
+        "dependencies": {}
+      },
+      "2.1.2": {
+        "license": "MIT",
+        "integrity": "sha512-ms212",
+        "tarball": "https://mirror.local/ms/-/ms-2.1.2.tgz",
+        "engines": { "node": ">=6.0.0" },
+        "dependencies": {}
+      },
+      "2.1.3": {
+        "license": "MIT",
+        "integrity": "sha512-ms213",
+        "tarball": "https://mirror.local/ms/-/ms-2.1.3.tgz",
+        "engines": { "node": ">=6.0.0" },
+        "dependencies": {}
+      },
+      "2.2.0-beta.1": {
+        "license": "MIT",
+        "integrity": "sha512-ms220b1",
+        "tarball": "https://mirror.local/ms/-/ms-2.2.0-beta.1.tgz",
+        "engines": { "node": ">=6.0.0" },
+        "dependencies": {}
+      }
+    },
+    "jsonwebtoken": {
+      "9.0.0": {
+        "license": "MIT",
+        "integrity": "sha512-jwt900",
+        "tarball": "https://mirror.local/jsonwebtoken/-/jsonwebtoken-9.0.0.tgz",
+        "engines": { "node": ">=12.0.0" },
+        "dependencies": { "jws": "^3.2.2" },
+        "peerDependencies": { "crypto-helper": "^1.0.0" }
+      },
+      "9.0.2": {
+        "license": "MIT",
+        "integrity": "sha512-jwt902",
+        "tarball": "https://mirror.local/jsonwebtoken/-/jsonwebtoken-9.0.2.tgz",
+        "engines": { "node": ">=12.0.0" },
+        "dependencies": { "jws": "^3.2.2" },
+        "peerDependencies": { "crypto-helper": "^1.0.0" }
+      }
+    },
+    "jws": {
+      "3.2.2": {
+        "license": "MIT",
+        "integrity": "sha512-jws322",
+        "tarball": "https://mirror.local/jws/-/jws-3.2.2.tgz",
+        "engines": { "node": ">=8.0.0" },
+        "dependencies": { "jwa": "^1.4.1" }
+      },
+      "3.2.3": {
+        "license": "MIT",
+        "integrity": "sha512-jws323",
+        "tarball": "https://mirror.local/jws/-/jws-3.2.3.tgz",
+        "engines": { "node": ">=8.0.0" },
+        "yanked": true,
+        "dependencies": { "jwa": "^1.4.1" }
+      }
+    },
+    "jwa": {
+      "1.4.1": {
+        "license": "MIT",
+        "integrity": "sha512-jwa141",
+        "tarball": "https://mirror.local/jwa/-/jwa-1.4.1.tgz",
+        "engines": { "node": ">=8.0.0" },
+        "dependencies": {}
+      },
+      "1.5.0": {
+        "license": "MIT",
+        "integrity": "sha512-jwa150",
+        "tarball": "https://mirror.local/jwa/-/jwa-1.5.0.tgz",
+        "engines": { "node": ">=22.0.0" },
+        "dependencies": {}
+      }
+    },
+    "rollup": {
+      "3.29.5": {
+        "license": "MIT",
+        "integrity": "sha512-rollup3295",
+        "tarball": "https://mirror.local/rollup/-/rollup-3.29.5.tgz",
+        "engines": { "node": ">=14.18.0" },
+        "dependencies": { "fsevents": "^2.3.2" },
+        "optionalDependencies": { "source-map": "^0.7.4" },
+        "deprecated": false
+      },
+      "4.10.0": {
+        "license": "MIT",
+        "integrity": "sha512-rollup4100",
+        "tarball": "https://mirror.local/rollup/-/rollup-4.10.0.tgz",
+        "engines": { "node": ">=18.0.0" },
+        "dependencies": {}
+      }
+    },
+    "@types/node": {
+      "20.11.30": {
+        "license": "MIT",
+        "integrity": "sha512-types201130",
+        "tarball": "https://mirror.local/@types/node/-/node-20.11.30.tgz",
+        "engines": { "node": ">=12.0.0" },
+        "dependencies": { "undici-types": "~5.26.4" }
+      }
+    },
+    "undici-types": {
+      "5.26.5": {
+        "license": "MIT",
+        "integrity": "sha512-undici5265",
+        "tarball": "https://mirror.local/undici-types/-/undici-types-5.26.5.tgz",
+        "engines": { "node": ">=12.0.0" },
+        "dependencies": {}
+      }
+    },
+    "event-stream": {
+      "4.0.1": {
+        "license": "MIT",
+        "integrity": "sha512-event401",
+        "tarball": "https://mirror.local/event-stream/-/event-stream-4.0.1.tgz",
+        "engines": { "node": ">=6.0.0" },
+        "dependencies": {}
+      }
+    },
+    "source-map": {
+      "0.7.4": {
+        "license": "BSD-3-Clause",
+        "integrity": "sha512-sourcemap074",
+        "tarball": "https://mirror.local/source-map/-/source-map-0.7.4.tgz",
+        "engines": { "node": ">=10.0.0" },
+        "dependencies": {}
+      }
+    },
+    "fsevents": {
+      "2.3.3": {
+        "license": "MIT",
+        "integrity": "sha512-fsevents233",
+        "tarball": "https://mirror.local/fsevents/-/fsevents-2.3.3.tgz",
+        "engines": { "node": ">=8.0.0" },
+        "os": ["darwin"],
+        "dependencies": {}
+      }
+    }
+  }
+}

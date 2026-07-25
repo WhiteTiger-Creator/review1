@@ -1,8 +1,0 @@
-{
-  "destination_order": ["B", "C", "A"],
-  "outbound_assignments": {
-    "A": "O1",
-    "B": "O1",
-    "C": "O2"
-  }
-}
