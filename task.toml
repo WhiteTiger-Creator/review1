@@ -4,24 +4,32 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
+category = "scientific-computing"
 subcategories = []
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["go"]
-tags = ["security", "authorization", "privilege-escalation", "signed-manifests", "privileged-helpers", "audit-integrity"]
-expert_time_estimate_min = 360
-junior_time_estimate_min = 720
+codebase_size = "large"
+languages = ["rust"]
+tags = [
+    "bridge-modal-calibration",
+    "eigenmode-pairing-analysis",
+    "bounded-stiffness-inversion",
+    "mac-objective-qualification"
+]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 360
 
 [verifier]
-timeout_sec = 600.0
+timeout_sec = 900.0
 
 [agent]
-timeout_sec = 1500.0
+timeout_sec = 1800.0
 
 [environment]
 build_timeout_sec = 600.0
-cpus = 2
-memory_mb = 4096
+docker_flags = []
+cpus = 1
+memory_mb = 2048
 storage_mb = 10240
+gpus = 0
+gpu_types = []
 allow_internet = false

@@ -1,4 +1,0 @@
-{"request_id": "rq-aa11bb22", "principal": "ops.guest", "action": "seal_unit", "unit": "guest-unit-1"}
-{"request_id": "rq-cc33dd44", "principal": "ops.auditor", "action": "export_bundle", "unit": "audit-unit-2"}
-{"request_id": "rq-ee55ff66", "principal": "ops.unknown", "action": "seal_unit", "unit": "x-unit"}
-{"request_id": "rq-11223344", "principal": "ops.owner", "action": "unknown_action", "unit": "x-unit"}
