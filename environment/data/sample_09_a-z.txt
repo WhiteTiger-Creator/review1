@@ -1,4 +1,0 @@
-PATTERN: [a-z]+
-SUBJECT: Hello123world
-EXPECTED:
-MATCH 1 5

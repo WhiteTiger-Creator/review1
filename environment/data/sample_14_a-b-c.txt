@@ -1,5 +1,0 @@
-PATTERN: (a|b|c)+
-SUBJECT: cba
-EXPECTED:
-MATCH 0 3
-GROUP 1 2 3

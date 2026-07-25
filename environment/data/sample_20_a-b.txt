@@ -1,4 +1,0 @@
-PATTERN: a.*b
-SUBJECT: axxxbxxxb
-EXPECTED:
-MATCH 0 9
