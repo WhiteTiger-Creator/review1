@@ -1,0 +1,14 @@
+# Match Harbor edition_2 static-check select surface
+target-version = "py313"
+line-length = 100
+
+[lint]
+select = [
+  "E", "F", "W", "I", "UP", "B", "SIM", "PLW", "C4", "PT", "PTH", "RUF",
+]
+ignore = [
+  "E501",
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["PTH", "SIM115", "PLW1510", "PT018"]

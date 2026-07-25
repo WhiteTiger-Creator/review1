@@ -1,0 +1,18 @@
+{
+  "tracks": [
+    {"id": "LEAD", "type": "lead", "max_cars": 12, "max_length_units": 150},
+    {"id": "C1", "type": "classification", "max_cars": 4, "max_length_units": 40},
+    {"id": "C2", "type": "classification", "max_cars": 4, "max_length_units": 45},
+    {"id": "SPUR", "type": "classification", "max_cars": 3, "max_length_units": 30},
+    {"id": "O1", "type": "outbound", "max_cars": 8, "max_length_units": 80},
+    {"id": "O2", "type": "outbound", "max_cars": 8, "max_length_units": 80}
+  ],
+  "switches": [
+    {"id": "SW1", "from_track": "LEAD", "to_track": "C1", "length_m": 150.0},
+    {"id": "SW2", "from_track": "LEAD", "to_track": "C2", "length_m": 200.0},
+    {"id": "SW3", "from_track": "C1", "to_track": "SPUR", "length_m": 90.0},
+    {"id": "SW4", "from_track": "C1", "to_track": "O1", "length_m": 180.0},
+    {"id": "SW5", "from_track": "C2", "to_track": "O1", "length_m": 120.0},
+    {"id": "SW6", "from_track": "C2", "to_track": "O2", "length_m": 160.0}
+  ]
+}

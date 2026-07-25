@@ -1,0 +1,11 @@
+{
+  "train_id": "SPUR-TRAP-3301",
+  "cars": [
+    {"id": "SP-01", "destination": "A", "length_units": 8, "mass_t": 45.0},
+    {"id": "SP-02", "destination": "B", "length_units": 9, "mass_t": 50.0},
+    {"id": "SP-03", "destination": "C", "length_units": 7, "mass_t": 38.0},
+    {"id": "SP-04", "destination": "A", "length_units": 10, "mass_t": 55.0},
+    {"id": "SP-05", "destination": "B", "length_units": 8, "mass_t": 42.0},
+    {"id": "SP-06", "destination": "C", "length_units": 9, "mass_t": 48.0}
+  ]
+}
