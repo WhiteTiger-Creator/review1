@@ -1,0 +1,66 @@
+--- a/src/lib_wire.cmake
++++ b/src/lib_wire.cmake
+@@ -1,32 +1,54 @@
+-# Shared packing library edge helpers. Wrongly attaches crc_probe INTERFACE.
++# Normative packing library edges for the object-archive pack.
++# crc_probe and mtime_hint stay tooling-only and must not ride these PUBLIC edges.
++
+ function(span_wire_bag_lib)
+-  # bag_lib is leaf; no upstream pack edges.
+ endfunction()
+ 
+ function(span_wire_obj_stage)
+-  target_link_libraries(obj_stage PUBLIC bag_lib crc_probe)
++  target_link_libraries(obj_stage PUBLIC bag_lib)
+ endfunction()
+ 
+ function(span_wire_ix_pack)
+-  target_link_libraries(ix_pack PUBLIC bag_lib crc_probe)
++  target_link_libraries(ix_pack PUBLIC bag_lib)
+ endfunction()
+ 
+ function(span_wire_era_clk)
+-  target_link_libraries(era_clk PUBLIC bag_lib crc_probe)
++  target_link_libraries(era_clk PUBLIC bag_lib)
+ endfunction()
+ 
+ function(span_wire_dig_fold)
+-  target_link_libraries(dig_fold PUBLIC bag_lib crc_probe)
++  target_link_libraries(dig_fold PUBLIC bag_lib)
+ endfunction()
+ 
+ function(span_wire_wal_io)
+-  target_link_libraries(wal_io PUBLIC bag_lib crc_probe)
++  target_link_libraries(wal_io PUBLIC bag_lib)
+ endfunction()
+ 
+ function(span_wire_pol_gate)
+-  target_link_libraries(pol_gate PUBLIC crc_probe)
++  # pol_gate has no library link line beyond its own sources.
+ endfunction()
+ 
+ function(span_wire_io_glue)
+-  target_link_libraries(io_glue PUBLIC bag_lib era_clk dig_fold wal_io pol_gate obj_stage ix_pack)
++  target_link_libraries(
++    io_glue
++    PUBLIC
++      bag_lib
++      era_clk
++      dig_fold
++      wal_io
++      pol_gate
++      obj_stage
++      ix_pack
++  )
+ endfunction()
++
++function(span_forbid_tool_edge tgt)
++  get_target_property(_libs ${tgt} INTERFACE_LINK_LIBRARIES)
++  if(_libs)
++    foreach(_lib IN LISTS _libs)
++      if(_lib MATCHES "crc_probe" OR _lib MATCHES "mtime_hint")
++        message(FATAL_ERROR "tooling helper ${_lib} must not ride ${tgt} INTERFACE")
++      endif()
++    endforeach()
++  endif()
++endfunction()

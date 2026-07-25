@@ -1,39 +1,31 @@
-# Dropforge engine-reconstruction task (Node).
-#
-# Ships the basic rules card and the recorded games under /app. The
-# agent writes /app/engine.js to replay a drop script to the final well.
-# Everything runs offline: Node is the working language, and Python is present
-# only so the test suite can drive the program and compare records.
-#
-# Canonical Debian base, digest-pinned.
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
+# Justification: this task builds a multi-library CMake C++ project (GCC 13 +
+# CMake + make) and cannot run on the Python or Node runtime bases. This is the
+# canonical Terminal-Bench C/C++ (GCC) base image, digest-pinned to the approved
+# public.ecr.aws GCC 13 bookworm reference.
+FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c
 
-# Node for the task, tmux + asciinema for the agent runtime, and a Python 3
-# for the test suite. Installed at build time (build has network) so the task
-# runs fully offline afterwards. Debian ships the interpreter as `nodejs`;
-# add a `node` on PATH so the documented command works.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        nodejs \
-        python3 \
-        python3-venv \
-        tmux \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/nodejs /usr/local/bin/node
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    asciinema=2.2.0-1 \
+    ca-certificates=20230311+deb12u1 \
+    cmake=3.25.1-1 \
+    make=4.3-4.1 \
+    python3=3.11.2-1+b1 \
+    python3-pip=23.0.1+dfsg-1 \
+    python3-venv=3.11.2-1+b1 \
+    tmux=3.3a-3 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Python only needs pytest to run the program and compare numbers; no
-# numerical libraries are installed, so the math cannot be shifted out of
-# Node. Pinned and baked in now; nothing is fetched later.
-RUN python3 -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5
-ENV PATH="/opt/venv/bin:${PATH}"
+RUN python3 -m venv /opt/verifier \
+    && /opt/verifier/bin/pip install --no-cache-dir \
+       pytest==8.4.1 \
+       pytest-json-ctrf==0.3.5
+RUN ln -sf /opt/verifier/bin/pytest /usr/local/bin/pytest
 
-# The basic rules card and the recorded games (script, final well, score).
-COPY rules.md /app/rules.md
-COPY games /app/games
+ENV PATH="/opt/verifier/bin:${PATH}"
+
+COPY . /app/environment
 
 WORKDIR /app
+
+RUN mkdir -p /app/output /app/environment/var/object_cache \
+    && chmod 0755 /app/environment/tools/rebuild_emit.sh /app/environment/tools/run_emit_chain.sh

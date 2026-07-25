@@ -1,0 +1,26 @@
+--- a/bx/bin_wire.cmake
++++ b/bx/bin_wire.cmake
+@@ -1,8 +1,20 @@
+-# Emit binary edge helpers. Wrongly attaches crc_probe to seal binaries.
++# Normative binary edges. Binaries PRIVATE-link only io_glue.
++
+ function(span_wire_layer_emit)
+-  target_link_libraries(layer_emit PRIVATE io_glue crc_probe)
++  target_link_libraries(layer_emit PRIVATE io_glue)
+ endfunction()
+ 
+ function(span_wire_yseal)
+-  target_link_libraries(yseal PRIVATE io_glue crc_probe)
++  target_link_libraries(yseal PRIVATE io_glue)
+ endfunction()
++
++function(span_forbid_tool_bin tgt)
++  get_target_property(_libs ${tgt} LINK_LIBRARIES)
++  if(_libs)
++    foreach(_lib IN LISTS _libs)
++      if(_lib MATCHES "crc_probe" OR _lib MATCHES "mtime_hint")
++        message(FATAL_ERROR "tooling helper ${_lib} must not ride ${tgt} link line")
++      endif()
++    endforeach()
++  endif()
++endfunction()
