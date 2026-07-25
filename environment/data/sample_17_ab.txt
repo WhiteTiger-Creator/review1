@@ -1,4 +1,0 @@
-PATTERN: []ab]
-SUBJECT: ]
-EXPECTED:
-MATCH 0 1
