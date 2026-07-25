@@ -1,0 +1,11 @@
+Agent reads enrollment and followup from the CAUSAL_DATA_DIR directory with its /app/data fallback and aligns the two per-patient sources on the shared patient identifier before analysis, +1
+Agent codes therapy into a newer-versus-standard arm and codes the relapse-versus-censored outcome into an event indicator that treats a censored row as not-yet-relapsed rather than as event-free, +2
+Agent fits a propensity model for the newer-therapy arm on the two baseline flags and the continuous baseline index entered with a nonlinear term so the fitted score is not forced linear in that index, and weights each patient by the inverse probability of the arm actually received, +5
+Agent estimates each stratum-and-arm long-term event-free probability as the weighted Kaplan-Meier survival read at the plateau beyond the last observed relapse rather than at an interior follow-up time, +3
+Agent standardizes the per-arm event-free probability over this registry's own mix of the two baseline flags, weighting each flag combination by its share of the whole registry rather than its share within one arm, +3
+Agent reports the estimate as the newer-minus-standard difference in standardized long-term event-free probability, signed so a therapy leaving more patients permanently event-free is positive, +2
+Agent derives every stratum share, arm size, and patient count from the loaded data frame at runtime and writes /app/estimate.json as a single finite numeric field named estimate that recomputes identically on repeated runs of the same records, +2
+Agent hardcodes counts, stratum shares, patient totals, or any other quantity directly into the analysis script as a literal instead of deriving it from the loaded data frame at runtime, -3
+Agent reads the survival curve at an interior follow-up time or counts still-observed patients without a recorded relapse as long-term event-free, conflating incomplete follow-up with permanent cure, -3
+Agent emits an estimate produced from a placeholder or stubbed value such as a TBD, TODO, fill-in marker, or a fixed magic number standing in for the dynamically computed difference, -2
+Agent reads from /tests/, writes directly to /logs/verifier/reward.txt, or modifies a protected raw input file under /app to bypass the verifier, -5

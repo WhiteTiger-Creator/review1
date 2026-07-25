@@ -1,0 +1,13 @@
+Package: eventfreeregistry
+Type: Task
+Title: Long-Term Event-Free Probability Difference In A Two-Therapy Registry
+Version: 1.0.0
+Authors@R: person("anonymous", role = c("aut", "cre"), email = "anonymous")
+Description: Working environment for estimating the standardized difference in the
+    long-term event-free probability between two therapies in an observational
+    oncology registry where uptake is not randomized and a fraction of patients
+    never relapse. The registry records live under data and the analyst writes an
+    R estimator at /app/analysis.R.
+License: file LICENSE
+Encoding: UTF-8
+Imports: survival, jsonlite

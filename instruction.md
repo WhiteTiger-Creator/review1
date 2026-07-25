@@ -1,5 +1,27 @@
-Release approval for the suspension-bridge model is on hold because its predicted modes no longer align with the latest ambient-vibration survey. Use `/opt/spanforge/bin/modal-reconciler` to reconcile the finite-element stiffness baseline with measured frequencies and sensor shapes by updating only the bounded stiffness groups while preserving a physically admissible symmetric generalized eigenproblem.
+An oncology registry recorded patients who each received one of two therapies, a newer
+therapy or a standard one. Therapy was not assigned at random: baseline characteristics
+recorded before therapy — two flags, `stage_high` and `marker_high`, and a continuous
+`baseline_index` — are each associated both with which therapy a patient received and with
+whether that patient relapses. A real fraction of patients never relapse and stay event-free
+permanently; the rest relapse at some time after enrolment. Observation ends at a relapse,
+at a per-site administrative cutoff, or at an earlier loss to follow-up.
 
-Scientific contracts under `/opt/spanforge/modal-code/` (`model-assembly.md`, `survey-correlation.md`, `calibration-verdict.md`) define schemas `bridge-modal-model-v1`, `bridge-modal-survey-v1`, and `bridge-calibration-plan-v1`; mass-normalized generalized eigenanalysis; cluster pairing with subspace MAC; bounded modal objective optimization; MCR rows `OBJECTIVE`, `GROUP`, and `PAIR` (frequency and MAC residuals); and stderr JSON codes such as `E_MODEL_SCHEMA`, `E_MATRIX_SYMMETRY`, `E_MASS_PHYSICALITY`, `E_STIFFNESS_BOX`, `E_SURVEY_SCHEMA`, and `E_MODAL_PAIRING`. Missing sensors are evidence gaps, not zeros; mode-shape sign flips carry no meaning; repeated or reordered modes use observable subspaces. Invalid matrices, unsupported surveys, or non-physical stiffness boxes must fail before an existing report is touched.
+Report, as a single number, the difference in the long-term probability of never relapsing
+between a world in which every patient is given the newer therapy and a world in which every
+patient is given the standard one, taken as newer minus standard, standardized to this
+registry's own distribution of the two baseline flags, and signed so that a therapy leaving
+more patients permanently event-free comes out positive. A patient still under observation
+with no recorded relapse is not yet known to be one who never relapses.
 
-The published MCR record must explain calibrated factors, active bounds, paired clusters, frequency and MAC residuals, objective terms, sensitivity ordering, numerical rank, and confidence. A bound-limited or weakly identifiable solution may still be reported when it meets the documented optimum and residual criteria. Pairing must be a global minimum-cost assignment under the hard frequency gate—not greedy nearest-frequency matching. Equivalent model and survey orderings of the same case must produce identical report bytes for a given implementation, while failed calibration preserves the previous record. Verifiers judge sealed recovery tolerances, pairing/optimum semantics, and report fields—not a hidden reference optimizer trajectory or byte-identical float dumps.
+The reported number must be a property of the order in which relapses occur and of which
+observations are censored, not of the units the times are written in: multiplying every
+recorded time — the enrolment month, the follow-up time, and the site administrative cutoff
+— by a common positive constant must leave it unchanged.
+
+Estimate this quantity from the cohort held under the directory named by the environment
+variable CAUSAL_DATA_DIR, falling back to /app/data when unset. The measured variables and
+what each record captures are documented under /app/docs. Write your analysis as an R program
+at /app/analysis.R that writes /app/estimate.json with a single numeric field named estimate.
+Do not hardcode a number; the estimator is rerun many times on freshly drawn cohorts of this
+size and must recompute the quantity from the observations the directory holds. Keep a single
+run comfortably under twenty seconds on the two-CPU environment.
