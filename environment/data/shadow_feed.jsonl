@@ -1,1 +1,0 @@
-{"source":"shadow","note":"decoy bytes for stale feed","value":42,"pad":"-stale-cache-pad","fence_samples":["cafebabecafebabe","deadbeefdeadbeef","feedfacefeedface"]}
