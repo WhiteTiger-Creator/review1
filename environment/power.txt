@@ -1,0 +1,3 @@
+Power readiness and overload
+
+Shared generators feed linked posts up to capacity each round. Local batteries provide limited reserve and slowly recharge. Scan costs two, intercept three, shield two, move one, repair two. When scan and shield contend on a thin generator, reserve power deliberately or cancel a redundant scan with CANCEL_SCAN signaling intent. Overload damages a generator until repaired. An aggressive partner may exhaust early wave power; preserve late wave headroom when doctrine cues suggest conservation. Damaged generators reduce available power for both linked posts.

@@ -6,5 +6,9 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-**/jobs
-**/output
+tests
+solution
+*.zip
+.DS_Store
+.env
+*.log

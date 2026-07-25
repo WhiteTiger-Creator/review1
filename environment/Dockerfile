@@ -1,36 +1,46 @@
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        python3 \
-        python3-pip \
-        python3-venv \
-        tmux \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir \
-        pytest==9.0.3 \
-        pytest-json-ctrf==0.5.0
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
 WORKDIR /app
 
-COPY docs /app/docs
-COPY fixtures /app/fixtures
-COPY latchml /app/latchml
-COPY featbank /app/featbank
-COPY metriclab /app/metriclab
-COPY sidecut /app/sidecut
-COPY decoy /app/decoy
-COPY schemas /app/schemas
-COPY binx /app/binx
-COPY scripts /app/scripts
-COPY verifier-fixtures /opt/verifier-fixtures
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    tmux \
+    asciinema \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python \
+    && pip3 install --break-system-packages --no-cache-dir \
+    pytest==8.3.5 \
+    pytest-json-ctrf==0.3.5
 
-RUN chmod +x /app/binx/hwml /app/scripts/run-eval.sh \
-    && mkdir -p /app/state /app/plaque
+COPY movement.txt threats.txt signaling.txt power.txt cooperation.txt protocol.txt scoring.txt examples.txt /app/
 
-ENV PATH="/opt/verifier-venv/bin:/app/binx:${PATH}"
-ENV PYTHONPATH="/app"
+COPY engine/ /tmp/engine-src/
+WORKDIR /tmp/engine-src
+RUN CGO_ENABLED=0 go build -o /opt/signal-defense/bin/defensematch ./cmd/defensematch \
+    && mkdir -p /opt/signal-defense/contracts \
+        /opt/signal-defense/grids \
+        /opt/signal-defense/waves \
+        /opt/signal-defense/partners \
+        /opt/signal-defense/integrity \
+        /app/output/generations \
+        /logs/verifier \
+    && cp -a contracts/. /opt/signal-defense/contracts/ \
+    && cp -a grids/. /opt/signal-defense/grids/ \
+    && cp -a waves/. /opt/signal-defense/waves/ \
+    && cp -a partners/. /opt/signal-defense/partners/ \
+    && /opt/signal-defense/bin/defensematch -build-manifest -assets /opt/signal-defense \
+    && rm -rf /tmp/engine-src \
+    && test -x /opt/signal-defense/bin/defensematch \
+    && chmod 755 /opt/signal-defense/bin/defensematch \
+    && ln -sf /opt/signal-defense/bin/defensematch /usr/local/bin/defensematch \
+    && ln -sf /usr/local/go/bin/go /usr/local/bin/go
+
+COPY work/defensebot/ /app/work/defensebot/
+WORKDIR /app
+
+ENV PATH="/usr/local/go/bin:/opt/signal-defense/bin:${PATH}"
+
+CMD ["/bin/bash"]

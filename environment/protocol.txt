@@ -1,0 +1,19 @@
+JSON Lines protocol
+
+The referee compiles the bot offline, verifies sealed campaign files, then starts a JSON Lines session on standard input and output. Messages are one JSON object per line with a type field.
+
+Observation objects (type observation) include these fields with these meanings:
+- round (integer), seed (integer), scenario (string), post (string post id)
+- sector (string), battery (integer), power_available (integer)
+- generators (array of generator objects with id, sector, capacity, damaged, overload, links)
+- contacts (array of visible contact objects with id, sector, kind_guess, confirmed, false_likely)
+- signals_in (array of delayed inbound signal objects with id, type, sector, contact, and optional ref)
+- signal_tokens (integer remaining), signal_budget (integer match total)
+- civilian_corridors (array of sector-id arrays), horizon (integer match length)
+- legal_ops (array of allowed op strings), max_actions (integer)
+- partner_public_sector (string; partner's disclosed sector only — never partner private contacts)
+- jammed (boolean), modifiers (object)
+
+Reply with one orders object containing type orders, the same round, and an actions array of legal ops: move, scan, intercept, reinforce, shield, signal, hold, repair. Signal messages use types WARN_LANE, COVER, NEED_POWER, ACK, SYNC_CAPTURE, STATUS, or CANCEL_SCAN. When type end arrives, reply with type end_ack and exit. Keep replies under bounded size. Do not print logs to stdout. Only edit files under /app/work/defensebot.
+
+Malformed JSON, unknown ops, illegal signal types, and references to partner private state or hidden wave plans are rejected. Diagnostics record legal_rounds, protocol_errors, and actions without timestamps or host paths.

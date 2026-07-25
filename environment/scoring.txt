@@ -1,0 +1,21 @@
+Scoring and publication
+
+Authoritative score is published under /app/output after atomic generation replacement. Generations publish under /app/output/generations with an immutable directory name. The /app/output/current pointer is a relative text path (for example generations/<name>) updated only after full validation. Failed compilation, protocol errors, sealed-campaign mismatches, or publish aborts leave the previous current pointer unchanged.
+
+Normalized artifacts under /app/output include these files with these fields:
+
+summary.json — scenario (string), seed (integer), partner_doctrine (string), score (integer), score_reconciled (integer, must equal score), horizon (integer), breakthroughs (integer), false_alarms (integer), sync_captures (integer), civilians_safe (integer), civilians_total (integer), infrastructure_hp (integer), generators_alive (integer), accept_score (integer), passed_accept (boolean: true when score >= accept_score)
+
+rounds.jsonl — one object per round with round (integer), agent_sector (string), partner_sector (string), agent_actions (array of {op, ...}), partner_actions (array), intercepts (object map contact_id to actor id list), signals (array), power (object snapshot), score (integer), breakthroughs (integer), false_alarms (integer), sync_captures (integer), civilians_safe (integer), agent_contacts (array), jammed (boolean)
+
+contacts.json — object keyed by round label (for example round-01) whose values contain agent (array of visible contacts) and partner_private_omitted (boolean true; partner private contacts are never published). Wave plans are never present.
+
+signals.jsonl — one object per signal attempt with type, from, round, accepted (boolean), and optional sector, contact, ref, error
+
+power.json — generator and battery snapshot used for the final round, including generators array entries with id, sector, capacity, damaged, overload, and linked posts
+
+civilians.json — safe (integer), total (integer), corridors (array of sector-id arrays)
+
+bot-diagnostics.json — legal_rounds (integer count of completed rounds), protocol_errors (integer), actions (integer total accepted agent actions)
+
+Public history used for grading is those artifacts. bot-diagnostics.json is informational and not a substitute for campaign score. Deterministic replay omits timestamps, process identifiers, and absolute paths. Do not grade wall clock speed.

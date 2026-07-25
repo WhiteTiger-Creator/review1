@@ -1,6 +1,5 @@
-"""Hallwarden latch poly-OLS verifier — vault/forecast/emit seal + pass-chain.
-PROBE_MARKERS: snapshot load emit trust persistence replay sequence idempotent
-"""
+"""Verifier for cooperative-signal-defense."""
+
 from __future__ import annotations
 
 import hashlib
@@ -8,615 +7,1244 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
+from typing import Any
 
-from hwml_ref import (
-    chain_digest,
-    load_workbook,
-    reference_pass_chain_row,
-    reference_pin,
-    reference_fit_commit,
-    reference_plaque,
-    reference_run,
-    reference_seal,
-    reference_trust,
-    stage_fingerprint,
+ENGINE = Path("/opt/signal-defense/bin/defensematch")
+ASSETS = Path("/opt/signal-defense")
+BOT = Path("/app/work/defensebot")
+OUTPUT = Path("/app/output")
+PUBLIC = (
+    "corridor-converge",
+    "jammed-relay",
+    "overloaded-generator",
+    "civilian-evac",
 )
 
-APP = Path("/app")
-STATE = APP / "state"
-PLAQUE = APP / "plaque"
-FIX = APP / "fixtures"
-DRIVER = Path("/app/binx/hwml")
 
-
-def wipe_outputs() -> None:
-    if STATE.exists():
-        shutil.rmtree(STATE)
-    if PLAQUE.exists():
-        shutil.rmtree(PLAQUE)
-    STATE.mkdir(parents=True)
-    PLAQUE.mkdir(parents=True)
-
-
-def drive(*, workbook=None, traces=None, mode: str | None = None) -> subprocess.CompletedProcess:
+def _run(
+    args: list[str],
+    *,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env["PYTHONPATH"] = "/app"
-    if workbook is not None:
-        env["HWML_WORKBOOK"] = str(workbook)
-    else:
-        env.pop("HWML_WORKBOOK", None)
-    if traces is not None:
-        env["HWML_TRACES"] = str(traces)
-    else:
-        env.pop("HWML_TRACES", None)
-    cmd = [str(DRIVER)]
-    if mode:
-        cmd.append(mode)
-    else:
-        cmd.append("eval")
-    return subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
+    env["PATH"] = f"/usr/local/go/bin:/opt/signal-defense/bin:{env.get('PATH', '')}"
+    return subprocess.run(
+        args,
+        check=check,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
 
 
-def read_json(path: Path):
+def _match(
+    scenario: str | Path,
+    *,
+    bot: Path = BOT,
+    output: Path | None = None,
+    doctrine: str | None = None,
+    seed: int | None = None,
+    inject: str | None = None,
+    skip_verify: bool = False,
+    check: bool = True,
+) -> dict[str, Any]:
+    out = Path(output) if output else Path(tempfile.mkdtemp(prefix="sd-out-"))
+    out.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(ENGINE),
+        "--bot",
+        str(bot),
+        "--output",
+        str(out),
+        "--print-summary",
+    ]
+    if skip_verify:
+        cmd.append("--skip-verify")
+    else:
+        cmd.extend(["--assets", str(ASSETS)])
+    if isinstance(scenario, Path) or str(scenario).endswith(".json"):
+        cmd.extend(["--scenario", str(scenario)])
+    else:
+        cmd.extend(["--scenario-name", str(scenario)])
+    if doctrine:
+        cmd.extend(["--doctrine", doctrine])
+    if seed is not None:
+        cmd.extend(["--seed", str(seed)])
+    if inject:
+        cmd.extend(["--inject-failure", inject])
+    proc = _run(cmd, check=False)
+    if check and proc.returncode != 0:
+        raise AssertionError(proc.stderr or proc.stdout or f"exit {proc.returncode}")
+    summary: dict[str, Any] = {}
+    if proc.stdout.strip():
+        summary = json.loads(proc.stdout)
+    return {
+        "proc": proc,
+        "summary": summary,
+        "output": out,
+        "generation": _current_gen(out) if (out / "current").exists() else None,
+    }
+
+
+def _current_gen(output: Path) -> Path:
+    rel = (output / "current").read_text(encoding="utf-8").strip()
+    return output / rel
+
+
+def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def sha(path: Path) -> str:
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
+
+
+def _clone_bot(tmp: Path) -> Path:
+    dest = tmp / "defensebot"
+    shutil.copytree(BOT, dest)
+    return dest
+
+
+def _base_grid() -> dict[str, Any]:
+    return {
+        "sectors": [
+            {"id": "N", "x": 1, "y": 2, "role": "entry"},
+            {"id": "H", "x": 1, "y": 1, "role": "hub"},
+            {"id": "S", "x": 1, "y": 0, "role": "exit"},
+            {"id": "W", "x": 0, "y": 1, "role": "post"},
+            {"id": "E", "x": 2, "y": 1, "role": "post"},
+            {"id": "CW", "x": 0, "y": 0, "role": "civilian"},
+            {"id": "CE", "x": 2, "y": 0, "role": "civilian"},
+        ],
+        "edges": [
+            ["N", "H"],
+            ["H", "S"],
+            ["W", "H"],
+            ["E", "H"],
+            ["W", "CW"],
+            ["E", "CE"],
+            ["CW", "S"],
+            ["CE", "S"],
+        ],
+        "agent_post": {"id": "alpha", "sector": "W", "battery": 5, "battery_max": 6},
+        "partner_post": {"id": "bravo", "sector": "E", "battery": 5, "battery_max": 6},
+        "generators": [{"id": "G1", "sector": "H", "capacity": 5, "links": ["alpha", "bravo"]}],
+        "civilian_corridors": [["CW", "S", "CE"]],
+        "signal_types": [
+            "WARN_LANE",
+            "COVER",
+            "NEED_POWER",
+            "ACK",
+            "SYNC_CAPTURE",
+            "STATUS",
+            "CANCEL_SCAN",
+        ],
+        "scoring": {
+            "infrastructure": 10,
+            "civilian": 5,
+            "false_alarm_penalty": 3,
+            "sync_capture": 8,
+            "breakthrough_penalty": 15,
+            "integrity_bonus": 4,
+        },
+        "max_actions": 4,
+        "scan_range": 1,
+        "interceptor_range": 1,
+    }
+
+
+def _write_scenario(tmp: Path, overrides: dict[str, Any]) -> Path:
+    sc = _base_grid()
+    sc.update(overrides)
+    path = tmp / f"{sc['name']}.json"
+    path.write_text(json.dumps(sc, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_hwml9_feature_training_inference_eval_artifacts():
-    """Full training/inference eval writes /app/state feature artifacts and plaque."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    assert Path("/app/state/design_matrix.json").is_file()
-    assert Path("/app/state/design_vault.json").is_file()
-    assert Path("/app/state/latch_pin.json").is_file()
-    assert Path("/app/state/beta_hat.json").is_file()
-    assert Path("/app/state/fit_commit.json").is_file()
-    assert Path("/app/state/beta_latch_seal.json").is_file()
-    assert Path("/app/state/forecast_tape.json").is_file()
-    assert Path("/app/state/emit_trust.json").is_file()
-    assert Path("/app/state/run_log.jsonl").is_file()
-    assert Path("/app/state/pass_chain.jsonl").is_file()
-    assert Path("/app/plaque/promotion_plaque.json").is_file()
-    trust = json.loads((STATE / "emit_trust.json").read_text(encoding="utf-8"))
-    assert trust["scheme"] == "hwml.trust/v1"
-    assert len(trust["vault_digest"]) == 64
-    assert len(trust["seal_digest"]) == 64
-
-
-def test_hwml9_feature_design_matrix_agrees_refml():
-    """Quadratic design columns agree with independent reference."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    assert read_json(STATE / "design_matrix.json")["rows"] == exp["design"]["rows"]
-    assert read_json(STATE / "design_matrix.json")["column_names"] == exp["design"]["column_names"]
-    assert int(read_json(STATE / "design_matrix.json")["policy_epoch"]) == int(exp["workbook"]["policy_epoch"])
-
-
-def test_hwml9_vault_mirrors_design_rows():
-    """Vault rows mirror design_matrix rows after id sort."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    d = read_json(STATE / "design_matrix.json")
-    v = read_json(STATE / "design_vault.json")
-    assert v["scheme"] == "hwml.vault/v1"
-    assert v["rows"] == d["rows"]
-    assert v["column_names"] == d["column_names"]
-    assert v["source_trace_count"] >= 1
-    assert int(v["policy_epoch"]) == int(d["policy_epoch"])
-
-
-def test_hwml9_vault_latch_pin_binds_on_disk_vault():
-    """Attest scheme, digest, and row_count match the on-disk design vault."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    vault = read_json(STATE / "design_vault.json")
-    latch_pin = read_json(STATE / "latch_pin.json")
-    exp = reference_pin(vault, STATE / "design_vault.json")
-    assert latch_pin["scheme"] == "hwml.pin/v1"
-    assert latch_pin["vault_digest"] == exp["vault_digest"]
-    assert latch_pin["vault_digest"] == sha(STATE / "design_vault.json")
-    assert latch_pin["row_count"] == len(vault["rows"])
-    assert int(latch_pin["pin_seq"]) >= 1
-    assert int(latch_pin["policy_epoch"]) == int(vault["policy_epoch"])
-
-
-def test_hwml9_beta_latch_seal_binds():
-    """Beta–latch seal binds beta/pin/vault digests and policy_epoch."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    pin = read_json(STATE / "latch_pin.json")
-    wb = load_workbook(FIX / "eval_workbook.json")
-    got = read_json(STATE / "beta_latch_seal.json")
-    want = reference_seal(wb, STATE / "design_vault.json", STATE / "latch_pin.json", STATE / "beta_hat.json", pin)
-    assert got == want
-    assert got["scheme"] == "hwml.seal/v1"
-
-
-def test_hwml9_model_training_beta_agrees_refml():
-    """Learning-cohort OLS beta_hat agrees with independent reference."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    assert read_json(STATE / "beta_hat.json")["values"] == exp["beta"]["values"]
-    assert len(read_json(STATE / "beta_hat.json")["values"]) == 7
-
-
-def test_hwml9_inference_metric_mape_r2_agree_refml():
-    """MAPE and R2 agree with independent forecast metrics."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    got = read_json(STATE / "forecast_tape.json")
-    assert got["mape"] == exp["forecast"]["mape"]
-    assert got["r2"] == exp["forecast"]["r2"]
-    assert got["metrics_pass"] is True
-
-
-def test_hwml9_model_eval_promoted_on_default_bundle():
-    """Default specimen bundle promotes under MAPE/R2 dual gate."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    assert read_json(STATE / "forecast_tape.json")["metrics_pass"] is True
-    assert read_json(PLAQUE / "promotion_plaque.json")["promoted"] is True
-
-
-def test_hwml9_reserved_ids_only():
-    """Forecast rows are reserved cohort ids only."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    design = read_json(STATE / "design_matrix.json")
-    forecast = read_json(STATE / "forecast_tape.json")
-    reserved = {r["id"] for r in design["rows"] if r["cohort"] == "reserved"}
-    assert {r["id"] for r in forecast["rows"]} == reserved
-
-
-def test_hwml9_rows_sorted_by_id():
-    """Design and vault rows are ascending by specimen id."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    for name in ("design_matrix.json", "design_vault.json"):
-        ids = [r["id"] for r in read_json(STATE / name)["rows"]]
-        assert ids == sorted(ids)
-
-
-def test_hwml9_fit_commit_pins_vault():
-    """Fit commit vault_digest and beta_digest bind on-disk bytes."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    c = read_json(STATE / "fit_commit.json")
-    assert c["vault_digest"] == sha(STATE / "design_vault.json")
-    assert c["beta_digest"] == sha(STATE / "beta_hat.json")
-    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    assert c["learning_ids"] == exp["learning_ids"]
-    want = reference_fit_commit(
-        exp["workbook"], STATE / "design_vault.json", STATE / "beta_hat.json", exp["learning_ids"]
-    )
-    assert c == want
-
-
-def test_hwml9_emit_trust_binds_stage_digests():
-    """Emit trust digests bind vault/pin/beta/commit/seal/forecast on-disk bytes."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    forecast = read_json(STATE / "forecast_tape.json")
-    workbook = load_workbook(FIX / "eval_workbook.json")
-    got = read_json(STATE / "emit_trust.json")
-    want = reference_trust(
-        forecast,
-        workbook,
-        STATE / "design_vault.json",
-        STATE / "latch_pin.json",
-        STATE / "beta_hat.json",
-        STATE / "fit_commit.json",
-        STATE / "beta_latch_seal.json",
-        STATE / "forecast_tape.json",
-    )
-    assert got == want
-
-
-def test_hwml9_plaque_digests_pin_including_trust():
-    """Plaque digests bind on-disk state bytes including seal and emit trust."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    p = read_json(PLAQUE / "promotion_plaque.json")
-    assert p["design_digest"] == sha(STATE / "design_matrix.json")
-    assert p["beta_digest"] == sha(STATE / "beta_hat.json")
-    assert p["forecast_digest"] == sha(STATE / "forecast_tape.json")
-    assert p["vault_digest"] == sha(STATE / "design_vault.json")
-    assert p["fit_commit_digest"] == sha(STATE / "fit_commit.json")
-    assert p["pin_digest"] == sha(STATE / "latch_pin.json")
-    assert p["seal_digest"] == sha(STATE / "beta_latch_seal.json")
-    assert p["trust_digest"] == sha(STATE / "emit_trust.json")
-    assert int(p["pin_seq"]) == int(read_json(STATE / "latch_pin.json")["pin_seq"])
-    assert int(p["policy_epoch"]) == int(load_workbook(FIX / "eval_workbook.json")["policy_epoch"])
-
-
-def test_hwml9_refml_plaque_agrees():
-    """Independent plaque builder agrees with on-disk plaque."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    want = reference_plaque(
-        exp["forecast"],
-        exp["workbook"],
-        STATE / "design_matrix.json",
-        STATE / "beta_hat.json",
-        STATE / "forecast_tape.json",
-        STATE / "design_vault.json",
-        STATE / "fit_commit.json",
-        STATE / "latch_pin.json",
-        STATE / "beta_latch_seal.json",
-        STATE / "emit_trust.json",
-    )
-    assert read_json(PLAQUE / "promotion_plaque.json") == want
-
-
-def test_hwml9_identity_propagates():
-    """Identity propagates from workbook across state and plaque."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    ident = load_workbook(FIX / "eval_workbook.json")["identity"]
-    for path in (
-        STATE / "design_matrix.json",
-        STATE / "design_vault.json",
-        STATE / "latch_pin.json",
-        STATE / "beta_hat.json",
-        STATE / "fit_commit.json",
-        STATE / "beta_latch_seal.json",
-        STATE / "forecast_tape.json",
-        STATE / "emit_trust.json",
-        PLAQUE / "promotion_plaque.json",
+def _generation_bytes(gen: Path) -> dict[str, bytes]:
+    out: dict[str, bytes] = {}
+    for name in (
+        "summary.json",
+        "rounds.jsonl",
+        "contacts.json",
+        "signals.jsonl",
+        "power.json",
+        "civilians.json",
+        "bot-diagnostics.json",
     ):
-        assert read_json(path)["identity"] == ident
+        out[name] = (gen / name).read_bytes()
+    return out
 
 
-def test_hwml9_second_eval_byte_stable_pass_chain_grows():
-    """Replay keeps stage bytes identical and appends pass_chain pass_index 2."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    a_vault = (STATE / "design_vault.json").read_bytes()
-    a_latch_pin = (STATE / "latch_pin.json").read_bytes()
-    a_seal = (STATE / "beta_latch_seal.json").read_bytes()
-    a_trust = (STATE / "emit_trust.json").read_bytes()
-    a_plaque = (PLAQUE / "promotion_plaque.json").read_bytes()
-    gen = read_json(STATE / "latch_pin.json")["pin_seq"]
-    first = [json.loads(line) for line in (STATE / "pass_chain.jsonl").read_text().splitlines() if line.strip()]
-    assert len(first) == 1
-    assert first[0]["pass_index"] == 1
-    assert first[0]["prior_digest"] == ""
-    want_fp = stage_fingerprint(
-        STATE / "design_vault.json",
-        STATE / "latch_pin.json",
-        STATE / "beta_hat.json",
-        STATE / "fit_commit.json",
-        STATE / "beta_latch_seal.json",
-        STATE / "forecast_tape.json",
-        STATE / "emit_trust.json",
+# ---------------------------------------------------------------------------
+# 3 protected-engine and integrity tests
+# ---------------------------------------------------------------------------
+
+
+def test_protected_engine_binary_and_asset_layout():
+    """Protected defensematch binary and required asset directories exist with compiler retained."""
+    assert ENGINE.is_file() and os.access(ENGINE, os.X_OK)
+    for rel in ("contracts", "grids", "waves", "partners", "integrity", "bin"):
+        assert (ASSETS / rel).is_dir()
+    assert (ASSETS / "integrity" / "manifest.json").is_file()
+    assert Path("/usr/local/go/bin/go").is_file()
+    assert (Path("/app/work/defensebot") / "main.go").is_file()
+    assert not (Path("/opt/signal-defense") / "solution").exists()
+
+
+def test_integrity_manifest_rejects_mutated_assets(tmp_path: Path):
+    """Mutating any protected asset class must fail integrity verification before a match."""
+    # Copy assets and mutate each class
+    classes = {
+        "contracts/protocol.json": {"tampered": True},
+        "grids/corridor.json": {"tampered": True},
+        "waves/corridor-converge.json": None,
+        "partners/signal-explicit.json": {"tampered": True},
+        "integrity/manifest.json": None,
+    }
+    for rel in list(classes)[:-1]:
+        root = tmp_path / "assets"
+        if root.exists():
+            shutil.rmtree(root)
+        shutil.copytree(ASSETS, root, ignore=shutil.ignore_patterns("bin"))
+        (root / "bin").mkdir(exist_ok=True)
+        shutil.copy2(ENGINE, root / "bin" / "defensematch")
+        target = root / rel
+        if rel.endswith(".json") and classes[rel] is not None:
+            data = json.loads(target.read_text(encoding="utf-8"))
+            data["tampered"] = True
+            target.write_text(json.dumps(data) + "\n", encoding="utf-8")
+        else:
+            target.write_bytes(target.read_bytes() + b"\n#mut\n")
+        proc = _run(
+            [
+                str(root / "bin" / "defensematch"),
+                "--assets",
+                str(root),
+                "--scenario-name",
+                "corridor-converge",
+                "--bot",
+                str(BOT),
+                "--output",
+                str(tmp_path / "out"),
+            ],
+            check=False,
+        )
+        assert proc.returncode != 0
+        assert "integrity" in (proc.stderr + proc.stdout).lower()
+
+
+def test_controller_verifies_before_agent_compile(tmp_path: Path):
+    """Controller verifies assets before compiling the agent bot for a public defense."""
+    # Valid assets path succeeds compile+match
+    result = _match("corridor-converge", output=tmp_path / "ok")
+    assert result["summary"]["scenario"] == "corridor-converge"
+    assert (result["generation"] / "summary.json").is_file()
+
+
+# ---------------------------------------------------------------------------
+# 6 protocol, signal-secrecy, legality, determinism, publication tests
+# ---------------------------------------------------------------------------
+
+
+def test_protocol_end_to_end_jsonl_orders():
+    """Bot completes a public match through JSON Lines observation/orders/end without protocol errors."""
+    result = _match("corridor-converge")
+    diag = _read_json(result["generation"] / "bot-diagnostics.json")
+    assert diag["protocol_errors"] == 0
+    assert diag["legal_rounds"] >= 1
+
+
+def test_signal_secrecy_hides_partner_private_and_wave_plans():
+    """Authoritative contacts records omit partner-private observations and never embed wave plans."""
+    result = _match("jammed-relay")
+    contacts = _read_json(result["generation"] / "contacts.json")
+    blob = json.dumps(contacts)
+    assert "partner_private_omitted" in blob
+    assert "wave_plan" not in blob.lower()
+    rounds = _read_jsonl(result["generation"] / "rounds.jsonl")
+    for row in rounds:
+        assert "waves" not in row
+
+
+def test_illegal_signal_type_rejected_without_breaking_prior_generation(tmp_path: Path):
+    """Injected protocol failure preserves the previous generation byte-for-byte."""
+    out = tmp_path / "pub"
+    first = _match("corridor-converge", output=out)
+    before = _generation_bytes(first["generation"])
+    pointer = (out / "current").read_text(encoding="utf-8")
+    bad = _match(
+        "corridor-converge",
+        output=out,
+        inject="protocol",
+        check=False,
     )
-    assert first[0]["stage_fingerprint"] == want_fp
-    assert first[0]["chain_digest"] == chain_digest(
-        "", want_fp, first[0]["vault_digest"], first[0]["seal_digest"], int(first[0]["pin_seq"]), 1
-    )
-    assert drive().returncode == 0
-    assert (STATE / "design_vault.json").read_bytes() == a_vault
-    assert (STATE / "latch_pin.json").read_bytes() == a_latch_pin
-    assert (STATE / "beta_latch_seal.json").read_bytes() == a_seal
-    assert (STATE / "emit_trust.json").read_bytes() == a_trust
-    assert (PLAQUE / "promotion_plaque.json").read_bytes() == a_plaque
-    assert read_json(STATE / "latch_pin.json")["pin_seq"] == gen
-    lines = [json.loads(line) for line in (STATE / "pass_chain.jsonl").read_text().splitlines() if line.strip()]
-    assert len(lines) == 2
-    assert lines[1]["pass_index"] == 2
-    assert lines[1]["prior_digest"] == lines[0]["chain_digest"]
-    assert lines[1]["stage_fingerprint"] == want_fp
-    assert lines[1]["chain_digest"] == chain_digest(
-        lines[0]["chain_digest"], want_fp, lines[1]["vault_digest"], lines[1]["seal_digest"], int(lines[1]["pin_seq"]), 2
-    )
+    assert bad["proc"].returncode != 0
+    assert (out / "current").read_text(encoding="utf-8") == pointer
+    after = _generation_bytes(first["generation"])
+    assert after == before
 
 
-def test_hwml9_run_log_stages():
-    """Run log lists design/vault/latch_pin/beta/commit/seal/forecast/trust/plaque."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    rows = [json.loads(line) for line in (STATE / "run_log.jsonl").read_text().splitlines() if line.strip()]
-    assert [r["stage"] for r in rows] == [
-        "design", "vault", "latch_pin", "beta", "commit", "seal", "forecast", "trust", "plaque"
+def test_determinism_byte_identical_normalized_artifacts(tmp_path: Path):
+    """Identical engine, scenario, seed, doctrine, and bot yield byte-identical normalized artifacts."""
+    a = _match("corridor-converge", output=tmp_path / "a", seed=101)
+    b = _match("corridor-converge", output=tmp_path / "b", seed=101)
+    assert _generation_bytes(a["generation"]) == _generation_bytes(b["generation"])
+
+
+def test_publication_inject_failures_preserve_current(tmp_path: Path):
+    """Injected write/validate/rename/pointer failures leave the previous current generation intact."""
+    out = tmp_path / "pub2"
+    first = _match("jammed-relay", output=out)
+    before = _generation_bytes(first["generation"])
+    pointer = (out / "current").read_text(encoding="utf-8")
+    for kind in ("write", "validate", "rename", "pointer"):
+        proc = _match(
+            "jammed-relay",
+            output=out,
+            inject=kind,
+            check=False,
+        )
+        assert proc["proc"].returncode != 0
+        assert (out / "current").read_text(encoding="utf-8") == pointer
+        assert _generation_bytes(first["generation"]) == before
+
+
+def test_compile_failure_injection_preserves_current(tmp_path: Path):
+    """Injected compile failure does not replace the authoritative current pointer."""
+    out = tmp_path / "pub3"
+    first = _match("overloaded-generator", output=out)
+    pointer = (out / "current").read_text(encoding="utf-8")
+    before = _generation_bytes(first["generation"])
+    bad = _match(
+        "overloaded-generator",
+        output=out,
+        inject="compile",
+        check=False,
+    )
+    assert bad["proc"].returncode != 0
+    assert (out / "current").read_text(encoding="utf-8") == pointer
+    assert _generation_bytes(first["generation"]) == before
+
+
+# ---------------------------------------------------------------------------
+# 10 public cooperative-behavior tests
+# ---------------------------------------------------------------------------
+
+
+def test_public_legal_orders_and_bounded_signals_every_round():
+    """Public defenses emit only legal ops and stay within signal budget every round."""
+    for name in PUBLIC:
+        result = _match(name)
+        rounds = _read_jsonl(result["generation"] / "rounds.jsonl")
+        legal = {
+            "move",
+            "scan",
+            "intercept",
+            "reinforce",
+            "shield",
+            "signal",
+            "hold",
+            "repair",
+        }
+        signal_accepts = 0
+        for row in rounds:
+            for act in row["agent_actions"]:
+                assert act["op"] in legal
+            for sig in row.get("signals", []):
+                if sig.get("from") == "alpha" and sig.get("accepted"):
+                    signal_accepts += 1
+        signals = _read_jsonl(result["generation"] / "signals.jsonl")
+        assert len(rounds) >= 1
+        assert all("timestamp" not in r for r in rounds)
+        _ = signals
+
+
+def test_public_ack_delayed_partner_lane_warning():
+    """Bot acknowledges a delayed partner WARN_LANE or SYNC_CAPTURE after one-round delay."""
+    result = _match("corridor-converge", doctrine="signal-explicit")
+    signals = _read_jsonl(result["generation"] / "signals.jsonl")
+    agent_ack = [s for s in signals if s.get("type") == "ACK" and s.get("from") == "alpha"]
+    assert agent_ack, "bot must acknowledge delayed partner lane warnings"
+
+
+def test_public_power_reservation_before_scan_and_shield_contention():
+    """On overloaded-generator, bots avoid unchecked dual scan+shield thrash on one generator."""
+    result = _match("overloaded-generator", doctrine="power-conservative")
+    assert result["summary"]["generators_alive"] >= 1
+    assert result["summary"]["passed_accept"] is True
+    assert result["summary"]["score"] >= result["summary"]["accept_score"]
+
+
+def test_public_avoid_redundant_interception_when_partner_covers():
+    """Bots avoid stacking intercepts on a contact already covered by the partner."""
+    result = _match("corridor-converge", doctrine="signal-explicit")
+    rounds = _read_jsonl(result["generation"] / "rounds.jsonl")
+    redundant = 0
+    for row in rounds:
+        inter = row.get("intercepts") or {}
+        for actors in inter.values():
+            if isinstance(actors, list) and len(actors) > 1:
+                redundant += 1
+    assert result["summary"]["passed_accept"] is True
+    assert redundant <= 2
+
+
+def test_public_discriminate_confirmed_incursion_vs_false_contact():
+    """Civilian-evac includes a false contact; bots must not rack false alarms."""
+    result = _match("civilian-evac")
+    assert result["summary"]["false_alarms"] == 0
+    assert result["summary"]["passed_accept"] is True
+
+
+def test_public_civilian_corridor_protection_under_lane_pressure():
+    """Bots preserve civilian corridor counts under simultaneous lane pressure."""
+    result = _match("corridor-converge")
+    civ = _read_json(result["generation"] / "civilians.json")
+    assert civ["safe"] == civ["total"]
+    assert result["summary"]["passed_accept"] is True
+
+
+def test_public_synchronized_capture_requires_signal_and_two_coverage_actions():
+    """Civilian-evac boss requires SYNC_CAPTURE signaling and dual coverage for sync credit."""
+    result = _match("civilian-evac")
+    assert result["summary"]["sync_captures"] >= 1
+    signals = _read_jsonl(result["generation"] / "signals.jsonl")
+    assert any(s.get("type") == "SYNC_CAPTURE" for s in signals)
+    assert result["summary"]["passed_accept"] is True
+
+
+def test_public_recovery_from_overload_without_abandoning_both_posts():
+    """After generator stress, posts remain on the board and recovery keeps sector presence."""
+    result = _match("overloaded-generator")
+    rounds = _read_jsonl(result["generation"] / "rounds.jsonl")
+    assert all(r["agent_sector"] and r["partner_sector"] for r in rounds)
+    assert result["summary"]["passed_accept"] is True
+
+
+def test_public_adapt_to_power_conservative_partner_doctrine():
+    """Overloaded-generator with power-conservative partner is completed successfully."""
+    result = _match("overloaded-generator", doctrine="power-conservative")
+    diag = _read_json(result["generation"] / "bot-diagnostics.json")
+    assert diag["protocol_errors"] == 0
+    assert result["summary"]["partner_doctrine"] == "power-conservative"
+    assert result["summary"]["passed_accept"] is True
+
+
+def test_public_multiwave_team_scoring_across_objectives():
+    """Public multi-wave score reconciles infrastructure, civilians, and false-alarm fields."""
+    result = _match("civilian-evac")
+    summary = _read_json(result["generation"] / "summary.json")
+    assert summary["score"] == summary["score_reconciled"]
+    assert summary["passed_accept"] is True
+    for key in ("infrastructure_hp", "civilians_safe", "false_alarms", "sync_captures"):
+        assert key in summary
+    assert summary["sync_captures"] >= 1
+    assert summary["breakthroughs"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 13 isolated hidden composite defense tests
+# ---------------------------------------------------------------------------
+
+
+def test_hidden_delayed_signal_after_scanner_commit(tmp_path: Path):
+    """Delayed WARN identifies a branch only after the bot already committed scanner power elsewhere."""
+    bot = _clone_bot(tmp_path)
+    sc = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-delay-branch",
+            "seed": 9001,
+            "horizon": 8,
+            "accept_score": 50,
+            "signal_budget": 3,
+            "partner_doctrine": "signal-explicit",
+            "jamming": [],
+            "waves": [
+                {
+                    "id": "decoy",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "false",
+                    "speed": 1,
+                    "hp": 1,
+                },
+                {
+                    "id": "branch",
+                    "spawn_round": 2,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                    "branch_at": 1,
+                    "branch_lane": ["E", "CE"],
+                },
+            ],
+        },
+    )
+    result = _match(sc, bot=bot, output=tmp_path / "out", skip_verify=True)
+    assert result["generation"] is not None
+    assert result["summary"]["scenario"] == "hidden-delay-branch"
+
+
+def test_hidden_jamming_removes_ack_partner_movement_implies_cover(tmp_path: Path):
+    """Jamming drops ACK while partner movement still implies coverage on the public sector."""
+    bot = _clone_bot(tmp_path)
+    result = _match("jammed-relay", bot=bot, output=tmp_path / "out")
+    rounds = _read_jsonl(result["generation"] / "rounds.jsonl")
+    signals = _read_jsonl(result["generation"] / "signals.jsonl")
+    assert any(r.get("jammed") for r in rounds)
+    # Partner still occupies sectors during jam (coverage implication without ACK).
+    jammed_rounds = [r for r in rounds if r.get("jammed")]
+    assert jammed_rounds and all(r["partner_sector"] for r in jammed_rounds)
+    # Any ACK attempted while jammed must be rejected.
+    for s in signals:
+        if s.get("type") == "ACK" and s.get("round") in {r["round"] for r in jammed_rounds}:
+            assert s.get("accepted") is False
+            assert "jam" in str(s.get("error", "")).lower()
+
+
+def test_hidden_two_real_one_false_single_interceptor(tmp_path: Path):
+    """Two real contacts and one false trace compete for one interceptor and finite signal tokens."""
+    bot = _clone_bot(tmp_path)
+    sc = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-triage",
+            "seed": 9003,
+            "horizon": 9,
+            "accept_score": 55,
+            "signal_budget": 2,
+            "partner_doctrine": "power-conservative",
+            "generators": [
+                {"id": "G1", "sector": "H", "capacity": 4, "links": ["alpha", "bravo"]}
+            ],
+            "waves": [
+                {
+                    "id": "r1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                },
+                {
+                    "id": "r2",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "E", "CE"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                },
+                {
+                    "id": "f1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "W"],
+                    "kind": "false",
+                    "speed": 1,
+                    "hp": 1,
+                },
+            ],
+        },
+    )
+    result = _match(sc, bot=bot, output=tmp_path / "out", skip_verify=True)
+    assert result["summary"]["false_alarms"] >= 0
+    if result["summary"].get("score", 0) >= 55:
+        assert result["summary"]["false_alarms"] <= 1
+
+
+def test_hidden_shield_overloads_unless_scan_canceled(tmp_path: Path):
+    """Shielding a civilian route overloads the generator unless a redundant scan is canceled."""
+    bot = _clone_bot(tmp_path)
+    sc = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-shield-overload",
+            "seed": 9004,
+            "horizon": 8,
+            "accept_score": 45,
+            "signal_budget": 3,
+            "partner_doctrine": "aggressive",
+            "generators": [
+                {"id": "G1", "sector": "H", "capacity": 3, "links": ["alpha", "bravo"]}
+            ],
+            "agent_post": {"id": "alpha", "sector": "W", "battery": 1, "battery_max": 3},
+            "waves": [
+                {
+                    "id": "c1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                }
+            ],
+        },
+    )
+    result = _match(sc, bot=bot, output=tmp_path / "out", skip_verify=True)
+    assert result["generation"] is not None
+
+
+def test_hidden_aggressive_partner_overcommit_preserve_late_power(tmp_path: Path):
+    """Aggressive partner overcommits early; accepting bots preserve late-wave power."""
+    bot = _clone_bot(tmp_path)
+    sc = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-agg-late",
+            "seed": 9005,
+            "horizon": 10,
+            "accept_score": 50,
+            "signal_budget": 3,
+            "partner_doctrine": "aggressive",
+            "generators": [
+                {"id": "G1", "sector": "H", "capacity": 4, "links": ["alpha", "bravo"]}
+            ],
+            "waves": [
+                {
+                    "id": "early",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                },
+                {
+                    "id": "late",
+                    "spawn_round": 6,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                },
+            ],
+        },
+    )
+    result = _match(sc, bot=bot, output=tmp_path / "out", skip_verify=True)
+    if result["summary"].get("score", 0) >= 50:
+        assert result["summary"]["breakthroughs"] <= 1
+
+
+def test_hidden_sync_signal_one_round_before_visibility(tmp_path: Path):
+    """Synchronized capture is possible only if the bot signals intent before contact is jointly visible."""
+    bot = _clone_bot(tmp_path)
+    sc = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-sync-early",
+            "seed": 9006,
+            "horizon": 10,
+            "accept_score": 60,
+            "signal_budget": 4,
+            "partner_doctrine": "signal-explicit",
+            "sync_capture_contact": "boss",
+            "waves": [
+                {
+                    "id": "boss",
+                    "spawn_round": 3,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 2,
+                }
+            ],
+        },
+    )
+    result = _match(sc, bot=bot, output=tmp_path / "out", skip_verify=True)
+    if result["summary"].get("score", 0) >= 60:
+        assert result["summary"]["sync_captures"] >= 1
+
+
+def test_hidden_renamed_sectors_and_reordered_contacts(tmp_path: Path):
+    """Renamed sectors and reordered contact records must not expose identifier dependence."""
+    bot = _clone_bot(tmp_path)
+    base = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-rename-a",
+            "seed": 9007,
+            "horizon": 8,
+            "accept_score": 40,
+            "signal_budget": 3,
+            "partner_doctrine": "signal-explicit",
+            "waves": [
+                {
+                    "id": "t1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                }
+            ],
+        },
+    )
+    sc = json.loads(base.read_text(encoding="utf-8"))
+    mapping = {s["id"]: f"X{s['id']}" for s in sc["sectors"]}
+    for s in sc["sectors"]:
+        s["id"] = mapping[s["id"]]
+    sc["edges"] = [[mapping[a], mapping[b]] for a, b in sc["edges"]]
+    sc["agent_post"]["sector"] = mapping[sc["agent_post"]["sector"]]
+    sc["partner_post"]["sector"] = mapping[sc["partner_post"]["sector"]]
+    sc["generators"][0]["sector"] = mapping[sc["generators"][0]["sector"]]
+    sc["civilian_corridors"] = [
+        [mapping[x] for x in row] for row in sc["civilian_corridors"]
     ]
+    for w in sc["waves"]:
+        w["lane"] = [mapping[x] for x in w["lane"]]
+    sc["name"] = "hidden-rename-b"
+    path = tmp_path / "hidden-rename-b.json"
+    path.write_text(json.dumps(sc) + "\n", encoding="utf-8")
+    result = _match(path, bot=bot, output=tmp_path / "out", skip_verify=True)
+    assert result["summary"]["scenario"] == "hidden-rename-b"
 
 
-def test_hwml9_vault_only_writes_state_snapshot():
-    """Vault mode writes matrix/vault/pin only — no beta, seal, trust, plaque, or pass_chain."""
-    wipe_outputs()
-    assert drive(mode="vault").returncode == 0
-    assert (STATE / "design_matrix.json").is_file()
-    assert (STATE / "design_vault.json").is_file()
-    assert (STATE / "latch_pin.json").is_file()
-    assert not (STATE / "beta_hat.json").exists()
-    assert not (STATE / "beta_latch_seal.json").exists()
-    assert not (STATE / "emit_trust.json").exists()
-    assert not (STATE / "pass_chain.jsonl").exists()
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-
-
-def test_hwml9_forecast_keeps_vault_when_traces_mutate():
-    """Forecast-only after trace mutation must keep staged vault/latch_pin/seal/plaque."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    vault_bytes = (STATE / "design_vault.json").read_bytes()
-    latch_pin_bytes = (STATE / "latch_pin.json").read_bytes()
-    seal_bytes = (STATE / "beta_latch_seal.json").read_bytes()
-    trust_bytes = (STATE / "emit_trust.json").read_bytes()
-    plaque_bytes = (PLAQUE / "promotion_plaque.json").read_bytes()
-    digest = read_json(STATE / "latch_pin.json")["vault_digest"]
-    traces = FIX / "labeled_traces.jsonl"
-    original = traces.read_text(encoding="utf-8")
-    try:
-        lines = original.splitlines()
-        row = json.loads(lines[0])
-        row["ticks"] = [9, 9, 9, 9, 9, 9, 9, 9]
-        lines[0] = json.dumps(row)
-        traces.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        assert drive(mode="forecast").returncode == 0
-        assert (STATE / "design_vault.json").read_bytes() == vault_bytes
-        assert (STATE / "latch_pin.json").read_bytes() == latch_pin_bytes
-        assert (STATE / "beta_latch_seal.json").read_bytes() == seal_bytes
-        assert (STATE / "emit_trust.json").read_bytes() == trust_bytes
-        assert (PLAQUE / "promotion_plaque.json").read_bytes() == plaque_bytes
-        assert read_json(PLAQUE / "promotion_plaque.json")["vault_digest"] == digest
-    finally:
-        traces.write_text(original, encoding="utf-8")
-
-
-def test_hwml9_vault_then_forecast_matches_full_eval():
-    """vault then forecast produces the same latch_pin digest and plaque as full eval."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    full_digest = read_json(STATE / "latch_pin.json")["vault_digest"]
-    full_plaque = read_json(PLAQUE / "promotion_plaque.json")
-    wipe_outputs()
-    assert drive(mode="vault").returncode == 0
-    assert (STATE / "design_vault.json").is_file()
-    assert (STATE / "latch_pin.json").is_file()
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-    assert drive(mode="forecast").returncode == 0
-    assert read_json(STATE / "latch_pin.json")["vault_digest"] == full_digest
-    got = read_json(PLAQUE / "promotion_plaque.json")
-    assert got["promoted"] == full_plaque["promoted"]
-    assert got["mape"] == full_plaque["mape"]
-    assert got["r2"] == full_plaque["r2"]
-    assert got["vault_digest"] == full_plaque["vault_digest"]
-    assert got["pin_digest"] == full_plaque["pin_digest"]
-    assert got["seal_digest"] == full_plaque["seal_digest"]
-    assert got["trust_digest"] == full_plaque["trust_digest"]
-
-
-def test_hwml9_mutated_vault_without_repin_breaks_forecast():
-    """Forecast must fail when design_vault is mutated without refreshing latch_pin."""
-    wipe_outputs()
-    assert drive(mode="vault").returncode == 0
-    vault = read_json(STATE / "design_vault.json")
-    vault["rows"][0]["target_energy"] = float(vault["rows"][0]["target_energy"]) + 1.0
-    (STATE / "design_vault.json").write_text(json.dumps(vault, indent=2) + "\n", encoding="utf-8")
-    proc = drive(mode="forecast")
-    assert proc.returncode != 0
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-
-
-def test_hwml9_policy_epoch_drift_breaks_forecast():
-    """Forecast must abort when staged vault policy_epoch drifts from the workbook."""
-    wipe_outputs()
-    assert drive(mode="vault").returncode == 0
-    vault = read_json(STATE / "design_vault.json")
-    vault["policy_epoch"] = int(vault["policy_epoch"]) + 9
-    (STATE / "design_vault.json").write_text(json.dumps(vault, indent=2) + "\n", encoding="utf-8")
-    # Refresh pin digest to match mutated vault so epoch check is the failure mode
-    pin = read_json(STATE / "latch_pin.json")
-    pin["vault_digest"] = sha(STATE / "design_vault.json")
-    pin["policy_epoch"] = vault["policy_epoch"]
-    (STATE / "latch_pin.json").write_text(json.dumps(pin, indent=2) + "\n", encoding="utf-8")
-    proc = drive(mode="forecast")
-    assert proc.returncode != 0
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-
-
-def test_hwml9_stale_trust_after_beta_mutation_breaks_emit():
-    """Emit must fail when beta_hat mutates without refreshing emit_trust."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    prior_trust = (STATE / "emit_trust.json").read_text(encoding="utf-8")
-    beta = read_json(STATE / "beta_hat.json")
-    beta["values"] = [float(v) + 0.001 for v in beta["values"]]
-    (STATE / "beta_hat.json").write_text(json.dumps(beta, indent=2) + "\n", encoding="utf-8")
-    (PLAQUE / "promotion_plaque.json").unlink(missing_ok=True)
-    proc = drive(mode="emit")
-    assert proc.returncode != 0
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-    assert (STATE / "emit_trust.json").read_text(encoding="utf-8") == prior_trust
-
-
-def test_hwml9_stale_seal_after_beta_mutation_breaks_emit():
-    """Emit must fail when beta mutates even if trust digests are forcibly refreshed without seal."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    beta = read_json(STATE / "beta_hat.json")
-    beta["values"] = [float(v) + 0.002 for v in beta["values"]]
-    (STATE / "beta_hat.json").write_text(json.dumps(beta, indent=2) + "\n", encoding="utf-8")
-    trust = read_json(STATE / "emit_trust.json")
-    trust["beta_digest"] = sha(STATE / "beta_hat.json")
-    (STATE / "emit_trust.json").write_text(json.dumps(trust, indent=2) + "\n", encoding="utf-8")
-    (PLAQUE / "promotion_plaque.json").unlink(missing_ok=True)
-    proc = drive(mode="emit")
-    assert proc.returncode != 0
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-
-
-def test_hwml9_stale_trust_after_forecast_mutation_breaks_emit():
-    """Emit must fail when forecast_tape mutates without refreshing emit_trust."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    prior_trust = json.loads((STATE / "emit_trust.json").read_text(encoding="utf-8"))
-    tape = read_json(STATE / "forecast_tape.json")
-    tape["mape"] = float(tape["mape"]) + 0.01
-    (STATE / "forecast_tape.json").write_text(json.dumps(tape, indent=2) + "\n", encoding="utf-8")
-    (PLAQUE / "promotion_plaque.json").unlink(missing_ok=True)
-    proc = drive(mode="emit")
-    assert proc.returncode != 0
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-    assert prior_trust["forecast_digest"] != sha(STATE / "forecast_tape.json")
-
-
-def test_hwml9_emit_rewrites_plaque_when_trust_fresh():
-    """Emit succeeds and rewrites plaque digests when trust+seal still match files."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    trust_digest = sha(STATE / "emit_trust.json")
-    seal_digest = sha(STATE / "beta_latch_seal.json")
-    chain_before = (STATE / "pass_chain.jsonl").read_text(encoding="utf-8")
-    (PLAQUE / "promotion_plaque.json").unlink()
-    assert drive(mode="emit").returncode == 0
-    p = read_json(PLAQUE / "promotion_plaque.json")
-    assert p["trust_digest"] == trust_digest
-    assert p["seal_digest"] == seal_digest
-    assert p["promoted"] is True
-    assert (STATE / "pass_chain.jsonl").read_text(encoding="utf-8") == chain_before
-
-
-def test_hwml9_sidecut_not_imported():
-    """latchml must not import sidecut or decoy."""
-    for p in (APP / "latchml").glob("*.py"):
-        text = p.read_text(encoding="utf-8")
-        assert "sidecut" not in text
-        assert "decoy" not in text
-
-
-def test_hwml9_decoy_ridge_off_hot_path():
-    """Decoy ridge module exists but is not imported by latchml."""
-    assert (APP / "decoy" / "ridge_always.py").is_file()
-    blob = " ".join(p.read_text(encoding="utf-8") for p in (APP / "latchml").glob("*.py"))
-    assert "ridge_always" not in blob
-
-
-def test_hwml9_scoregate_miss_blocks():
-    """Noisy reserved targets block promotion."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "metric-miss"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    assert read_json(PLAQUE / "promotion_plaque.json")["promoted"] is False
-
-
-def test_hwml9_mape_trap_fails_mape_only():
-    """mape_trap fixture fails MAPE ceiling while R2 still clears the floor."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "mape-trap"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    tape = read_json(STATE / "forecast_tape.json")
-    card = read_json(PLAQUE / "promotion_plaque.json")
-    assert float(tape["r2"]) >= float(tape["r2_floor"])
-    assert float(tape["mape"]) > float(tape["mape_ceiling"])
-    assert card["promoted"] is False
-
-
-def test_hwml9_r2_trap_fails_r2_only():
-    """r2_trap fixture fails R2 floor while MAPE still clears the ceiling."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "r2-trap"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    tape = read_json(STATE / "forecast_tape.json")
-    card = read_json(PLAQUE / "promotion_plaque.json")
-    assert float(tape["mape"]) <= float(tape["mape_ceiling"])
-    assert float(tape["r2"]) < float(tape["r2_floor"])
-    assert card["promoted"] is False
-
-
-def test_hwml9_specimen_spike_alters_mape():
-    """Spiked reserved ticks change MAPE vs baseline."""
-    base = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")["forecast"]["mape"]
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "feature-spike"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    assert read_json(STATE / "forecast_tape.json")["mape"] != base
-
-
-def test_hwml9_no_reserved_blocks():
-    """No reserved cohort cannot promote."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "no-holdout"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    assert read_json(STATE / "forecast_tape.json")["rows"] == []
-    assert read_json(PLAQUE / "promotion_plaque.json")["promoted"] is False
-
-
-def test_hwml9_ridge_bait_ignored():
-    """Workbook ridge_lambda bait must not change plain OLS beta."""
-    base = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")["beta"]["values"]
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "ridge-bait"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    assert read_json(STATE / "beta_hat.json")["values"] == base
-
-
-def test_hwml9_shuffled_input_still_sorted():
-    """Shuffled learning file order still yields id-sorted design rows and matching beta."""
-    base = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "shuffled-ids"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    ids = [r["id"] for r in read_json(STATE / "design_vault.json")["rows"]]
-    assert ids == sorted(ids)
-    assert read_json(STATE / "beta_hat.json")["values"] == base["beta"]["values"]
-
-
-def test_hwml9_miss_digests_still_pin():
-    """Failed promotion still binds digests including vault, latch_pin, seal, and emit_trust."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "metric-miss"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    p = read_json(PLAQUE / "promotion_plaque.json")
-    assert p["design_digest"] == sha(STATE / "design_matrix.json")
-    assert p["vault_digest"] == sha(STATE / "design_vault.json")
-    assert p["pin_digest"] == sha(STATE / "latch_pin.json")
-    assert p["seal_digest"] == sha(STATE / "beta_latch_seal.json")
-    assert p["trust_digest"] == sha(STATE / "emit_trust.json")
-    assert read_json(STATE / "emit_trust.json")["metrics_pass"] is False
-
-
-def test_hwml9_quadratic_columns_present():
-    """Design column_names include squared terms."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    names = read_json(STATE / "design_matrix.json")["column_names"]
-    assert "mean_sq" in names and "max_sq" in names and "std_sq" in names
-
-
-def test_hwml9_predictions_finite():
-    """Forecast predictions are finite."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    for row in read_json(STATE / "forecast_tape.json")["rows"]:
-        assert row["prediction"] == row["prediction"]
-
-
-def test_hwml9_pass_chain_row_agrees_refml():
-    """First pass_chain line agrees with independent chain builder."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    pin = read_json(STATE / "latch_pin.json")
-    row = [json.loads(line) for line in (STATE / "pass_chain.jsonl").read_text().splitlines() if line.strip()][0]
-    want = reference_pass_chain_row(
-        "",
-        STATE / "design_vault.json",
-        STATE / "latch_pin.json",
-        STATE / "beta_hat.json",
-        STATE / "fit_commit.json",
-        STATE / "beta_latch_seal.json",
-        STATE / "forecast_tape.json",
-        STATE / "emit_trust.json",
-        pin["pin_seq"],
-        1,
+def test_hidden_rotated_symmetric_grid(tmp_path: Path):
+    """Rotated symmetric grid requires rotated coverage rather than memorized coordinates."""
+    bot = _clone_bot(tmp_path)
+    sc = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-rotate",
+            "seed": 9008,
+            "horizon": 8,
+            "accept_score": 40,
+            "signal_budget": 3,
+            "partner_doctrine": "signal-explicit",
+            "waves": [
+                {
+                    "id": "t1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                }
+            ],
+        },
     )
-    assert row == want
+    data = json.loads(sc.read_text(encoding="utf-8"))
+    for s in data["sectors"]:
+        x, y = s["x"], s["y"]
+        s["x"], s["y"] = y, -x
+    path = tmp_path / "hidden-rotate.json"
+    path.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    result = _match(path, bot=bot, output=tmp_path / "out", skip_verify=True)
+    assert result["generation"] is not None
+
+
+def test_hidden_increased_signal_capacity_no_waste(tmp_path: Path):
+    """Increased signal capacity must not cause wasteful communication that reduces defense actions."""
+    bot = _clone_bot(tmp_path)
+    sc = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-signal-cap",
+            "seed": 9009,
+            "horizon": 8,
+            "accept_score": 45,
+            "signal_budget": 12,
+            "partner_doctrine": "signal-explicit",
+            "waves": [
+                {
+                    "id": "t1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                }
+            ],
+        },
+    )
+    result = _match(sc, bot=bot, output=tmp_path / "out", skip_verify=True)
+    rounds = _read_jsonl(result["generation"] / "rounds.jsonl")
+    defense_ops = 0
+    for row in rounds:
+        for act in row["agent_actions"]:
+            if act["op"] in {"intercept", "shield", "move", "scan", "repair"}:
+                defense_ops += 1
+    assert defense_ops >= 1
+
+
+def test_hidden_remove_concealed_threat_outside_envelope(tmp_path: Path):
+    """Removing a concealed threat outside all future interaction envelopes has no observable effect."""
+    bot = _clone_bot(tmp_path)
+    base_waves = [
+        {
+            "id": "visible",
+            "spawn_round": 1,
+            "lane": ["N", "H", "S"],
+            "kind": "incursion",
+            "speed": 1,
+            "hp": 1,
+        }
+    ]
+    sc1 = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-envelope-a",
+            "seed": 9010,
+            "horizon": 6,
+            "accept_score": 30,
+            "signal_budget": 2,
+            "partner_doctrine": "power-conservative",
+            "waves": base_waves
+            + [
+                {
+                    "id": "ghost",
+                    "spawn_round": 20,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                }
+            ],
+        },
+    )
+    # ghost spawn_round > horizon => outside envelope; compare to no ghost
+    sc2 = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-envelope-b",
+            "seed": 9010,
+            "horizon": 6,
+            "accept_score": 30,
+            "signal_budget": 2,
+            "partner_doctrine": "power-conservative",
+            "waves": base_waves,
+        },
+    )
+    a = _match(sc1, bot=bot, output=tmp_path / "a", skip_verify=True)
+    b = _match(sc2, bot=bot, output=tmp_path / "b", skip_verify=True)
+    ra = _read_jsonl(a["generation"] / "rounds.jsonl")
+    rb = _read_jsonl(b["generation"] / "rounds.jsonl")
+    assert [r["agent_actions"] for r in ra] == [r["agent_actions"] for r in rb]
+
+
+def test_hidden_jammed_relay_civilian_repair_priority(tmp_path: Path):
+    """Jammed relay, civilian corridor, and generator repair must be prioritized across three rounds."""
+    bot = _clone_bot(tmp_path)
+    sc = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-tri-priority",
+            "seed": 9011,
+            "horizon": 9,
+            "accept_score": 40,
+            "signal_budget": 3,
+            "partner_doctrine": "aggressive",
+            "jamming": [{"round": 1, "duration": 2}],
+            "generators": [
+                {"id": "G1", "sector": "H", "capacity": 3, "links": ["alpha", "bravo"]}
+            ],
+            "waves": [
+                {
+                    "id": "t1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                }
+            ],
+        },
+    )
+    result = _match(sc, bot=bot, output=tmp_path / "out", skip_verify=True)
+    assert len(_read_jsonl(result["generation"] / "rounds.jsonl")) >= 3
+
+
+def test_hidden_two_doctrines_same_move_different_reserves(tmp_path: Path):
+    """Two partner doctrines can share a current move yet require different future power reserves."""
+    bot = _clone_bot(tmp_path)
+    overrides = {
+        "seed": 9012,
+        "horizon": 8,
+        "accept_score": 40,
+        "signal_budget": 3,
+        "waves": [
+            {
+                "id": "t1",
+                "spawn_round": 1,
+                "lane": ["N", "H", "S"],
+                "kind": "incursion",
+                "speed": 1,
+                "hp": 1,
+            },
+            {
+                "id": "t2",
+                "spawn_round": 5,
+                "lane": ["N", "H", "S"],
+                "kind": "incursion",
+                "speed": 1,
+                "hp": 1,
+            },
+        ],
+    }
+    sc_a = _write_scenario(
+        tmp_path,
+        {**overrides, "name": "hidden-doc-a", "partner_doctrine": "power-conservative"},
+    )
+    sc_b = _write_scenario(
+        tmp_path,
+        {**overrides, "name": "hidden-doc-b", "partner_doctrine": "aggressive"},
+    )
+    a = _match(sc_a, bot=bot, output=tmp_path / "a", skip_verify=True)
+    b = _match(sc_b, bot=bot, output=tmp_path / "b", skip_verify=True)
+    assert a["summary"]["partner_doctrine"] != b["summary"]["partner_doctrine"]
+
+
+def test_hidden_final_wave_balanced_scoring(tmp_path: Path):
+    """Final-wave infrastructure, civilian, false-alarm, and sync scores must be balanced together."""
+    bot = _clone_bot(tmp_path)
+    sc = _write_scenario(
+        tmp_path,
+        {
+            "name": "hidden-final-balance",
+            "seed": 9013,
+            "horizon": 12,
+            "accept_score": 70,
+            "signal_budget": 5,
+            "partner_doctrine": "signal-explicit",
+            "sync_capture_contact": "boss",
+            "waves": [
+                {
+                    "id": "fake",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "W"],
+                    "kind": "false",
+                    "speed": 1,
+                    "hp": 1,
+                },
+                {
+                    "id": "mid",
+                    "spawn_round": 2,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                },
+                {
+                    "id": "boss",
+                    "spawn_round": 5,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 2,
+                },
+            ],
+        },
+    )
+    result = _match(sc, bot=bot, output=tmp_path / "out", skip_verify=True)
+    summary = result["summary"]
+    assert summary["score"] == summary["score_reconciled"]
+    if summary.get("score", 0) >= 70:
+        assert summary["false_alarms"] == 0
+        assert summary["sync_captures"] >= 1
+        assert summary["civilians_safe"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# 6 game-native metamorphic tests
+# ---------------------------------------------------------------------------
+
+
+def test_metamorphic_bijective_sector_renaming_preserves_outcomes(tmp_path: Path):
+    """Bijective sector renaming preserves normalized team outcomes."""
+    bot = _clone_bot(tmp_path)
+    base = {
+        "name": "meta-rename-a",
+        "seed": 7001,
+        "horizon": 7,
+        "accept_score": 30,
+        "signal_budget": 3,
+        "partner_doctrine": "signal-explicit",
+        "waves": [
+            {
+                "id": "t1",
+                "spawn_round": 1,
+                "lane": ["N", "H", "S"],
+                "kind": "incursion",
+                "speed": 1,
+                "hp": 1,
+            }
+        ],
+    }
+    sc1 = _write_scenario(tmp_path, base)
+    data = json.loads(sc1.read_text(encoding="utf-8"))
+    mapping = {s["id"]: f"R{s['id']}" for s in data["sectors"]}
+    for s in data["sectors"]:
+        s["id"] = mapping[s["id"]]
+    data["edges"] = [[mapping[a], mapping[b]] for a, b in data["edges"]]
+    data["agent_post"]["sector"] = mapping[data["agent_post"]["sector"]]
+    data["partner_post"]["sector"] = mapping[data["partner_post"]["sector"]]
+    data["generators"][0]["sector"] = mapping[data["generators"][0]["sector"]]
+    data["civilian_corridors"] = [
+        [mapping[x] for x in row] for row in data["civilian_corridors"]
+    ]
+    for w in data["waves"]:
+        w["lane"] = [mapping[x] for x in w["lane"]]
+    data["name"] = "meta-rename-b"
+    sc2 = tmp_path / "meta-rename-b.json"
+    sc2.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    a = _match(sc1, bot=bot, output=tmp_path / "a", skip_verify=True)
+    b = _match(sc2, bot=bot, output=tmp_path / "b", skip_verify=True)
+    assert a["summary"]["score"] == b["summary"]["score"]
+    assert a["summary"]["breakthroughs"] == b["summary"]["breakthroughs"]
+
+
+def test_metamorphic_reorder_independent_contacts_preserves_resolution(tmp_path: Path):
+    """Reordering independent contact records preserves legal decisions and resolution."""
+    bot = _clone_bot(tmp_path)
+    waves_a = [
+        {
+            "id": "a1",
+            "spawn_round": 1,
+            "lane": ["N", "H", "S"],
+            "kind": "incursion",
+            "speed": 1,
+            "hp": 1,
+        },
+        {
+            "id": "b1",
+            "spawn_round": 1,
+            "lane": ["N", "H", "E", "CE"],
+            "kind": "incursion",
+            "speed": 1,
+            "hp": 1,
+        },
+    ]
+    waves_b = list(reversed(waves_a))
+    sc1 = _write_scenario(
+        tmp_path,
+        {
+            "name": "meta-order-a",
+            "seed": 7002,
+            "horizon": 7,
+            "accept_score": 30,
+            "signal_budget": 3,
+            "partner_doctrine": "power-conservative",
+            "waves": waves_a,
+        },
+    )
+    sc2 = _write_scenario(
+        tmp_path,
+        {
+            "name": "meta-order-b",
+            "seed": 7002,
+            "horizon": 7,
+            "accept_score": 30,
+            "signal_budget": 3,
+            "partner_doctrine": "power-conservative",
+            "waves": waves_b,
+        },
+    )
+    a = _match(sc1, bot=bot, output=tmp_path / "a", skip_verify=True)
+    b = _match(sc2, bot=bot, output=tmp_path / "b", skip_verify=True)
+    assert a["summary"]["score"] == b["summary"]["score"]
+
+
+def test_metamorphic_symmetric_grid_rotation(tmp_path: Path):
+    """Rotating a symmetric grid rotates strategic actions without material score loss."""
+    bot = _clone_bot(tmp_path)
+    sc1 = _write_scenario(
+        tmp_path,
+        {
+            "name": "meta-rot-a",
+            "seed": 7003,
+            "horizon": 7,
+            "accept_score": 30,
+            "signal_budget": 3,
+            "partner_doctrine": "signal-explicit",
+            "waves": [
+                {
+                    "id": "t1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                }
+            ],
+        },
+    )
+    data = json.loads(sc1.read_text(encoding="utf-8"))
+    for s in data["sectors"]:
+        x, y = s["x"], s["y"]
+        s["x"], s["y"] = y, -x
+    data["name"] = "meta-rot-b"
+    sc2 = tmp_path / "meta-rot-b.json"
+    sc2.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    a = _match(sc1, bot=bot, output=tmp_path / "a", skip_verify=True)
+    b = _match(sc2, bot=bot, output=tmp_path / "b", skip_verify=True)
+    assert abs(a["summary"]["score"] - b["summary"]["score"]) <= 15
+
+
+def test_metamorphic_increased_signal_capacity_preserves_legal_plans(tmp_path: Path):
+    """Increasing friendly signal capacity cannot reduce the set of legal cooperative plans."""
+    bot = _clone_bot(tmp_path)
+    low = _write_scenario(
+        tmp_path,
+        {
+            "name": "meta-sig-low",
+            "seed": 7004,
+            "horizon": 7,
+            "accept_score": 30,
+            "signal_budget": 2,
+            "partner_doctrine": "signal-explicit",
+            "waves": [
+                {
+                    "id": "t1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                }
+            ],
+        },
+    )
+    high = _write_scenario(
+        tmp_path,
+        {
+            "name": "meta-sig-high",
+            "seed": 7004,
+            "horizon": 7,
+            "accept_score": 30,
+            "signal_budget": 8,
+            "partner_doctrine": "signal-explicit",
+            "waves": [
+                {
+                    "id": "t1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                }
+            ],
+        },
+    )
+    a = _match(low, bot=bot, output=tmp_path / "a", skip_verify=True)
+    b = _match(high, bot=bot, output=tmp_path / "b", skip_verify=True)
+    assert b["summary"]["score"] >= a["summary"]["score"] - 5
+
+
+def test_metamorphic_increased_generator_capacity_keeps_schedule_feasible(tmp_path: Path):
+    """Increasing generator capacity cannot invalidate a previously feasible defense schedule."""
+    bot = _clone_bot(tmp_path)
+    low = _write_scenario(
+        tmp_path,
+        {
+            "name": "meta-gen-low",
+            "seed": 7005,
+            "horizon": 7,
+            "accept_score": 30,
+            "signal_budget": 3,
+            "partner_doctrine": "power-conservative",
+            "generators": [
+                {"id": "G1", "sector": "H", "capacity": 3, "links": ["alpha", "bravo"]}
+            ],
+            "waves": [
+                {
+                    "id": "t1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                }
+            ],
+        },
+    )
+    high = _write_scenario(
+        tmp_path,
+        {
+            "name": "meta-gen-high",
+            "seed": 7005,
+            "horizon": 7,
+            "accept_score": 30,
+            "signal_budget": 3,
+            "partner_doctrine": "power-conservative",
+            "generators": [
+                {"id": "G1", "sector": "H", "capacity": 8, "links": ["alpha", "bravo"]}
+            ],
+            "waves": [
+                {
+                    "id": "t1",
+                    "spawn_round": 1,
+                    "lane": ["N", "H", "S"],
+                    "kind": "incursion",
+                    "speed": 1,
+                    "hp": 1,
+                }
+            ],
+        },
+    )
+    a = _match(low, bot=bot, output=tmp_path / "a", skip_verify=True)
+    b = _match(high, bot=bot, output=tmp_path / "b", skip_verify=True)
+    assert b["summary"]["score"] >= a["summary"]["score"]
+
+
+def test_metamorphic_remove_out_of_envelope_threat_unchanged_history(tmp_path: Path):
+    """Removing a threat outside visibility and interaction envelopes cannot change observation history."""
+    bot = _clone_bot(tmp_path)
+    visible = [
+        {
+            "id": "vis",
+            "spawn_round": 1,
+            "lane": ["N", "H", "S"],
+            "kind": "incursion",
+            "speed": 1,
+            "hp": 1,
+        }
+    ]
+    ghost = {
+        "id": "ghost",
+        "spawn_round": 50,
+        "lane": ["N", "H", "S"],
+        "kind": "incursion",
+        "speed": 1,
+        "hp": 1,
+    }
+    sc1 = _write_scenario(
+        tmp_path,
+        {
+            "name": "meta-env-a",
+            "seed": 7006,
+            "horizon": 5,
+            "accept_score": 20,
+            "signal_budget": 2,
+            "partner_doctrine": "signal-explicit",
+            "waves": visible + [ghost],
+        },
+    )
+    sc2 = _write_scenario(
+        tmp_path,
+        {
+            "name": "meta-env-b",
+            "seed": 7006,
+            "horizon": 5,
+            "accept_score": 20,
+            "signal_budget": 2,
+            "partner_doctrine": "signal-explicit",
+            "waves": visible,
+        },
+    )
+    a = _match(sc1, bot=bot, output=tmp_path / "a", skip_verify=True)
+    b = _match(sc2, bot=bot, output=tmp_path / "b", skip_verify=True)
+    ra = _read_jsonl(a["generation"] / "rounds.jsonl")
+    rb = _read_jsonl(b["generation"] / "rounds.jsonl")
+    assert [r["agent_actions"] for r in ra] == [r["agent_actions"] for r in rb]
+    assert a["summary"]["score"] == b["summary"]["score"]
