@@ -1,23 +1,9 @@
-# Isolate runtime authority across cache reuse
+# Sumdb graph trim inferencer
 
-Harden the module execution service under `/app` while preserving `/app/bin/rt-run`, `/app/bin/rulesctl`, the documented ABI, and cache statistics.
+Fleet CI needs an inferred module graph that still builds both package arms offline. Partial gosum scraps and two sumdb tile generations under `/app/environment/seed` disagree on checksums for the same module versions. Durable state under `/app/environment/var`, the nest module files, and `/app/output/graph_probe.json` drift across arm selections, soft settles, interrupted journals, nest edits, and leftover soft quarantine between otherwise identical runs. Fix the sources under `/app/environment` so the normal driver regenerates the probe. Static or hand-written reports at the output path are insufficient.
 
-Every run must honor only the intersection of capabilities in the module's valid signed document, the requesting tenant's active rules snapshot, and any reductions in the run request. A request cannot add authority.
+Rebuild with `bash /app/environment/tools/mk_all.sh`. The binary `/app/bin/gm_infer` supports `settle`, `recover`, `status`, and `compact`. Argv patterns live in `/app/environment/docs/ops.md`. Ledger and quarantine notes live in `/app/environment/docs/state_contract.md`. Probe schema lives in `/app/environment/docs/row_rules.md`. Merge rules live in `/app/environment/docs/merge_notes.md`. Required edge classes per package arm are in `/app/environment/docs/class_matrix.md`.
 
-Module bytes must remain bound to the requesting tenant, signed document, ABI version, rules context, request reductions, limits, and resource namespace used for execution. Cache hits, restart, document replacement, rules refresh, run order, or concurrent runs must not transfer authority between contexts.
+The probe at `/app/output/graph_probe.json` includes edges and edge_count, plus a view_digest. Each edge needs module_path, version, replace_to when applicable, cls, and sum. Hand-written nest module files are insufficient; settle and recover regenerate them from the committed plan, including on journal cache hits. Materializing workspace module files must keep go.sum aligned with the plan. Both packages build with network disabled using the regenerated nest files.
 
-Reusable compiled artifacts and attachment plans must be keyed so equivalent security contexts share reuse while differing contexts do not. Each run receives fresh mutable service state and fresh instruction, memory, output, and call budgets.
-
-`/app/bin/rulesctl reload` publishes an immutable rules snapshot. Revoked capabilities are unavailable to every run that starts after a successful reload, including cache hits and restart. An active run may retain only the immutable authority snapshot captured when it started.
-
-Signed documents must bind tenant identity, module digest, ABI version, capabilities, limits, and validity. Replacing bound fields without a valid signature is rejected.
-
-Preserve ABI v1 compatibility and documented legacy defaults. ABI v2 omission means denial. Neither version may bypass current tenant rules, request reductions, namespaces, or metering.
-
-Denied operations return documented errors such as `capability-denied` and `host-call-budget-exhausted`. They produce no external effect. Module-supplied paths, keys, names, and endpoints cannot escape the tenant namespace.
-
-Store run results beneath `/output/rt-runs` and JSONL audit events in `/var/log/rt-daemon/audit.log`. Each run directory holds result.json naming tenant, module_digest, cache, effective_caps, and result. Audit lines name tenant, policy_digest, effective_caps, and cache. Results and audits report digests, ABI, cache outcome, and budgets consumed without secret environment values, file or KV contents, signing keys, or cache payloads.
-
-Use `/app/config/clock` as authoritative time. Cache and state live under `/app/state`, tenant resources under `/data/tenants`, and rules or signed documents under `/app/config`. Unix socket requests use a 4-byte big-endian length prefix. Tenant KV stores use the `sqlite3` CLI layout under `/data/tenants`.
-
-Modify source only in `/app`. Do not edit `/tests`, `/data`, signing material, or verifier-supplied artifacts. Do not contact external services.
+Settling only one package arm is not enough for dual-package coherence. A repeated identical committed settle must not advance durable epoch or append a new ledger commit, but must restore nest and probe if they were corrupted and clear any soft quarantine. Soft settles exit 0 and write a probe without becoming committed settled state. Recover repairs the journal and rematerializes from the surviving committed tip. Compact rewrites an equivalent sealed prefix without changing recoverable plans. Arm or scrap input changes with the same tile paths must not reuse a plan computed for a different selection.

@@ -4,24 +4,28 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = ["tool_specific"]
-number_of_milestones = 0
+category = "build-and-dependency-management"
+tags = ["go", "sumdb", "modules", "offline-build", "journal", "graph-inference"]
+languages = ["go"]
+title = "Sumdb graph trim inferencer"
 codebase_size = "small"
-languages = ["python", "bash", "json", "toml"]
-tags = ["webassembly", "capability-security", "cache-isolation", "signed-manifests", "multi-tenant", "audit"]
-expert_time_estimate_min = 660
-junior_time_estimate_min = 1980
+number_of_milestones = 0
+subcategories = []
+expert_time_estimate_min = 120
+junior_time_estimate_min = 360
 
 [verifier]
-timeout_sec = 1800
+timeout_sec = 900
 
 [agent]
 timeout_sec = 1800
 
 [environment]
-build_timeout_sec = 1800
-cpus = 4
-memory_mb = 10240
-storage_mb = 14336
+build_timeout_sec = 900
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
 allow_internet = false
+
+[reference_pattern]
+justification_if_none = "no promoted reference matches go sumdb mirror graph trim under conflicting tiles and dual-package offline builds"

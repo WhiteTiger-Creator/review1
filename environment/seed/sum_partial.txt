@@ -1,0 +1,3 @@
+example.com/lib/root v1.0.0 baf5744cdfa03fa361e3b78aef48b463234a3272caa78edf958b94a12025a7a1
+example.com/lib/bind v1.2.0 db5c83cbb08b5cc03b5d2a40e81e91b62121fb67c86546aec08ba39e3e51c8f7
+example.com/lib/a7x v0.3.0 e821d31270c555d74348ffcc3fafbef9dc99a09e2a5a2da7c444bef818da999a
