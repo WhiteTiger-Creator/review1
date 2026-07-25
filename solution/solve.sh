@@ -1,855 +1,514 @@
-#!/bin/bash
-set -euo pipefail
+#!/usr/bin/env sh
+set -eu
 
-cat > /app/main.go <<'GO'
-package main
+cat > /opt/pod-lock-desk/pod-source-lock <<'PERL'
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use Digest::SHA qw(sha256_hex);
+use File::Path qw(remove_tree make_path);
 
-import (
-	"crypto/sha256"
-	"encoding/json"
-	"fmt"
-	"os"
-	"sort"
-	"strings"
-)
+my $ROOT = "/opt/pod-lock-desk";
+my $CASE = "$ROOT/case";
+my $OUT = "$ROOT/out";
 
-type Coord struct{ Q, R int }
-
-type Rules struct {
-	Radius                int    `json:"radius"`
-	MaxGroup              int    `json:"max_group"`
-	TargetEjections       int    `json:"target_ejections"`
-	RepetitionLimit       int    `json:"repetition_limit"`
-	RepetitionEquivalence string `json:"repetition_equivalence"`
-	KoWindow              int    `json:"ko_window"`
-	NoProgressLimit       int    `json:"no_progress_limit"`
-	MoveLimit             int    `json:"move_limit"`
-	ContinuationDepth     int    `json:"continuation_depth"`
-	QuiescenceDepth       int    `json:"quiescence_depth"`
-	TempoCooldown         int    `json:"tempo_cooldown"`
-	MomentumCap           int    `json:"momentum_cap"`
+sub read_tsv {
+    my ($path) = @_;
+    open my $fh, "<", $path or die "cannot read $path: $!";
+    chomp(my $header = <$fh>);
+    my @cols = split /\t/, $header, -1;
+    my @rows;
+    while (defined(my $line = <$fh>)) {
+        chomp $line;
+        next if $line eq "";
+        my @vals = split /\t/, $line, -1;
+        my %row;
+        for my $i (0 .. $#cols) {
+            $row{$cols[$i]} = defined $vals[$i] ? $vals[$i] : "";
+        }
+        push @rows, \%row;
+    }
+    close $fh;
+    return @rows;
 }
 
-type Marble struct {
-	Q      int    `json:"q"`
-	R      int    `json:"r"`
-	Player string `json:"player"`
+sub list_values {
+    my ($cell, $sep) = @_;
+    return () if !defined($cell) || $cell eq "" || $cell eq "-";
+    return grep { $_ ne "" } split /\Q$sep\E/, $cell;
 }
 
-type Cooldown struct {
-	Q         int    `json:"q"`
-	R         int    `json:"r"`
-	Player    string `json:"player"`
-	Remaining int    `json:"remaining"`
+sub vparts {
+    my ($v) = @_;
+    my @p = split /\./, $v;
+    push @p, 0 while @p < 3;
+    return map { int($_ || 0) } @p[0..2];
 }
 
-type Initial struct {
-	NextPlayer string         `json:"next_player"`
-	Ejections map[string]int `json:"ejections"`
-	Momentum   map[string]int `json:"momentum"`
-	Cooldowns  []Cooldown     `json:"cooldowns"`
-	Marbles    []Marble       `json:"marbles"`
+sub vcmp {
+    my ($a, $b) = @_;
+    my @a = vparts($a);
+    my @b = vparts($b);
+    for my $i (0..2) {
+        return $a[$i] <=> $b[$i] if $a[$i] != $b[$i];
+    }
+    return 0;
 }
 
-type Move struct {
-	ID        string  `json:"id"`
-	Player    string  `json:"player"`
-	Marbles   [][]int `json:"marbles"`
-	Direction string  `json:"direction"`
+sub satisfies {
+    my ($version, $req) = @_;
+    return 1 if !defined($req) || $req eq "" || $req eq "*" || $req eq "-";
+    if ($req =~ /^~> (\d+)\.(\d+)\.(\d+)$/) {
+        my $lo = "$1.$2.$3";
+        my $hi = "$1." . ($2 + 1) . ".0";
+        return vcmp($version, $lo) >= 0 && vcmp($version, $hi) < 0;
+    }
+    if ($req =~ /^~> (\d+)\.(\d+)$/) {
+        my $lo = "$1.$2.0";
+        my $hi = ($1 + 1) . ".0.0";
+        return vcmp($version, $lo) >= 0 && vcmp($version, $hi) < 0;
+    }
+    if ($req =~ /^>=(\d+(?:\.\d+){0,2}) <(\d+(?:\.\d+){0,2})$/) {
+        return vcmp($version, $1) >= 0 && vcmp($version, $2) < 0;
+    }
+    if ($req =~ /^>=(\d+(?:\.\d+){0,2})$/) {
+        return vcmp($version, $1) >= 0;
+    }
+    if ($req =~ /^(\d+(?:\.\d+){0,2})$/) {
+        return vcmp($version, $1) == 0;
+    }
+    return 0;
 }
 
-type Input struct {
-	Players []string `json:"players"`
-	Rules   Rules    `json:"rules"`
-	Initial Initial  `json:"initial"`
-	Moves   []Move   `json:"moves"`
+sub version_ge {
+    my ($actual, $minimum) = @_;
+    return vcmp($actual, $minimum) >= 0;
 }
 
-type Result struct {
-	ID          string  `json:"id"`
-	Accepted    bool    `json:"accepted"`
-	Reason      *string `json:"reason"`
-	MoveType    *string `json:"move_type"`
-	Pushed      int     `json:"pushed"`
-	Ejected     int     `json:"ejected"`
-	Momentum    map[string]int `json:"momentum"`
-	NextPlayer  *string `json:"next_player"`
-	PositionKey string  `json:"position_key"`
-	LegalActionCount int `json:"legal_action_count"`
-	LegalActionDigest string `json:"legal_action_digest"`
+my %policy;
+for my $r (read_tsv("$CASE/policy.tsv")) {
+    $policy{$r->{key}} = $r->{value};
+}
+my @source_order = list_values($policy{source_order}, ",");
+my %source_rank;
+for my $i (0..$#source_order) {
+    $source_rank{$source_order[$i]} = $i;
 }
 
-type Final struct {
-	Status      string         `json:"status"`
-	Winner      *string        `json:"winner"`
-	LegalMoves  int            `json:"legal_moves"`
-	NoProgress int            `json:"no_progress"`
-	Ejections  map[string]int `json:"ejections"`
-	Momentum   map[string]int `json:"momentum"`
-	Cooldowns  []Cooldown     `json:"cooldowns"`
-	NextPlayer *string        `json:"next_player"`
-	PositionKey string         `json:"position_key"`
-	Board       []Marble       `json:"board"`
+my @targets = read_tsv("$CASE/targets.tsv");
+my @spec_rows = read_tsv("$CASE/specs.tsv");
+my @rule_rows = read_tsv("$CASE/rules.tsv");
+
+my %spec;
+my %tuples;
+for my $s (@spec_rows) {
+    my $tk = join("|", $s->{source}, $s->{root}, $s->{version});
+    $spec{$tk}{$s->{subspec}} = $s;
+    $tuples{$s->{root}}{$tk} = { source => $s->{source}, root => $s->{root}, version => $s->{version} };
 }
 
-type Report struct {
-	Results      []Result     `json:"results"`
-	Final        Final        `json:"final"`
-	Continuation Continuation `json:"continuation"`
+my %override;
+my %source_block;
+my %license_allow;
+for my $r (@rule_rows) {
+    if ($r->{kind} eq "override") {
+        $override{$r->{root}} = $r->{value};
+    } elsif ($r->{kind} eq "source_block") {
+        $source_block{$r->{root}}{$r->{subspec}}{$r->{value}} = 1;
+    } elsif ($r->{kind} eq "license_allow") {
+        $license_allow{$_} = 1 for list_values($r->{value}, ",");
+    }
 }
 
-type LeafCounts struct {
-	WinPlayer0      int `json:"win_player0"`
-	WinPlayer1      int `json:"win_player1"`
-	DrawRepetition  int `json:"draw_repetition"`
-	DrawNoProgress  int `json:"draw_no_progress"`
-	DrawMoveLimit   int `json:"draw_move_limit"`
-	Horizon         int `json:"horizon"`
-	Stalled         int `json:"stalled"`
+sub tuple_key {
+    my ($t) = @_;
+    return join("|", $t->{source}, $t->{root}, $t->{version});
 }
 
-type Continuation struct {
-	Depth              int            `json:"depth"`
-	QuiescenceDepth    int            `json:"quiescence_depth"`
-	RootActionCount    int            `json:"root_action_count"`
-	RootAnalyses       []RootAnalysis `json:"root_analyses"`
-	Nodes              int            `json:"nodes"`
-	QuiescenceNodes    int            `json:"quiescence_nodes"`
-	Leaves             int            `json:"leaves"`
-	LeafCounts         LeafCounts     `json:"leaf_counts"`
-	Value              int            `json:"value"`
-	Utility            Utility        `json:"utility"`
-	OptimalActions     []string       `json:"optimal_actions"`
-	PrincipalVariation []string `json:"principal_variation"`
-	Digest             string   `json:"digest"`
+sub default_subspecs {
+    my ($t) = @_;
+    my $tk = tuple_key($t);
+    my @subs = sort grep { $spec{$tk}{$_}{default} eq "true" } keys %{ $spec{$tk} || {} };
+    return @subs;
 }
 
-type Utility struct {
-	Outcome  int `json:"outcome"`
-	Margin   int `json:"margin"`
-	Momentum int `json:"momentum"`
-	Tempo    int `json:"tempo"`
+sub parse_dep {
+    my ($dep) = @_;
+    my @p = split /\|/, $dep, -1;
+    my ($root, $subs) = split /\//, $p[0], 2;
+    return {
+        root => $root,
+        subspecs => defined($subs) && $subs ne "" ? $subs : "-",
+        requirement => $p[1],
+        source_pin => $p[2],
+        checksum_required => $p[3],
+    };
 }
 
-type RootAnalysis struct {
-	Action             string     `json:"action"`
-	Nodes              int        `json:"nodes"`
-	QuiescenceNodes    int        `json:"quiescence_nodes"`
-	Leaves             int        `json:"leaves"`
-	LeafCounts         LeafCounts `json:"leaf_counts"`
-	Utility            Utility    `json:"utility"`
-	PrincipalVariation []string   `json:"principal_variation"`
-	Digest             string     `json:"digest"`
+sub platform_ok {
+    my ($row, $platform, $version) = @_;
+    for my $p (list_values($row->{platforms}, ",")) {
+        if ($p =~ /^([a-z]+)>=(\d+(?:\.\d+){0,2})$/) {
+            return 1 if $1 eq $platform && version_ge($version, $2);
+        }
+    }
+    return 0;
 }
 
-type CooldownMark struct {
-	Player    string
-	Remaining int
+my @audit;
+my @edges;
+my %unsat;
+
+sub add_audit {
+    my (@fields) = @_;
+    push @audit, [map { defined($_) ? "$_" : "" } @fields];
 }
 
-type Action struct {
-	Key      string
-	State    *Engine
-	Tactical bool
+sub expand_subspecs {
+    my ($t, $subspec_cell) = @_;
+    return sort { $a cmp $b } default_subspecs($t) if !defined($subspec_cell) || $subspec_cell eq "" || $subspec_cell eq "-";
+    return sort { $a cmp $b } list_values($subspec_cell, ",");
 }
 
-type Proof struct {
-	Nodes          int
-	QuiescenceNodes int
-	Leaves         int
-	LeafCounts     LeafCounts
-	Value          int
-	Utility        Utility
-	OptimalActions []string
-	PrincipalVariation []string
-	RootAnalyses    []RootAnalysis
-	Digest         string
+sub candidate_size {
+    my ($t, $subs) = @_;
+    my $tk = tuple_key($t);
+    my $sum = 0;
+    for my $sub (@$subs) {
+        $sum += int($spec{$tk}{$sub}{size} || 0);
+    }
+    return $sum;
 }
 
-var vectors = map[string]Coord{
-	"E": {1, 0}, "NE": {1, -1}, "NW": {0, -1},
-	"W": {-1, 0}, "SW": {-1, 1}, "SE": {0, 1},
+sub reject_tuple {
+    my ($t, $version, $subspec, $reason, $detail) = @_;
+    add_audit("rejected", $t->{root}, $t->{source}, $version, $subspec, "rejected", $reason, $detail);
 }
 
-var directionNames = []string{"E", "NE", "NW", "SE", "SW", "W"}
-
-type Engine struct {
-	in          Input
-	board       map[Coord]string
-	cooldowns   map[Coord]CooldownMark
-	scores      map[string]int
-	momentum    map[string]int
-	next        string
-	legal       int
-	noProgress int
-	status      string
-	winner      *string
-	repetitions map[string]int
-	history     []string
+sub evaluate_tuple {
+    my ($t, $req) = @_;
+    my $tk = tuple_key($t);
+    return (0, [], "source", $t->{source}) if !exists $source_rank{$t->{source}};
+    return (0, [], "source_pin", $req->{source_pin}) if $req->{source_pin} ne "-" && $req->{source_pin} ne $t->{source};
+    return (0, [], "range", $req->{requirement}) if !satisfies($t->{version}, $req->{requirement});
+    return (0, [], "source_block", $t->{source}) if $source_block{$t->{root}}{"*"}{$t->{source}};
+    my @subs = expand_subspecs($t, $req->{subspecs});
+    for my $sub (@subs) {
+        return (0, \@subs, "source_block", $t->{source}) if $source_block{$t->{root}}{$sub}{$t->{source}};
+    }
+    for my $sub (@subs) {
+        my $row = $spec{$tk}{$sub};
+        return (0, \@subs, "missing_subspec", $sub) if !$row;
+        return (0, \@subs, "platform", $req->{platform} . ">=" . $req->{platform_version}) if !platform_ok($row, $req->{platform}, $req->{platform_version});
+        return (0, \@subs, "status", $row->{status}) if $row->{status} eq "deprecated";
+        return (0, \@subs, "status", $row->{status}) if $row->{status} eq "prerelease" && $policy{allow_prerelease} ne "true";
+        return (0, \@subs, "trust", $row->{trust}) if int($row->{trust}) < int($policy{min_trust});
+        return (0, \@subs, "license", $row->{license}) if !exists $license_allow{$row->{license}};
+        return (0, \@subs, "checksum", $sub) if $req->{checksum_required} eq "true" && $row->{checksum_present} ne "true";
+    }
+    return (1, \@subs, "", "");
 }
 
-func add(a, b Coord) Coord { return Coord{a.Q + b.Q, a.R + b.R} }
-
-func abs(x int) int {
-	if x < 0 { return -x }
-	return x
+sub candidate_cmp {
+    my ($a, $b) = @_;
+    my $vc = vcmp($b->{tuple}{version}, $a->{tuple}{version});
+    return $vc if $vc;
+    my $sr = ($source_rank{$a->{tuple}{source}} // 999) <=> ($source_rank{$b->{tuple}{source}} // 999);
+    return $sr if $sr;
+    return $a->{size} <=> $b->{size} if $a->{size} != $b->{size};
+    return tuple_key($a->{tuple}) cmp tuple_key($b->{tuple});
 }
 
-func max3(a, b, c int) int {
-	if b > a { a = b }
-	if c > a { a = c }
-	return a
+sub normalize_target_request {
+    my ($r) = @_;
+    my $platform = $r->{platform} eq "-" ? $policy{platform} : $r->{platform};
+    my $platform_version = $r->{platform_version} eq "-" ? $policy{platform_version} : $r->{platform_version};
+    return {
+        target => $r->{target},
+        direct => 1,
+        from => "target:$r->{target}",
+        root => $r->{pod},
+        requirement => $r->{requirement},
+        original_requirement => $r->{requirement},
+        subspecs => $r->{subspecs},
+        configurations => $r->{configurations},
+        linkage => $r->{linkage},
+        source_pin => $r->{source_pin},
+        checksum_required => $r->{checksum_required},
+        platform => $platform,
+        platform_version => $platform_version,
+        reason => "target",
+    };
 }
 
-func (e *Engine) onBoard(c Coord) bool {
-	return max3(abs(c.Q), abs(c.R), abs(c.Q+c.R)) <= e.in.Rules.Radius
+my @queue = map { normalize_target_request($_) } @targets;
+my @root_requests = @queue;
+my %seen_req;
+my %selected;
+my %enabled;
+my %target_by_sub;
+my %config_by_root;
+my %linkage_by_root;
+
+while (@queue) {
+    my $req = shift @queue;
+    my $root = $req->{root};
+    if (exists $override{$root} && $override{$root} ne $req->{requirement}) {
+        add_audit("override", $root, "-", $override{$root}, "*", "selected", "override", "from=$req->{requirement};to=$override{$root}");
+        $req->{requirement} = $override{$root};
+    }
+    my $sig = join("|", $req->{from}, $root, $req->{requirement}, $req->{subspecs}, $req->{source_pin}, $req->{checksum_required}, $req->{platform}, $req->{platform_version});
+    next if $seen_req{$sig}++;
+    my @eligible;
+    for my $tk (keys %{ $tuples{$root} || {} }) {
+        my $t = $tuples{$root}{$tk};
+        my ($ok, $subs, $reason, $detail) = evaluate_tuple($t, $req);
+        if (!$ok) {
+            my $sub = @$subs ? join(",", @$subs) : "-";
+            reject_tuple($t, $t->{version}, $sub, $reason, $detail);
+            next;
+        }
+        push @eligible, { tuple => $t, subs => $subs, size => candidate_size($t, $subs) };
+    }
+    if (!@eligible) {
+        $unsat{"no_eligible:$root"} = 1;
+        next;
+    }
+    @eligible = sort { candidate_cmp($a, $b) } @eligible;
+    my $winner = $eligible[0];
+    my $old = $selected{$root};
+    if (!$old || candidate_cmp($winner, { tuple => $old, size => candidate_size($old, $winner->{subs}) }) < 0) {
+        $selected{$root} = $winner->{tuple};
+    }
+    my $current = $selected{$root};
+    my $current_tk = tuple_key($current);
+    my @subs = expand_subspecs($current, $req->{subspecs});
+    my $to_subs = join(",", @subs);
+    push @edges, [$req->{from}, "pod:$root/$to_subs\@$current->{version}", $req->{requirement}, $req->{reason}];
+    for my $sub (@subs) {
+        $enabled{$root}{$sub} = 1;
+        $target_by_sub{$root}{$sub}{$req->{target}} = 1 if $req->{target};
+        $config_by_root{$root}{$_} = 1 for list_values($req->{configurations}, ",");
+        $linkage_by_root{$root}{$req->{linkage}} = 1 if $req->{linkage} ne "-";
+    }
+    for my $sub (@subs) {
+        my $row = $spec{$current_tk}{$sub};
+        next if !$row;
+        for my $dep_cell (list_values($row->{dependencies}, ";")) {
+            my $dep = parse_dep($dep_cell);
+            my $dep_req = {
+                target => $req->{target},
+                direct => 0,
+                from => "pod:$root/$sub\@$current->{version}",
+                root => $dep->{root},
+                requirement => $dep->{requirement},
+                original_requirement => $dep->{requirement},
+                subspecs => $dep->{subspecs},
+                configurations => $req->{configurations},
+                linkage => $req->{linkage},
+                source_pin => $dep->{source_pin},
+                checksum_required => $dep->{checksum_required},
+                platform => $req->{platform},
+                platform_version => $req->{platform_version},
+                reason => "dependency",
+            };
+            push @queue, $dep_req;
+        }
+    }
 }
 
-func (e *Engine) other(player string) string {
-	if player == e.in.Players[0] { return e.in.Players[1] }
-	return e.in.Players[0]
+@edges = ();
+%enabled = ();
+%target_by_sub = ();
+%config_by_root = ();
+%linkage_by_root = ();
+my @rebuild_queue = @root_requests;
+my %rebuilt_req;
+while (@rebuild_queue) {
+    my $req = shift @rebuild_queue;
+    my $root = $req->{root};
+    if (exists $override{$root} && $override{$root} ne $req->{requirement}) {
+        $req = { %$req, requirement => $override{$root} };
+    }
+    next if !$selected{$root};
+    my $t = $selected{$root};
+    my $tk = tuple_key($t);
+    my @subs = expand_subspecs($t, $req->{subspecs});
+    my $sig = join("|", $req->{from}, $root, $t->{source}, $t->{version}, $req->{requirement}, join(",", @subs), $req->{target});
+    next if $rebuilt_req{$sig}++;
+    my $to_subs = join(",", @subs);
+    push @edges, [$req->{from}, "pod:$root/$to_subs\@$t->{version}", $req->{requirement}, $req->{reason}];
+    for my $sub (@subs) {
+        $enabled{$root}{$sub} = 1;
+        $target_by_sub{$root}{$sub}{$req->{target}} = 1 if $req->{target};
+        $config_by_root{$root}{$_} = 1 for list_values($req->{configurations}, ",");
+        $linkage_by_root{$root}{$req->{linkage}} = 1 if $req->{linkage} ne "-";
+    }
+    for my $sub (@subs) {
+        my $row = $spec{$tk}{$sub};
+        next if !$row;
+        for my $dep_cell (list_values($row->{dependencies}, ";")) {
+            my $dep = parse_dep($dep_cell);
+            push @rebuild_queue, {
+                target => $req->{target},
+                direct => 0,
+                from => "pod:$root/$sub\@$t->{version}",
+                root => $dep->{root},
+                requirement => $dep->{requirement},
+                original_requirement => $dep->{requirement},
+                subspecs => $dep->{subspecs},
+                configurations => $req->{configurations},
+                linkage => $req->{linkage},
+                source_pin => $dep->{source_pin},
+                checksum_required => $dep->{checksum_required},
+                platform => $req->{platform},
+                platform_version => $req->{platform_version},
+                reason => "dependency",
+            };
+        }
+    }
 }
 
-func sortedCoords(board map[Coord]string) []Coord {
-	coords := make([]Coord, 0, len(board))
-	for c := range board { coords = append(coords, c) }
-	sort.Slice(coords, func(i, j int) bool {
-		if coords[i].Q != coords[j].Q { return coords[i].Q < coords[j].Q }
-		return coords[i].R < coords[j].R
-	})
-	return coords
+for my $root (keys %selected) {
+    next if $enabled{$root};
+    delete $selected{$root};
 }
 
-func (e *Engine) boardList() []Marble {
-	out := make([]Marble, 0, len(e.board))
-	for _, c := range sortedCoords(e.board) {
-		out = append(out, Marble{Q: c.Q, R: c.R, Player: e.board[c]})
-	}
-	return out
+my %selected_audit_seen;
+my $total_size = 0;
+for my $root (sort keys %selected) {
+    my $t = $selected{$root};
+    my $tk = tuple_key($t);
+    for my $sub (sort keys %{ $enabled{$root} || {} }) {
+        my $row = $spec{$tk}{$sub};
+        next if !$row;
+        $total_size += int($row->{size});
+        my $targets = join(",", sort keys %{ $target_by_sub{$root}{$sub} || {} });
+        $targets = "dependency" if $targets eq "";
+        my $sig = join("\t", $root, $t->{source}, $t->{version}, $sub);
+        next if $selected_audit_seen{$sig}++;
+        add_audit("selected", $root, $t->{source}, $t->{version}, $sub, "selected", "selected", $targets);
+    }
 }
 
-func sortedCooldownCoords(cooldowns map[Coord]CooldownMark) []Coord {
-	coords := make([]Coord, 0, len(cooldowns))
-	for c := range cooldowns { coords = append(coords, c) }
-	sort.Slice(coords, func(i, j int) bool {
-		if coords[i].Q != coords[j].Q { return coords[i].Q < coords[j].Q }
-		return coords[i].R < coords[j].R
-	})
-	return coords
+my $rejected_count = scalar grep { $_->[0] eq "rejected" } @audit;
+if ($total_size > int($policy{max_binary_size})) {
+    $unsat{"no_valid_complete_plan"} = 1;
+    add_audit("limit", "-", "-", "-", "-", "unsatisfied", "max_binary_size", "$total_size/$policy{max_binary_size}");
+}
+if ($rejected_count > int($policy{max_warnings})) {
+    $unsat{"no_valid_complete_plan"} = 1;
+    add_audit("limit", "-", "-", "-", "-", "unsatisfied", "max_warnings", "$rejected_count/$policy{max_warnings}");
 }
 
-func (e *Engine) cooldownList() []Cooldown {
-	out := make([]Cooldown, 0, len(e.cooldowns))
-	for _, c := range sortedCooldownCoords(e.cooldowns) {
-		mark := e.cooldowns[c]
-		out = append(out, Cooldown{Q: c.Q, R: c.R, Player: mark.Player, Remaining: mark.Remaining})
-	}
-	return out
+remove_tree($OUT) if -d $OUT;
+make_path($OUT);
+
+sub pod_lock_lines {
+    my @lines;
+    push @lines, "PODS:";
+    for my $root (sort keys %selected) {
+        my $t = $selected{$root};
+        my $tk = tuple_key($t);
+        for my $sub (sort keys %{ $enabled{$root} || {} }) {
+            push @lines, "  - $root/$sub ($t->{version})";
+            my @deps;
+            for my $dep_cell (list_values($spec{$tk}{$sub}{dependencies}, ";")) {
+                my $dep = parse_dep($dep_cell);
+                my $dep_subs = $dep->{subspecs};
+                if ($dep_subs eq "-" && $selected{$dep->{root}}) {
+                    $dep_subs = join(",", default_subspecs($selected{$dep->{root}}));
+                }
+                push @deps, "$dep->{root}/$dep_subs ($dep->{requirement})";
+            }
+            push @lines, map { "    - $_" } sort @deps;
+        }
+    }
+    push @lines, "DEPENDENCIES:";
+    for my $r (sort { "$a->{target}:$a->{pod}" cmp "$b->{target}:$b->{pod}" } @targets) {
+        my $name = $r->{subspecs} eq "-" ? $r->{pod} : "$r->{pod}/$r->{subspecs}";
+        push @lines, "  - $name ($r->{requirement}) [$r->{target};$r->{configurations};$r->{linkage}]";
+    }
+    push @lines, "SPEC REPOS:";
+    for my $src (@source_order) {
+        my @roots = sort grep { $selected{$_}{source} eq $src } keys %selected;
+        next unless @roots;
+        push @lines, "  $src:";
+        push @lines, map { "    - $_" } @roots;
+    }
+    push @lines, "SPEC CHECKSUMS:";
+    for my $root (sort keys %selected) {
+        my $t = $selected{$root};
+        my $tk = tuple_key($t);
+        for my $sub (sort keys %{ $enabled{$root} || {} }) {
+            push @lines, "  $root/$sub: $spec{$tk}{$sub}{checksum}";
+        }
+    }
+    push @lines, "COCOAPODS: $policy{cocoapods_version}";
+    my $status = keys(%unsat) ? "unsatisfied" : "ok";
+    push @lines, "STATUS: $status";
+    my $unsat = keys(%unsat) ? join(",", sort keys %unsat) : "-";
+    push @lines, "UNSATISFIED: $unsat";
+    return @lines;
 }
 
-func cloneInts(values map[string]int) map[string]int {
-	out := make(map[string]int, len(values))
-	for key, value := range values { out[key] = value }
-	return out
+open my $pl, ">", "$OUT/Podfile.lock" or die $!;
+print {$pl} join("\n", pod_lock_lines()), "\n";
+close $pl;
+
+open my $pp, ">", "$OUT/pods-plan.tsv" or die $!;
+print {$pp} "root\tsource\tversion\tsubspecs\tsize\ttargets\tconfigurations\tlinkage\tchecksums\n";
+for my $root (sort keys %selected) {
+    my $t = $selected{$root};
+    my $tk = tuple_key($t);
+    my @subs = sort keys %{ $enabled{$root} || {} };
+    my $size = 0;
+    my %checksums;
+    my %targets;
+    for my $sub (@subs) {
+        $size += int($spec{$tk}{$sub}{size});
+        $checksums{$spec{$tk}{$sub}{checksum}} = 1;
+        $targets{$_} = 1 for keys %{ $target_by_sub{$root}{$sub} || {} };
+    }
+    print {$pp} join("\t",
+        $root,
+        $t->{source},
+        $t->{version},
+        @subs ? join(",", @subs) : "-",
+        $size,
+        keys(%targets) ? join(",", sort keys %targets) : "-",
+        keys(%{ $config_by_root{$root} || {} }) ? join(",", sort keys %{ $config_by_root{$root} }) : "-",
+        keys(%{ $linkage_by_root{$root} || {} }) ? join(",", sort keys %{ $linkage_by_root{$root} }) : "-",
+        keys(%checksums) ? join(",", sort keys %checksums) : "-",
+    ), "\n";
 }
+close $pp;
 
-func (e *Engine) serializePosition(next string, board map[Coord]string, cooldowns map[Coord]CooldownMark) string {
-	var b strings.Builder
-	b.WriteString("next=")
-	b.WriteString(next)
-	b.WriteString("|score=")
-	fmt.Fprintf(
-		&b, "%s:%d,%s:%d|momentum=%s:%d,%s:%d|cooldown=",
-		e.in.Players[0], e.scores[e.in.Players[0]],
-		e.in.Players[1], e.scores[e.in.Players[1]],
-		e.in.Players[0], e.momentum[e.in.Players[0]],
-		e.in.Players[1], e.momentum[e.in.Players[1]],
-	)
-	for i, c := range sortedCooldownCoords(cooldowns) {
-		if i > 0 { b.WriteByte(';') }
-		mark := cooldowns[c]
-		fmt.Fprintf(&b, "%d,%d:%s:%d", c.Q, c.R, mark.Player, mark.Remaining)
-	}
-	b.WriteString("|board=")
-	for i, c := range sortedCoords(board) {
-		if i > 0 { b.WriteByte(';') }
-		fmt.Fprintf(&b, "%d,%d:%s", c.Q, c.R, board[c])
-	}
-	return b.String()
+my %edge_seen;
+my @edge_rows = sort { join("\t", @$a) cmp join("\t", @$b) } grep { !$edge_seen{join("\t", @$_)}++ } @edges;
+open my $sg, ">", "$OUT/subspec-graph.tsv" or die $!;
+print {$sg} "from\tto\trequirement\treason\n";
+print {$sg} join("\t", @$_), "\n" for @edge_rows;
+close $sg;
+
+my %audit_seen;
+my @audit_rows = sort { join("\t", @$a) cmp join("\t", @$b) } grep { !$audit_seen{join("\t", @$_)}++ } @audit;
+open my $sa, ">", "$OUT/source-audit.tsv" or die $!;
+print {$sa} "kind\troot\tsource\tversion\tsubspec\tstatus\treason\tdetail\n";
+print {$sa} join("\t", @$_), "\n" for @audit_rows;
+close $sa;
+
+my $seal_input = "";
+for my $f (qw(Podfile.lock pods-plan.tsv subspec-graph.tsv source-audit.tsv)) {
+    open my $fh, "<", "$OUT/$f" or die $!;
+    local $/;
+    $seal_input .= <$fh>;
+    close $fh;
 }
+open my $seal, ">", "$OUT/seal.txt" or die $!;
+print {$seal} sha256_hex($seal_input), "\n";
+close $seal;
+PERL
 
-func (e *Engine) positionKey(next string) string {
-	return e.serializePosition(next, e.board, e.cooldowns)
-}
-
-func rotate(c Coord) Coord { return Coord{-c.R, c.Q + c.R} }
-
-func (e *Engine) equivalenceKey(next string) string {
-	variants := 1
-	reflections := 1
-	if e.in.Rules.RepetitionEquivalence == "rotations" { variants = 6 }
-	if e.in.Rules.RepetitionEquivalence == "dihedral" { variants, reflections = 6, 2 }
-	best := ""
-	for reflected := 0; reflected < reflections; reflected++ {
-		transformed := make(map[Coord]string, len(e.board))
-		transformedCooldowns := make(map[Coord]CooldownMark, len(e.cooldowns))
-		for c, player := range e.board {
-			if reflected == 1 { c = Coord{c.R, c.Q} }
-			transformed[c] = player
-		}
-		for c, mark := range e.cooldowns {
-			if reflected == 1 { c = Coord{c.R, c.Q} }
-			transformedCooldowns[c] = mark
-		}
-		for turn := 0; turn < variants; turn++ {
-			candidate := e.serializePosition(next, transformed, transformedCooldowns)
-			if best == "" || candidate < best { best = candidate }
-			rotated := make(map[Coord]string, len(transformed))
-			for c, player := range transformed { rotated[rotate(c)] = player }
-			transformed = rotated
-			rotatedCooldowns := make(map[Coord]CooldownMark, len(transformedCooldowns))
-			for c, mark := range transformedCooldowns { rotatedCooldowns[rotate(c)] = mark }
-			transformedCooldowns = rotatedCooldowns
-		}
-	}
-	return best
-}
-
-func cloneBoard(board map[Coord]string) map[Coord]string {
-	out := make(map[Coord]string, len(board))
-	for c, player := range board { out[c] = player }
-	return out
-}
-
-func cloneCooldowns(cooldowns map[Coord]CooldownMark) map[Coord]CooldownMark {
-	out := make(map[Coord]CooldownMark, len(cooldowns))
-	for c, mark := range cooldowns { out[c] = mark }
-	return out
-}
-
-func (e *Engine) clone() *Engine {
-	out := *e
-	out.board = cloneBoard(e.board)
-	out.cooldowns = cloneCooldowns(e.cooldowns)
-	out.scores = make(map[string]int, len(e.scores))
-	for player, score := range e.scores { out.scores[player] = score }
-	out.momentum = cloneInts(e.momentum)
-	out.repetitions = make(map[string]int, len(e.repetitions))
-	for key, count := range e.repetitions { out.repetitions[key] = count }
-	out.history = append([]string(nil), e.history...)
-	if e.winner != nil {
-		winner := *e.winner
-		out.winner = &winner
-	}
-	return &out
-}
-
-func digestText(text string) string {
-	digest := sha256.Sum256([]byte(text))
-	return fmt.Sprintf("%x", digest[:])
-}
-
-func (e *Engine) currentKey() string {
-	if e.status != "ongoing" { return e.positionKey("-") }
-	return e.positionKey(e.next)
-}
-
-func stringPtr(s string) *string { return &s }
-
-func axisOf(cells []Coord) (int, bool) {
-	q, r, s := true, true, true
-	for _, c := range cells[1:] {
-		q = q && c.Q == cells[0].Q
-		r = r && c.R == cells[0].R
-		s = s && c.Q+c.R == cells[0].Q+cells[0].R
-	}
-	if q { return 0, true }
-	if r { return 1, true }
-	if s { return 2, true }
-	return -1, false
-}
-
-func contiguous(cells []Coord, axis int) bool {
-	lo, hi := 0, 0
-	for i, c := range cells {
-		v := c.Q
-		if axis == 0 { v = c.R }
-		if i == 0 || v < lo { lo = v }
-		if i == 0 || v > hi { hi = v }
-	}
-	return hi-lo == len(cells)-1
-}
-
-func directionParallel(axis int, d Coord) bool {
-	switch axis {
-	case 0: return d.Q == 0
-	case 1: return d.R == 0
-	default: return d.Q+d.R == 0
-	}
-}
-
-func reject(m Move, reason string, e *Engine) Result {
-	var next *string
-	if e.status == "ongoing" { next = stringPtr(e.next) }
-	return Result{
-		ID: m.ID, Accepted: false, Reason: stringPtr(reason), MoveType: nil,
-		Pushed: 0, Ejected: 0, Momentum: cloneInts(e.momentum),
-		NextPlayer: next, PositionKey: e.currentKey(),
-	}
-}
-
-func (e *Engine) play(m Move) Result {
-	if e.status != "ongoing" { return reject(m, "game_over", e) }
-	if m.Player != e.next { return reject(m, "wrong_player", e) }
-	if len(m.Marbles) == 0 { return reject(m, "empty_selection", e) }
-	if len(m.Marbles) > e.in.Rules.MaxGroup { return reject(m, "too_many_marbles", e) }
-
-	cells := make([]Coord, len(m.Marbles))
-	selected := make(map[Coord]bool, len(cells))
-	for i, raw := range m.Marbles {
-		c := Coord{raw[0], raw[1]}
-		if selected[c] { return reject(m, "duplicate_marble", e) }
-		selected[c] = true
-		cells[i] = c
-	}
-	for _, c := range cells {
-		if !e.onBoard(c) || e.board[c] != m.Player { return reject(m, "not_owned", e) }
-	}
-	for _, c := range cells {
-		if _, cooling := e.cooldowns[c]; cooling { return reject(m, "marble_cooling_down", e) }
-	}
-
-	axis := -1
-	if len(cells) > 1 {
-		var ok bool
-		axis, ok = axisOf(cells)
-		if !ok { return reject(m, "not_collinear", e) }
-		if !contiguous(cells, axis) { return reject(m, "not_contiguous", e) }
-	}
-
-	d := vectors[m.Direction]
-	moveType := "inline"
-	if len(cells) > 1 && !directionParallel(axis, d) { moveType = "sidestep" }
-	pushed, ejected := 0, 0
-	originalBoard := cloneBoard(e.board)
-	originalCooldowns := cloneCooldowns(e.cooldowns)
-	originalMomentum := cloneInts(e.momentum)
-
-	if moveType == "sidestep" {
-		for _, c := range cells {
-			if !e.onBoard(add(c, d)) { return reject(m, "broadside_off_board", e) }
-		}
-		for _, c := range cells {
-			if _, occupied := e.board[add(c, d)]; occupied { return reject(m, "blocked", e) }
-		}
-		for _, c := range cells { delete(e.board, c) }
-		for _, c := range cells { e.board[add(c, d)] = m.Player }
-	} else {
-		front := cells[0]
-		for _, c := range cells {
-			if !selected[add(c, d)] { front = c; break }
-		}
-		ahead := add(front, d)
-		if !e.onBoard(ahead) { return reject(m, "own_marble_off_board", e) }
-		occupant, occupied := e.board[ahead]
-		if occupied && occupant == m.Player { return reject(m, "blocked", e) }
-		var opponents []Coord
-		if occupied {
-			cur := ahead
-			other := e.other(m.Player)
-			for e.onBoard(cur) && e.board[cur] == other {
-				opponents = append(opponents, cur)
-				cur = add(cur, d)
-			}
-			if len(opponents) >= len(cells) { return reject(m, "insufficient_force", e) }
-			if e.onBoard(cur) {
-				if _, blocked := e.board[cur]; blocked { return reject(m, "blocked", e) }
-			} else {
-				ejected = 1
-			}
-			pushed = len(opponents)
-			for _, c := range opponents {
-				delete(e.board, c)
-				delete(e.cooldowns, c)
-			}
-			for _, c := range opponents {
-				if mark, cooling := originalCooldowns[c]; cooling {
-					dest := add(c, d)
-					if e.onBoard(dest) { e.cooldowns[dest] = mark }
-				}
-			}
-			for _, c := range opponents {
-				dest := add(c, d)
-				if e.onBoard(dest) { e.board[dest] = other }
-			}
-		}
-		for _, c := range cells { delete(e.board, c) }
-		for _, c := range cells { e.board[add(c, d)] = m.Player }
-	}
-
-	if e.in.Rules.MomentumCap > 0 && pushed > e.momentum[m.Player] {
-		e.board = originalBoard
-		e.cooldowns = originalCooldowns
-		return reject(m, "insufficient_momentum", e)
-	}
-	if e.in.Rules.MomentumCap > 0 {
-		if pushed > 0 {
-			e.momentum[m.Player] -= pushed
-		} else {
-			e.momentum[m.Player] += len(cells)
-			if e.momentum[m.Player] > e.in.Rules.MomentumCap {
-				e.momentum[m.Player] = e.in.Rules.MomentumCap
-			}
-		}
-	}
-
-	for c, mark := range e.cooldowns {
-		if mark.Player == m.Player {
-			if mark.Remaining == 1 {
-				delete(e.cooldowns, c)
-			} else {
-				mark.Remaining--
-				e.cooldowns[c] = mark
-			}
-		}
-	}
-	if e.in.Rules.TempoCooldown > 0 {
-		for _, c := range cells {
-			e.cooldowns[add(c, d)] = CooldownMark{Player: m.Player, Remaining: e.in.Rules.TempoCooldown}
-		}
-	}
-
-	if ejected == 1 { e.scores[m.Player]++ }
-	prospectiveNext := e.other(m.Player)
-	fingerprint := e.equivalenceKey(prospectiveNext)
-	if e.in.Rules.KoWindow > 0 {
-		start := len(e.history) - e.in.Rules.KoWindow
-		if start < 0 { start = 0 }
-		for _, prior := range e.history[start:] {
-			if fingerprint == prior {
-				e.board = originalBoard
-				e.cooldowns = originalCooldowns
-				e.momentum = originalMomentum
-				if ejected == 1 { e.scores[m.Player]-- }
-				return reject(m, "position_repeated", e)
-			}
-		}
-	}
-	if ejected == 1 { e.noProgress = 0 } else { e.noProgress++ }
-	e.legal++
-	e.next = prospectiveNext
-	e.history = append(e.history, fingerprint)
-	e.repetitions[fingerprint]++
-	if e.scores[m.Player] >= e.in.Rules.TargetEjections {
-		e.status = "win"
-		e.winner = stringPtr(m.Player)
-	} else if e.in.Rules.RepetitionLimit > 0 && e.repetitions[fingerprint] >= e.in.Rules.RepetitionLimit {
-		e.status = "draw_repetition"
-	} else if e.in.Rules.NoProgressLimit > 0 && e.noProgress >= e.in.Rules.NoProgressLimit {
-		e.status = "draw_no_progress"
-	} else if e.in.Rules.MoveLimit > 0 && e.legal >= e.in.Rules.MoveLimit {
-		e.status = "draw_move_limit"
-	}
-
-	var next *string
-	if e.status == "ongoing" { next = stringPtr(e.next) }
-	return Result{
-		ID: m.ID, Accepted: true, Reason: nil, MoveType: stringPtr(moveType),
-		Pushed: pushed, Ejected: ejected, Momentum: cloneInts(e.momentum),
-		NextPlayer: next, PositionKey: e.currentKey(),
-	}
-}
-
-func actionKey(cells []Coord, direction string) string {
-	parts := make([]string, len(cells))
-	for i, cell := range cells { parts[i] = fmt.Sprintf("%d,%d", cell.Q, cell.R) }
-	return strings.Join(parts, ";") + "@" + direction
-}
-
-func (e *Engine) legalSuccessors() []Action {
-	if e.status != "ongoing" { return []Action{} }
-	owned := make([]Coord, 0)
-	for cell, player := range e.board {
-		if player == e.next { owned = append(owned, cell) }
-	}
-	sort.Slice(owned, func(i, j int) bool {
-		if owned[i].Q != owned[j].Q { return owned[i].Q < owned[j].Q }
-		return owned[i].R < owned[j].R
-	})
-	maximum := e.in.Rules.MaxGroup
-	if maximum > len(owned) { maximum = len(owned) }
-	actions := make([]Action, 0)
-	for size := 1; size <= maximum; size++ {
-		group := make([]Coord, 0, size)
-		var choose func(int)
-		choose = func(start int) {
-			if len(group) == size {
-				if size > 1 {
-					axis, ok := axisOf(group)
-					if !ok || !contiguous(group, axis) { return }
-				}
-				raw := make([][]int, len(group))
-				for i, cell := range group { raw[i] = []int{cell.Q, cell.R} }
-				for _, direction := range directionNames {
-					child := e.clone()
-					result := child.play(Move{Player: e.next, Marbles: raw, Direction: direction})
-					if result.Accepted {
-						copied := append([]Coord(nil), group...)
-						actions = append(actions, Action{
-							Key: actionKey(copied, direction), State: child,
-							Tactical: result.Pushed > 0,
-						})
-					}
-				}
-				return
-			}
-			needed := size - len(group)
-			for index := start; index <= len(owned)-needed; index++ {
-				group = append(group, owned[index])
-				choose(index + 1)
-				group = group[:len(group)-1]
-			}
-		}
-		choose(0)
-	}
-	sort.Slice(actions, func(i, j int) bool { return actions[i].Key < actions[j].Key })
-	return actions
-}
-
-func actionDigest(actions []Action) string {
-	keys := make([]string, len(actions))
-	for i, action := range actions { keys[i] = action.Key }
-	return digestText(strings.Join(keys, "\n"))
-}
-
-func (counts *LeafCounts) add(other LeafCounts) {
-	counts.WinPlayer0 += other.WinPlayer0
-	counts.WinPlayer1 += other.WinPlayer1
-	counts.DrawRepetition += other.DrawRepetition
-	counts.DrawNoProgress += other.DrawNoProgress
-	counts.DrawMoveLimit += other.DrawMoveLimit
-	counts.Horizon += other.Horizon
-	counts.Stalled += other.Stalled
-}
-
-func (counts *LeafCounts) set(kind string) {
-	switch kind {
-	case "win_player0": counts.WinPlayer0 = 1
-	case "win_player1": counts.WinPlayer1 = 1
-	case "draw_repetition": counts.DrawRepetition = 1
-	case "draw_no_progress": counts.DrawNoProgress = 1
-	case "draw_move_limit": counts.DrawMoveLimit = 1
-	case "horizon": counts.Horizon = 1
-	case "stalled": counts.Stalled = 1
-	}
-}
-
-func (e *Engine) leafKind() string {
-	if e.status == "win" {
-		if e.winner != nil && *e.winner == e.in.Players[0] { return "win_player0" }
-		return "win_player1"
-	}
-	if e.status != "ongoing" { return e.status }
-	return ""
-}
-
-func compareUtility(left, right Utility) int {
-	if left.Outcome != right.Outcome {
-		if left.Outcome < right.Outcome { return -1 }
-		return 1
-	}
-	if left.Margin != right.Margin {
-		if left.Margin < right.Margin { return -1 }
-		return 1
-	}
-	if left.Momentum != right.Momentum {
-		if left.Momentum < right.Momentum { return -1 }
-		return 1
-	}
-	if left.Tempo != right.Tempo {
-		if left.Tempo < right.Tempo { return -1 }
-		return 1
-	}
-	return 0
-}
-
-func (e *Engine) leafUtility(kind string, remaining int) Utility {
-	utility := Utility{
-		Margin: e.scores[e.in.Players[0]] - e.scores[e.in.Players[1]],
-		Momentum: e.momentum[e.in.Players[0]] - e.momentum[e.in.Players[1]],
-	}
-	switch kind {
-	case "win_player0":
-		utility.Outcome = 1
-		utility.Tempo = remaining
-	case "win_player1":
-		utility.Outcome = -1
-		utility.Tempo = -remaining
-	}
-	return utility
-}
-
-func continuationNode(
-	e *Engine,
-	remaining int,
-	quiescenceRemaining int,
-	inQuiescence bool,
-	captureRoot bool,
-) Proof {
-	kind := e.leafKind()
-	var actions []Action
-	extension := false
-	if kind == "" && remaining > 0 {
-		actions = e.legalSuccessors()
-		if len(actions) == 0 { kind = "stalled" }
-	} else if kind == "" && quiescenceRemaining == 0 {
-		kind = "horizon"
-	} else if kind == "" {
-		for _, action := range e.legalSuccessors() {
-			if action.Tactical { actions = append(actions, action) }
-		}
-		if len(actions) == 0 {
-			kind = "horizon"
-		} else {
-			extension = true
-		}
-	}
-	if kind != "" {
-		counts := LeafCounts{}
-		counts.set(kind)
-		utility := e.leafUtility(kind, remaining)
-		preimage := fmt.Sprintf(
-			"L\n%d\nquiescence=%d\n%s\n%s\nlegal=%d\nno_progress=%d",
-			remaining, quiescenceRemaining, kind, e.currentKey(), e.legal, e.noProgress,
-		)
-		quiescenceNodes := 0
-		if inQuiescence { quiescenceNodes = 1 }
-		return Proof{
-			Nodes: 1, QuiescenceNodes: quiescenceNodes,
-			Leaves: 1, LeafCounts: counts, Value: utility.Outcome, Utility: utility,
-			OptimalActions: []string{}, PrincipalVariation: []string{},
-			RootAnalyses: []RootAnalysis{}, Digest: digestText(preimage),
-		}
-	}
-
-	proof := Proof{
-		Nodes: 1, OptimalActions: []string{},
-		PrincipalVariation: []string{}, RootAnalyses: []RootAnalysis{},
-	}
-	if inQuiescence { proof.QuiescenceNodes = 1 }
-	children := make([]Proof, len(actions))
-	lines := []string{
-		"N", fmt.Sprintf("%d", remaining),
-		fmt.Sprintf("quiescence=%d", quiescenceRemaining),
-		e.currentKey(), fmt.Sprintf("legal=%d", e.legal),
-		fmt.Sprintf("no_progress=%d", e.noProgress),
-	}
-	for i, action := range actions {
-		childRemaining := remaining - 1
-		childQuiescence := quiescenceRemaining
-		childInQuiescence := inQuiescence
-		if extension {
-			childRemaining = 0
-			childQuiescence--
-			childInQuiescence = true
-		}
-		child := continuationNode(
-			action.State, childRemaining, childQuiescence, childInQuiescence, false,
-		)
-		children[i] = child
-		proof.Nodes += child.Nodes
-		proof.QuiescenceNodes += child.QuiescenceNodes
-		proof.Leaves += child.Leaves
-		proof.LeafCounts.add(child.LeafCounts)
-		lines = append(lines, action.Key+" "+child.Digest)
-		if captureRoot {
-			proof.RootAnalyses = append(proof.RootAnalyses, RootAnalysis{
-				Action: action.Key, Nodes: child.Nodes,
-				QuiescenceNodes: child.QuiescenceNodes,
-				Leaves: child.Leaves, LeafCounts: child.LeafCounts, Utility: child.Utility,
-				PrincipalVariation: child.PrincipalVariation, Digest: child.Digest,
-			})
-		}
-	}
-	proof.Utility = children[0].Utility
-	for _, child := range children[1:] {
-		comparison := compareUtility(child.Utility, proof.Utility)
-		if e.next == e.in.Players[0] && comparison > 0 { proof.Utility = child.Utility }
-		if e.next == e.in.Players[1] && comparison < 0 { proof.Utility = child.Utility }
-	}
-	for i, child := range children {
-		if compareUtility(child.Utility, proof.Utility) == 0 {
-			proof.OptimalActions = append(proof.OptimalActions, actions[i].Key)
-			if len(proof.PrincipalVariation) == 0 {
-				proof.PrincipalVariation = append([]string{actions[i].Key}, child.PrincipalVariation...)
-			}
-		}
-	}
-	proof.Value = proof.Utility.Outcome
-	proof.Digest = digestText(strings.Join(lines, "\n"))
-	return proof
-}
-
-func main() {
-	raw, err := os.ReadFile("/app/input/match.json")
-	if err != nil { panic(err) }
-	var in Input
-	if err := json.Unmarshal(raw, &in); err != nil { panic(err) }
-	e := Engine{
-		in: in, board: map[Coord]string{}, cooldowns: map[Coord]CooldownMark{},
-		scores: map[string]int{}, momentum: map[string]int{},
-		next: in.Initial.NextPlayer, status: "ongoing", repetitions: map[string]int{},
-	}
-	for _, p := range in.Players {
-		e.scores[p] = in.Initial.Ejections[p]
-		e.momentum[p] = in.Initial.Momentum[p]
-	}
-	for _, m := range in.Initial.Marbles { e.board[Coord{m.Q, m.R}] = m.Player }
-	for _, c := range in.Initial.Cooldowns {
-		e.cooldowns[Coord{c.Q, c.R}] = CooldownMark{Player: c.Player, Remaining: c.Remaining}
-	}
-	initialFingerprint := e.equivalenceKey(e.next)
-	e.repetitions[initialFingerprint] = 1
-	e.history = []string{initialFingerprint}
-
-	report := Report{Results: make([]Result, 0, len(in.Moves))}
-	for _, m := range in.Moves {
-		result := e.play(m)
-		actions := e.legalSuccessors()
-		result.LegalActionCount = len(actions)
-		result.LegalActionDigest = actionDigest(actions)
-		report.Results = append(report.Results, result)
-	}
-	var next *string
-	if e.status == "ongoing" { next = stringPtr(e.next) }
-	report.Final = Final{
-		Status: e.status, Winner: e.winner, LegalMoves: e.legal,
-		NoProgress: e.noProgress, Ejections: cloneInts(e.scores),
-		Momentum: cloneInts(e.momentum), Cooldowns: e.cooldownList(),
-		NextPlayer: next, PositionKey: e.currentKey(), Board: e.boardList(),
-	}
-	rootActions := e.legalSuccessors()
-	proof := continuationNode(
-		&e, in.Rules.ContinuationDepth, in.Rules.QuiescenceDepth, false, true,
-	)
-	report.Continuation = Continuation{
-		Depth: in.Rules.ContinuationDepth,
-		QuiescenceDepth: in.Rules.QuiescenceDepth,
-		RootActionCount: len(rootActions), RootAnalyses: proof.RootAnalyses,
-		Nodes: proof.Nodes, QuiescenceNodes: proof.QuiescenceNodes,
-		Leaves: proof.Leaves, LeafCounts: proof.LeafCounts,
-		Value: proof.Value, Utility: proof.Utility,
-		OptimalActions: proof.OptimalActions,
-		PrincipalVariation: proof.PrincipalVariation, Digest: proof.Digest,
-	}
-
-	if err := os.MkdirAll("/app/output", 0755); err != nil { panic(err) }
-	out, err := json.MarshalIndent(report, "", "  ")
-	if err != nil { panic(err) }
-	if err := os.WriteFile("/app/output/report.json", out, 0644); err != nil { panic(err) }
-}
-GO
-
-cd /app
-/usr/local/go/bin/gofmt -w main.go
-/usr/local/go/bin/go build -o /app/abalone .
+chmod +x /opt/pod-lock-desk/pod-source-lock
+/opt/pod-lock-desk/pod-source-lock

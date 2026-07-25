@@ -1,22 +1,5 @@
-# Adjudicate the Abalone tournament replay
+The CocoaPods lock desk under `/opt/pod-lock-desk` needs a deterministic offline source lock compiler. Implement `/opt/pod-lock-desk/pod-source-lock` so it reads the immutable case directory `/opt/pod-lock-desk/case`, replaces `/opt/pod-lock-desk/out`, and writes the five artifacts defined in `/opt/pod-lock-desk/POD_LOCK_AUTHORITY.txt`.
 
-Serve as head referee for a disputed Abalone match. This is exclusively a
-competitive tabletop-game officiating and combinatorial game-analysis
-exercise. Apply the `official_handbook` entry in
-`/app/input/match.json`; it is the complete authority for the board rules,
-replay rulings, tournament endings, continuation certificate, and official
-report.
+Use the specification file as the source of truth for the input TSV schemas, resolution semantics, and output formats. The command must work when `/opt/pod-lock-desk/case` is replaced by another compatible case with the same TSV schemas, and it must not modify `/opt/pod-lock-desk/case` or the specification file.
 
-Submit the ruling through the tournament desk's Go harness. The desk compiles
-the files in `/app` as `/app/abalone`, then runs that executable without
-arguments. It must preserve `/app/input/match.json` byte-for-byte and replace
-`/app/output/report.json` with the exact report required by the handbook.
-Compatible unseen match records are also adjudicated.
-
-Every legal continuation occurrence must contribute to the handbook's node
-census, leaf census, root analyses, and recursive digest, including occurrences
-that reach the same position by different histories. The report must also
-reflect cooldown motion, momentum acquisition and spending, tactical
-quiescence extensions, ejection, ko rollback, and symmetry exactly. Each
-adjudication has 180 seconds on one CPU. Submit only the report-producing files;
-do not alter the match evidence.
+Pay particular attention to audit attribution: platform rejection detail is the requesting target platform comparator, such as `ios>=15.0`, not the candidate spec row's declared minimum. Transitive dependencies inherit the target/configuration/linkage that caused them, so selected audit rows and `pods-plan.tsv` target lists use those inherited target names rather than the word `dependency`. A requested subspec that does not exist makes the root `no_eligible:<root>` and the lock `unsatisfied`.
