@@ -4,24 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "build-and-dependency-management"
-subcategories = []
-number_of_milestones = 0
+category = "system-administration"
+tags = ["ruby", "release-recovery", "state-reconciliation", "shift-ledger", "fairness-forecast", "step-pmi"]
+languages = ["ruby", "bash"]
 codebase_size = "small"
-languages = ["rust", "bash"]
-tags = ["dotnet", "nuget", "packages.lock", "offline", "release-packaging"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 240
-
-[verifier]
-timeout_sec = 1200.0
+number_of_milestones = 0
+subcategories = ["db_interaction"]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 480
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 900
 
 [environment]
-build_timeout_sec = 900.0
+allow_internet = false
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-allow_internet = false

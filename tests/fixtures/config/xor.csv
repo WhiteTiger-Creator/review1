@@ -1,4 +1,0 @@
-lane,group,package_name
-gate,mgr-choice,alt-a
-gate,mgr-choice,alt-b
-edge,unused,ledger-utils

@@ -1,0 +1,1 @@
+assembly note 3: PMI tolerance band placeholder for desk ingest.

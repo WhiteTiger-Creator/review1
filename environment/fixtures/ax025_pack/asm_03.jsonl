@@ -1,0 +1,3 @@
+{"id":"c01","arm":"hold","epoch":1,"unsafe":false,"feats":[0.4,0.4,0.4]}
+{"id":"c02","arm":"hold","epoch":1,"unsafe":true,"feats":[0.845,0.415,0.305]}
+{"id":"c03","arm":"hold","epoch":2,"unsafe":true,"feats":[0.855,0.405,0.295]}
