@@ -1,474 +1,264 @@
 import json
-import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
-import pytest
-
-OUTPUT = Path("/app/output")
 ENV = Path("/app/environment")
-FIXTURES = ENV / "fixtures"
-PAYLOAD = ENV / "data/seed_payload.bin"
-DEFAULT_CYCLES = 2
-LOGICAL_PATH = "mir-blk"
-CONFIG_HOLD_MS = 1200
-VERIFIER_BIN = Path(os.environ.get("VERIFIER_BIN", "/tmp/verifier-bin"))
-VERIFIER_RUN_USER = os.environ.get("VERIFIER_RUN_USER", "mirrun")
-REBUILD = ["bash", "/tests/rebuild_task_binaries.sh"]
-VERIFIER_CYCLE = ["bash", "/tests/run_verifier_cycle.sh"]
-
-
-def _rebuild_from_submitted_sources() -> None:
-    subprocess.run(["bash", "/tests/verify_infra.sh"], check=True)
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _session_rebuild() -> None:
-    _rebuild_from_submitted_sources()
-
-
-def _mirctl() -> Path:
-    return VERIFIER_BIN / "mirctl"
-
-
-def _prepare_run_tree(root: Path, out: Path) -> None:
-    subprocess.run(["chown", "-R", VERIFIER_RUN_USER, str(out)], check=False)
-    if root == ENV:
-        return
-    parent = root
-    while parent != parent.parent:
-        subprocess.run(["chmod", "a+rx", str(parent)], check=False)
-        if parent == Path("/"):
-            break
-        parent = parent.parent
-    subprocess.run(["chmod", "-R", "a+rX", str(root)], check=False)
-    subprocess.run(["chown", "-R", VERIFIER_RUN_USER, str(root)], check=False)
-
-
-def _run_as(args: list[str], *, env: dict, check: bool = True) -> subprocess.CompletedProcess:
-    cmd = ["runuser", "-u", VERIFIER_RUN_USER, "--", "env"]
-    cmd.extend(f"{key}={value}" for key, value in env.items())
-    cmd.extend(args)
-    return subprocess.run(cmd, cwd="/app", check=check)
-
-
-def _run_mirctl(
-    out_dir: Path,
-    *,
-    mirror_root: Path | None = None,
-    cycle: int | None = None,
-    append: bool = False,
-    check: bool = True,
-) -> subprocess.CompletedProcess:
-    mirctl = _mirctl()
-    assert mirctl.is_file() and os.access(mirctl, os.X_OK), f"missing verifier binary {mirctl}"
-    env = {
-        "MIRROR_ROOT": str(mirror_root or ENV),
-        "OUTPUT_DIR": str(out_dir),
-    }
-    if cycle is not None:
-        env["CYCLE"] = str(cycle)
-    if append:
-        env["APPEND_EXPORT"] = "1"
-    _prepare_run_tree(Path(env["MIRROR_ROOT"]), out_dir)
-    return _run_as([str(mirctl), "run", str(out_dir)], env=env, check=check)
-
-
-def _catalog(cycle: int) -> dict:
-    name = "catalog_view_a.json" if cycle == 1 else "catalog_view_b.json"
-    return json.loads((FIXTURES / name).read_text())
-
-
-def _probe(cycle: int) -> dict:
-    name = "probe_view_a.json" if cycle == 1 else "probe_view_b.json"
-    return json.loads((FIXTURES / name).read_text())
-
-
-def _tally_hex(tally: int, epoch: int) -> str:
-    canon = tally.to_bytes(8, "little", signed=False) + epoch.to_bytes(4, "little", signed=False)
-    proc = subprocess.run(
-        ["openssl", "dgst", "-sha256", "-hex"],
-        input=canon,
-        capture_output=True,
-        check=True,
-    )
-    return proc.stdout.decode().strip().split()[-1]
-
-
-def _window_sum(offset: int, span: int) -> int:
-    data = PAYLOAD.read_bytes()
-    window = data[offset : offset + span]
-    return sum(window)
-
-
-def _run_repro(extra_env: dict | None = None) -> subprocess.CompletedProcess:
-    if OUTPUT.exists():
-        shutil.rmtree(OUTPUT)
-    env = os.environ.copy()
-    env.setdefault("OUTPUT_DIR", str(OUTPUT))
-    env.setdefault("CYCLE_COUNT", str(DEFAULT_CYCLES))
-    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
-    env.setdefault("MIRROR_ROOT", str(ENV))
-    if extra_env:
-        env.update(extra_env)
-    return subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=False)
-
-
-def _load(name: str):
-    path = OUTPUT / name
-    assert path.exists(), f"missing {path}"
-    if name.endswith(".jsonl"):
-        return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
-    data = json.loads(path.read_text())
-    if name == "push_trace.json":
-        return data.get("segments", data)
-    return data
-
-
-def _side_b_view() -> dict:
-    digest = _load("rolling_digest.json")
-    side_b = [v for v in digest["views"] if v["source"] == "side-b"]
-    assert side_b, "missing side-b view in rolling_digest"
-    return side_b[0]
-
-
-def _side_a_view() -> dict | None:
-    digest = _load("rolling_digest.json")
-    side_a = [v for v in digest["views"] if v["source"] == "side-a"]
-    return side_a[0] if side_a else None
-
-
-def _max_verified_seal(conv: dict) -> int:
-    seal = 0
-    for row in conv.get("cycles", []):
-        if row["verified_bytes"] > 0 and row["verified_bytes"] == row["synced_bytes"]:
-            seal = max(seal, row["cycle"])
-    return seal
-
-
-def _packed_probe_epoch(cycle: int) -> int:
-    catalog = _catalog(cycle)
-    probe = _probe(cycle)
-    lanes = {"catalog_lane": 0, "probe_lane": 1}
-    cat_epoch = catalog["epoch"]
-    prb_epoch = probe["epoch"]
-    if lanes["catalog_lane"] == lanes["probe_lane"]:
-        return cat_epoch
-    return prb_epoch
-
-
-def _leg_b_baseline_epoch(cycle: int) -> int:
-    return _packed_probe_epoch(cycle) - 1
-
-
-def _run_cycle_one_with_probe(probe_patch: dict) -> tuple[dict, dict]:
-    """Run a single replay cycle with a patched probe fixture in an isolated env copy."""
-    tmp_root = Path(tempfile.mkdtemp(prefix="blkmir-mixed-"))
-    env_copy = tmp_root / "environment"
-    shutil.copytree(ENV, env_copy)
-    probe_path = env_copy / "fixtures" / "probe_view_a.json"
-    probe = json.loads(probe_path.read_text())
-    probe.update(probe_patch)
-    probe_path.write_text(json.dumps(probe, indent=2) + "\n")
-    out_dir = tmp_root / "output"
-    out_dir.mkdir()
-    _prepare_run_tree(env_copy, out_dir)
-    env = os.environ.copy()
-    env["MIRROR_ROOT"] = str(env_copy)
-    env["OUTPUT_DIR"] = str(out_dir)
-    env["CYCLE_COUNT"] = "1"
-    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
-    proc = subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=False)
-    assert proc.returncode == 0, proc.stderr
-    segments = json.loads((out_dir / "push_trace.json").read_text())["segments"]
-    leg_b = next(r for r in segments if r["leg_id"] == "leg-b")
-    leg_a = next(r for r in segments if r["leg_id"] == "leg-a")
-    return leg_b, leg_a
-
-
-def _assert_leg_b_quiescent(leg_b: dict, baseline_epoch: int) -> None:
-    assert leg_b["hold_ms"] < CONFIG_HOLD_MS
-    assert leg_b["epoch"] == baseline_epoch
-
-
-def test_configured_lane_epochs_track_fixture_authorities():
-    """Digest epochs must follow lane routing from epoch_lane.toml, not collapse when lanes differ."""
-    _run_repro({"CYCLE_COUNT": str(DEFAULT_CYCLES)})
-    catalog = _catalog(DEFAULT_CYCLES)
-    probe = _probe(DEFAULT_CYCLES)
-    side_a = _side_a_view()
-    side_b = _side_b_view()
-    assert side_a is not None
-    assert side_a["epoch"] == catalog["epoch"]
-    assert side_b["epoch"] == probe["epoch"]
-    if catalog["epoch"] != probe["epoch"]:
-        assert side_a["epoch"] != side_b["epoch"]
-
-
-def test_presentation_with_hole_debt_preserves_split_authorities():
-    """Finished catalog with hole debt must not seal rank or collapse split digest authorities."""
-    if OUTPUT.exists():
-        shutil.rmtree(OUTPUT)
-    env = os.environ.copy()
-    env["OUTPUT_DIR"] = str(OUTPUT)
-    env["CYCLE_COUNT"] = "1"
-    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
-    subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=True)
-    probe = _probe(1)
-    catalog = _catalog(1)
-    conv = _load("convergence_report.json")
-    cycle1 = conv["cycles"][0]
-    side_a = _side_a_view()
-    side_b = _side_b_view()
-    segments = _load("push_trace.json")
-    leg_b = next(r for r in segments if r["leg_id"] == "leg-b")
-    assert catalog["finished"] is True
-    assert probe["hole_debt"] > 0
-    assert probe["holes_cleared"] is False
-    assert probe["content_caught"] is False
-    assert cycle1["synced_bytes"] > 0
-    assert cycle1["verified_bytes"] != cycle1["synced_bytes"]
-    assert _max_verified_seal(conv) == 0
-    assert side_a is not None
-    assert side_a["epoch"] == catalog["epoch"]
-    assert side_b["epoch"] == probe["epoch"]
-    assert leg_b["epoch"] != cycle1["verified_bytes"]
-    if catalog["epoch"] != probe["epoch"]:
-        assert side_a["epoch"] != side_b["epoch"]
-
-
-def test_holes_cleared_alone_does_not_advance_leg_b():
-    """Hole-axis clearance alone must not advance leg-b hold or epoch while content catchup is open."""
-    leg_b, _leg_a = _run_cycle_one_with_probe(
-        {
-            "leg_b_io_done": True,
-            "hole_clear_mark": True,
-            "holes_cleared": True,
-            "hole_debt": 0,
-            "content_mark": False,
-            "content_caught": False,
-            "present_mark": True,
-        }
-    )
-    _assert_leg_b_quiescent(leg_b, _leg_b_baseline_epoch(1))
-
-
-def test_content_caught_alone_does_not_advance_leg_b():
-    """Content catchup alone must not advance leg-b hold or epoch while hole debt remains."""
-    leg_b, _leg_a = _run_cycle_one_with_probe(
-        {
-            "leg_b_io_done": True,
-            "content_mark": True,
-            "content_caught": True,
-            "hole_clear_mark": False,
-            "holes_cleared": False,
-            "hole_debt": 2048,
-            "present_mark": True,
-        }
-    )
-    _assert_leg_b_quiescent(leg_b, _leg_b_baseline_epoch(1))
-
-
-def test_both_axes_and_io_advance_leg_b():
-    """Leg-b hold and epoch may advance only after hole clearance, content catchup, and destination IO."""
-    leg_b, leg_a = _run_cycle_one_with_probe(
-        {
-            "leg_b_io_done": True,
-            "hole_clear_mark": True,
-            "holes_cleared": True,
-            "hole_debt": 0,
-            "content_mark": True,
-            "content_caught": True,
-            "present_mark": True,
-        }
-    )
-    baseline = _leg_b_baseline_epoch(1)
-    assert leg_b["hold_ms"] >= CONFIG_HOLD_MS
-    assert leg_b["epoch"] == baseline + 1
-    assert leg_b["epoch"] > leg_a["epoch"]
-
-
-def test_append_resume_rebuilds_from_fixture_not_poison():
-    """Append resume must rebuild leg-b epoch floors from fixture authorities, not partial verified or hole tallies."""
-    if OUTPUT.exists():
-        shutil.rmtree(OUTPUT)
-    env = os.environ.copy()
-    env["OUTPUT_DIR"] = str(OUTPUT)
-    env["CYCLE_COUNT"] = "1"
-    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
-    subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=True)
-    conv_partial = _load("convergence_report.json")["cycles"][0]
-    assert conv_partial["verified_bytes"] < conv_partial["synced_bytes"]
-    probe2 = _probe(2)
-    packed_floor = _packed_probe_epoch(2) - 1
-    _run_mirctl(OUTPUT, cycle=2, append=True)
-    segments = _load("push_trace.json")
-    leg_b_rows = [r for r in segments if r["leg_id"] == "leg-b"]
-    assert leg_b_rows, "missing leg-b rows after append resume"
-    assert all(r["epoch"] != conv_partial["verified_bytes"] for r in leg_b_rows)
-    assert all(r["byte_offset"] == probe2["delayed_offset"] for r in leg_b_rows)
-    last_leg_b_epoch = leg_b_rows[len(leg_b_rows) - 1]["epoch"]
-    assert last_leg_b_epoch >= packed_floor
-    assert last_leg_b_epoch >= probe2["epoch"] - 1
-
-
-def test_dual_authority_digest_survives_hole_debt():
-    """Digest views must keep catalog and probe epochs separate while hole debt remains unsettled."""
-    if OUTPUT.exists():
-        shutil.rmtree(OUTPUT)
-    env = os.environ.copy()
-    env["OUTPUT_DIR"] = str(OUTPUT)
-    env["CYCLE_COUNT"] = "1"
-    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
-    subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=True)
-    catalog = _catalog(1)
-    probe = _probe(1)
-    conv = _load("convergence_report.json")
-    side_a = _side_a_view()
-    side_b = _side_b_view()
-    assert catalog["finished"] is True
-    assert probe["hole_debt"] > 0
-    assert _max_verified_seal(conv) == 0
-    assert probe["epoch"] > catalog["epoch"] or catalog["epoch"] != probe["epoch"]
-    assert side_a is not None
-    assert side_a["epoch"] == catalog["epoch"]
-    assert side_b["epoch"] == probe["epoch"]
-    assert side_a["tally"] == catalog["tally"]
-    assert side_b["tally"] == probe["tally"]
-    assert side_a["tally_hex"] == _tally_hex(side_a["tally"], side_a["epoch"])
-    assert side_b["tally_hex"] == _tally_hex(side_b["tally"], side_b["epoch"])
-
-
-def test_rolling_digest_exports_latest_cycle_pair_only():
-    """rolling_digest.json must contain only side-a and side-b views from the latest completed cycle."""
-    _run_repro({"CYCLE_COUNT": str(DEFAULT_CYCLES)})
-    digest = _load("rolling_digest.json")
-    views = digest["views"]
-    assert len(views) == 2
-    sources = {view["source"] for view in views}
-    assert sources == {"side-a", "side-b"}
-    catalog = _catalog(DEFAULT_CYCLES)
-    probe = _probe(DEFAULT_CYCLES)
-    side_a = next(view for view in views if view["source"] == "side-a")
-    side_b = next(view for view in views if view["source"] == "side-b")
-    assert side_a["epoch"] == catalog["epoch"]
-    assert side_a["tally"] == catalog["tally"]
-    assert side_b["epoch"] == probe["epoch"]
-    assert side_b["tally"] == probe["tally"]
-
-
-def test_probe_metric_authority_in_digest_chain():
-    """Probe-side digest tally must follow probe fixture metrics through blending and export, not catalog metrics."""
-    _run_repro({"CYCLE_COUNT": str(DEFAULT_CYCLES)})
-    probe = _probe(2)
-    catalog = _catalog(2)
-    side_b = _side_b_view()
-    side_a = _side_a_view()
-    assert side_b["tally"] == probe["tally"]
-    assert side_b["tally"] != catalog["tally"]
-    assert side_a is not None
-    assert side_a["tally"] == catalog["tally"]
-    assert side_b["tally_hex"] == _tally_hex(side_b["tally"], side_b["epoch"])
-
-
-def test_sealed_append_idempotent_across_rank_boundary():
-    """Idempotent mirctl rerun must skip an already-exported settled cycle and leave artifacts unchanged."""
-    _run_repro({"CYCLE_COUNT": str(DEFAULT_CYCLES)})
-    conv_before = _load("convergence_report.json")
-    assert _max_verified_seal(conv_before) == DEFAULT_CYCLES
-    before_segments = len(_load("push_trace.json"))
-    before_cycles = len(conv_before["cycles"])
-    before_trace = _load("progress_trace.jsonl")
-    first_digest = _load("rolling_digest.json")
-    _run_mirctl(OUTPUT, cycle=DEFAULT_CYCLES, append=True)
-    assert len(_load("push_trace.json")) == before_segments
-    assert len(_load("convergence_report.json")["cycles"]) == before_cycles
-    assert _load("progress_trace.jsonl") == before_trace
-    assert _load("rolling_digest.json") == first_digest
-
-
-def test_delayed_window_settles_after_both_axes():
-    """Delayed window sums disagree on cycle one and converge once both settlement axes complete on cycle two."""
-    if OUTPUT.exists():
-        shutil.rmtree(OUTPUT)
-    env = os.environ.copy()
-    env["OUTPUT_DIR"] = str(OUTPUT)
-    env["CYCLE_COUNT"] = "1"
-    env["VERIFIER_BIN"] = str(VERIFIER_BIN)
-    subprocess.run(VERIFIER_CYCLE, cwd="/app", env=env, check=True)
-    probe1 = _probe(1)
-    catalog = _catalog(1)
-    offset = probe1["delayed_offset"]
-    span = probe1["delayed_span"]
-    seed_sum = _window_sum(offset, span)
-    assert catalog["finished"] is True
-    assert probe1["leg_a_sum"] == seed_sum
-    assert probe1["leg_b_sum"] != probe1["leg_a_sum"]
-    _run_mirctl(OUTPUT, cycle=2, append=True)
-    probe2 = _probe(2)
-    conv = _load("convergence_report.json")
-    final = conv["cycles"][-1]
-    assert probe2["leg_a_sum"] == probe2["leg_b_sum"]
-    assert probe2["hole_debt"] == 0
-    assert probe2["holes_cleared"] is True
-    assert probe2["content_caught"] is True
-    assert final["verified_bytes"] == final["synced_bytes"]
-    assert _max_verified_seal(conv) == 2
-
-
-def test_cross_artifact_replay_coherence():
-    """Full replay coordinates dual-axis settlement, trace ordering, leg-b anchors, and digest chain."""
-    _run_repro({"CYCLE_COUNT": "2"})
-    conv = _load("convergence_report.json")
-    assert len(conv["cycles"]) >= 2
-    digest = _load("rolling_digest.json")
-    segments = _load("push_trace.json")
-    trace = _load("progress_trace.jsonl")
-    probe = _probe(2)
-    for view in digest["views"]:
-        assert view["tally_hex"] == _tally_hex(view["tally"], view["epoch"])
-    assert len(trace) >= DEFAULT_CYCLES * 3
-    for cycle in range(1, DEFAULT_CYCLES + 1):
-        stage_rows = [row for row in trace if row["epoch"] == cycle]
-        assert [row["op"] for row in stage_rows] == ["chunk", "roll", "latch"]
-        for row in stage_rows:
-            assert row["path"] == LOGICAL_PATH
-        cycle_conv = next(c for c in conv["cycles"] if c["cycle"] == cycle)
-        if cycle == 1:
-            assert cycle_conv["verified_bytes"] != cycle_conv["synced_bytes"]
-            assert cycle_conv["synced_bytes"] > 0
-            assert _max_verified_seal({"cycles": conv["cycles"][:1]}) == 0
-        else:
-            assert cycle_conv["verified_bytes"] == cycle_conv["synced_bytes"]
-    leg_b_rows = [r for r in segments if r["leg_id"] == "leg-b"]
-    assert all(r["byte_offset"] == probe["delayed_offset"] for r in leg_b_rows)
-    side_b = _side_b_view()
-    assert side_b["tally"] == probe["tally"]
-    leg_a_rows = [r for r in segments if r["leg_id"] == "leg-a"]
-    for cycle in range(1, DEFAULT_CYCLES + 1):
-        if not _probe(cycle).get("leg_b_io_done", True):
-            idx = cycle - 1
-            assert leg_b_rows[idx]["epoch"] <= leg_a_rows[idx]["epoch"]
-
-
-def test_rank_seal_requires_verified_catchup_both_axes():
-    """Rank, sealed generation, and digest epochs must stay coupled through dual-axis verified catchup."""
-    _run_repro({"CYCLE_COUNT": str(DEFAULT_CYCLES)})
-    conv = _load("convergence_report.json")
-    cycle1 = next(c for c in conv["cycles"] if c["cycle"] == 1)
-    cycle2 = next(c for c in conv["cycles"] if c["cycle"] == 2)
-    assert cycle1["verified_bytes"] != cycle1["synced_bytes"]
-    assert cycle2["verified_bytes"] == cycle2["synced_bytes"]
-    assert _max_verified_seal({"cycles": conv["cycles"][:1]}) == 0
-    assert _max_verified_seal(conv) == DEFAULT_CYCLES
-    digest = _load("rolling_digest.json")
-    catalog = _catalog(DEFAULT_CYCLES)
-    probe = _probe(DEFAULT_CYCLES)
-    side_a = next(v for v in digest["views"] if v["source"] == "side-a")
-    side_b = next(v for v in digest["views"] if v["source"] == "side-b")
-    assert side_a["epoch"] == catalog["epoch"]
-    assert side_b["epoch"] == probe["epoch"]
-    assert probe["hole_debt"] == 0
-    assert probe["content_caught"] is True
+REPORT = Path("/app/output/residual_scope.json")
+INTERIM = next((ENV / "fixtures/interim_snaps").glob("q2_*.json"))
+ANNEX = ENV / "fixtures/annex"
+M1 = Path("/app/output/m1_tables.rds")
+COLS = ["doc_id", "win_ix", "tok_start", "tok_count", "carry_sum", "relevance"]
+OUTPUT_ARTIFACTS = ("m1_" + "tables.rds", "m2_" + "witness.rds", "residual_" + "scope.json")
+
+
+def _backup_outputs() -> None:
+    for name in OUTPUT_ARTIFACTS:
+        src = Path("/app/output") / name
+        if src.exists():
+            shutil.copy2(src, Path("/app/output") / f"{name}.bak")
+    for src in Path("/app/output").glob(".chain_cache_*.bin"):
+        shutil.copy2(src, Path("/app/output") / f"bak_{src.name}")
+
+
+def _restore_outputs() -> None:
+    for name in OUTPUT_ARTIFACTS:
+        bak = Path("/app/output") / f"{name}.bak"
+        if bak.exists():
+            shutil.copy2(bak, Path("/app/output") / name)
+            bak.unlink()
+    for bak in Path("/app/output").glob("bak" + "_" + ".chain_cache_*.bin"):
+        orig_name = bak.name[4:]
+        shutil.copy2(bak, Path("/app/output") / orig_name)
+        bak.unlink()
+
+
+def _cleanup_backup() -> None:
+    for name in OUTPUT_ARTIFACTS:
+        bak = Path("/app/output") / f"{name}.bak"
+        if bak.exists():
+            bak.unlink()
+    for bak in Path("/app/output").glob("bak" + "_" + ".chain_cache_*.bin"):
+        bak.unlink()
+
+
+class TestOutputs:
+    def test_cta01_table_shape(self) -> None:
+        """Staged window tables must expose the public column layout."""
+        assert M1.is_file(), "staged tables missing from pipeline output"
+        proc = subprocess.run(
+            ["bash", "/app/environment/scripts/inspect_cols.sh"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(proc.stderr)
+        cols = json.loads(proc.stdout.strip())
+        assert cols == COLS
+
+    def test_cta02_join_keys(self) -> None:
+        """Judgment doc_id keys must appear in staged window tables."""
+        assert M1.is_file(), "staged tables missing from pipeline output"
+        proc = subprocess.run(
+            ["bash", "/app/environment/scripts/inspect_join.sh"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(proc.stderr)
+        assert proc.stdout.strip() == "TRUE"
+
+    def test_cta04_bounds_row(self) -> None:
+        """Witness residual magnitudes must stay inside public tolerance classes."""
+        assert REPORT.is_file(), "terminal report missing from pipeline output"
+        rep = json.loads(REPORT.read_text())
+        for bundle in ("w3", "w4", "k5"):
+            for tag in ("strict_mono", "relaxed_fast"):
+                rows = rep["bundles"][bundle][tag]["residual_rows"]
+                floor_v = 0.05
+                eps = 0.001 if tag == "strict_mono" else 0.002
+                for row in rows:
+                    assert abs(float(row["residual"])) <= floor_v + eps + 1e-9
+
+    def test_cta05_band_row(self) -> None:
+        """Monotonic score ordering must hold on training folds per active profile."""
+        assert REPORT.is_file(), "terminal report missing from pipeline output"
+        rep = json.loads(REPORT.read_text())
+        for bundle in ("w3", "w4", "k5"):
+            for tag in ("strict_mono", "relaxed_fast"):
+                band = float(rep["bundles"][bundle][tag]["mono_band"])
+                profile = (ENV / "profiles" / f"{tag}.toml").read_text()
+                for line in profile.splitlines():
+                    if line.startswith("band_eps"):
+                        expected = float(line.split("=", 1)[1].strip())
+                        break
+                else:
+                    raise AssertionError(f"missing band_eps in {tag}")
+                assert abs(band - expected) <= 1e-9
+
+    def test_cta06_grid_row(self) -> None:
+        """strict_mono and relaxed_fast suite semantics must differ as documented."""
+        assert REPORT.is_file(), "terminal report missing from pipeline output"
+        rep = json.loads(REPORT.read_text())
+        w3_strict = rep["bundles"]["w3"]["strict_mono"]["chain_hex"]
+        w3_fast = rep["bundles"]["w3"]["relaxed_fast"]["chain_hex"]
+        assert w3_strict != w3_fast
+
+        def _fold_order(name: str) -> list[str]:
+            text = (ENV / "profiles" / f"{name}.toml").read_text()
+            for line in text.splitlines():
+                if line.startswith("fold_order"):
+                    inner = line.split("=", 1)[1].strip()
+                    return [x.strip().strip('"') for x in inner.strip("[]").split(",")]
+            raise AssertionError(f"missing fold_order in {name}")
+
+        assert _fold_order("strict_mono") != _fold_order("relaxed_fast")
+
+    def test_cta07_chain_hex(self) -> None:
+        """chain_hex must match sha256 over rebuilt replay bytes for each bundle and tag."""
+        assert REPORT.is_file(), "terminal report missing from pipeline output"
+        rep = json.loads(REPORT.read_text())
+        for bundle in ("w3", "w4", "k5"):
+            for tag in ("strict_mono", "relaxed_fast"):
+                reported = rep["bundles"][bundle][tag]["chain_hex"]
+                proc_r = subprocess.run(
+                    ["bash", "/app/environment/scripts/inspect_chain.sh", bundle, tag],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
+                if proc_r.returncode != 0:
+                    raise AssertionError(proc_r.stderr)
+                assert reported == proc_r.stdout.strip()
+
+    def test_cta08_fold_agree(self) -> None:
+        """Training witness rows and certificate replay must agree on holdout folds."""
+        assert REPORT.is_file(), "terminal report missing from pipeline output"
+        rep = json.loads(REPORT.read_text())
+        for bundle in ("w3", "w4", "k5"):
+            for tag in ("strict_mono", "relaxed_fast"):
+                rows = rep["bundles"][bundle][tag]["residual_rows"]
+                assert len(rows) == 3
+                proc_r = subprocess.run(
+                    ["bash", "/app/environment/scripts/inspect_mono.sh", bundle, tag],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
+                if proc_r.returncode != 0:
+                    raise AssertionError(proc_r.stderr)
+                assert proc_r.stdout.strip() == "TRUE"
+
+    def test_cta09_repeat_guard(self) -> None:
+        """Repeat cache wipe without documented recovery must fail cross-run bands."""
+        assert REPORT.is_file(), "terminal report missing from pipeline output"
+        _backup_outputs()
+        try:
+            wipe = subprocess.run(
+                ["bash", "/app/environment/migrations/cln4.sh"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if wipe.returncode != 0:
+                raise AssertionError(wipe.stderr)
+            fail_proc = subprocess.run(
+                [
+                    "bash",
+                    "/app/environment/scripts/run_scope_chk.sh",
+                    "--suite",
+                    "all",
+                    "--tags",
+                    "strict_mono,relaxed_fast",
+                    "--bundle-out",
+                    "/app/output/residual_scope.json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=90,
+                check=False,
+            )
+            if fail_proc.returncode == 0:
+                raise AssertionError("expected checker failure after cache wipe")
+        finally:
+            _restore_outputs()
+            _cleanup_backup()
+
+    def test_cta10_q4_trap(self) -> None:
+        """Interim snap tallies alone must not satisfy terminal grading."""
+        snap = json.loads(INTERIM.read_text())
+        assert snap.get("headline_ok") is True
+        _backup_outputs()
+        try:
+            for name in OUTPUT_ARTIFACTS:
+                artifact = Path("/app/output") / name
+                if artifact.exists():
+                    artifact.unlink()
+            fail_proc = subprocess.run(
+                [
+                    "bash",
+                    "/app/environment/scripts/run_scope_chk.sh",
+                    "--suite",
+                    "all",
+                    "--tags",
+                    "strict_mono,relaxed_fast",
+                    "--bundle-out",
+                    "/app/output/residual_scope.json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=90,
+                check=False,
+            )
+            if fail_proc.returncode == 0:
+                raise AssertionError("expected checker failure without pipeline output")
+        finally:
+            _restore_outputs()
+            _cleanup_backup()
+
+    def test_cta11_clean_rebuild(self) -> None:
+        """Pipeline must regenerate valid outputs from scratch after a cache wipe."""
+        _backup_outputs()
+        try:
+            subprocess.run(
+                ["bash", "/app/environment/migrations/cln4.sh"],
+                check=True,
+                timeout=60,
+            )
+            subprocess.run(
+                ["bash", "/app/environment/scripts/stage_tables.sh"],
+                check=True,
+                timeout=120,
+            )
+            subprocess.run(
+                ["bash", "/app/environment/scripts/drive_suite.sh"],
+                check=True,
+                timeout=120,
+            )
+            proc = subprocess.run(
+                [
+                    "bash",
+                    "/app/environment/scripts/run_scope_chk.sh",
+                    "--suite",
+                    "all",
+                    "--tags",
+                    "strict_mono,relaxed_fast",
+                    "--bundle-out",
+                    "/app/output/residual_scope.json",
+                ],
+                check=False,
+                timeout=90,
+                capture_output=True,
+                text=True,
+            )
+            assert proc.returncode == 0, proc.stderr
+        finally:
+            _restore_outputs()
+            _cleanup_backup()
