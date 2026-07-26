@@ -4,28 +4,27 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "build-and-dependency-management"
-tags = ["go", "sumdb", "modules", "offline-build", "journal", "graph-inference"]
-languages = ["go"]
-title = "Sumdb graph trim inferencer"
+category = "system-administration"
+subcategories = [ "tool_specific" ]
 codebase_size = "small"
+languages = [ "bash" ]
+tags = [ "frrouting", "ripestat", "bgp", "route-maps", "change-control" ]
+expert_time_estimate_min = 360
+junior_time_estimate_min = 900
 number_of_milestones = 0
-subcategories = []
-expert_time_estimate_min = 120
-junior_time_estimate_min = 360
-
-[verifier]
-timeout_sec = 900
 
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
+
+[verifier]
+timeout_sec = 450.0
 
 [environment]
-build_timeout_sec = 900
+build_timeout_sec = 1800.0
+docker_flags = []
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-allow_internet = false
-
-[reference_pattern]
-justification_if_none = "no promoted reference matches go sumdb mirror graph trim under conflicting tiles and dual-package offline builds"
+gpus = 0
+gpu_types = []
+allow_internet = true

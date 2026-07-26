@@ -1,0 +1,2 @@
+hostname,site,asn,router_id,role
+edge-ams-01,ams,3333,192.0.2.10,edge
