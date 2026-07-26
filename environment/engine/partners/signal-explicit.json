@@ -1,4 +1,0 @@
-{
-  "id": "signal-explicit",
-  "summary": "Warns lanes, acknowledges delayed messages, offers sync capture intent"
-}
