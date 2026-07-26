@@ -1,26 +1,38 @@
 #!/bin/bash
+set -uo pipefail
 
-mkdir -p /logs/verifier
-export SPANFORGE_ROOT=/opt/spanforge
-
-# Install verifier-only dependencies here (not during image build).
-if [ ! -x /opt/verifier_venv/bin/pytest ]; then
-    python3 -m venv /opt/verifier_venv
-    /opt/verifier_venv/bin/pip install \
-        --no-index \
-        --find-links=/verifier-wheels \
-        --require-hashes \
-        --no-deps \
-        -r /opt/verifier-requirements.lock
+if [ "$PWD" = "/" ]; then
+    echo "Error: No working directory set."
+    mkdir -p /logs/verifier
+    echo 0 > /logs/verifier/reward.txt
+    exit 0
 fi
 
-export PATH="/opt/verifier_venv/bin:$PATH"
+mkdir -p /logs/verifier /app/output
 
-cd /tests || exit 1
+cd /app/bandit && go build -o /app/bin/ips-eval ./cmd/ipseva 2>&1
+if [ $? -ne 0 ]; then
+    echo "Build failed"
+    echo 0 > /logs/verifier/reward.txt
+    exit 0
+fi
 
-pytest -rA /tests/test_outputs.py
-status=$?
-if [ "$status" -eq 0 ]; then
+/app/bin/ips-eval \
+    --data /app/data \
+    --features /app/features \
+    --models /app/models \
+    --config /app/config/eval.json \
+    --out /app/output 2>&1
+if [ $? -ne 0 ]; then
+    echo "ips-eval failed"
+    echo 0 > /logs/verifier/reward.txt
+    exit 0
+fi
+
+python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -v -rA
+rc=$?
+
+if [ "$rc" -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt
