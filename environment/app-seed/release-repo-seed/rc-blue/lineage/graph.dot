@@ -1,0 +1,26 @@
+digraph rc_blue {
+  graph [rankdir=LR];
+  "RB-01" [kind="train"];
+  "RB-02" [kind="train"];
+  "RB-03" [kind="train"];
+  "RB-04" [kind="calibrate"];
+  "RB-05" [kind="promote"];
+  "RB-06" [kind="train"];
+  "RB-07" [kind="train"];
+  "RB-08" [kind="calibrate"];
+  "RB-09" [kind="ensemble"];
+  "RB-10" [kind="promote"];
+  "RB-11" [kind="train"];
+  "RB-12" [kind="train"];
+  "RB-01" -> "RB-02" [label="approved|2025-01-05|warmstart"];
+  "RB-02" -> "RB-03" [label="proposal|2024-01-10|warmstart"];
+  "RB-03" -> "RB-04" [label="approved|2025-03-01|calibration_member"];
+  "RB-04" -> "RB-05" [label="approved|2025-03-10|promotion"];
+  "RB-06" -> "RB-07" [label="approved|2025-02-14|feature_inheritance"];
+  "RB-07" -> "RB-08" [label="approved|2025-03-02|calibration_member"];
+  "RB-05" -> "RB-09" [label="approved|2025-04-01|ensemble_member"];
+  "RB-08" -> "RB-09" [label="approved|2025-04-01|ensemble_member"];
+  "RB-09" -> "RB-10" [label="approved|2025-04-15|promotion"];
+  "RB-11" -> "RB-12" [label="proposal|2024-06-01|ensemble_member"];
+  "RB-11" -> "RB-12" [label="superseded|2025-04-01|warmstart"];
+}

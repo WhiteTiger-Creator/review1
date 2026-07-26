@@ -1,0 +1,27 @@
+digraph rc_green {
+  graph [rankdir=LR];
+  subgraph cluster_release {
+    "LG-a2" [kind="train"];
+    "LG-b2" [kind="train"];
+    "LG-a5" [kind="promote"];
+    "LG-e2" [kind="promote"];
+    "LG-a1" [kind="train"];
+    "LG-q2" [kind="train"];
+    "LG-e1" [kind="ensemble"];
+    "LG-b3" [kind="calibrate"];
+    "LG-a4" [kind="calibrate"];
+    "LG-q1" [kind="train"];
+    "LG-a3" [kind="train"];
+    "LG-b1" [kind="train"];
+  "LG-b3" -> "LG-e1" [xlabel="approved|2025-04-01|ensemble_member"];
+  "LG-q1" -> "LG-q2" [xlabel="approved|2025-01-01|quarantine"];
+  "LG-e1" -> "LG-e2" [xlabel="approved|2025-04-15|promotion"];
+  "LG-b1" -> "LG-b2" [xlabel="approved|2025-02-14|feature_inheritance"];
+  "LG-a4" -> "LG-a5" [xlabel="approved|2025-03-10|promotion"];
+  "LG-a5" -> "LG-e1" [xlabel="approved|2025-04-01|ensemble_member"];
+  "LG-a3" -> "LG-a4" [xlabel="approved|2025-03-01|calibration_member"];
+  "LG-b2" -> "LG-b3" [xlabel="approved|2025-03-02|calibration_member"];
+  "LG-a1" -> "LG-a2" [xlabel="approved|2025-01-05|warmstart"];
+  "LG-a2" -> "LG-a3" [xlabel="approved|2025-02-01|feature_inheritance"];
+  }
+}

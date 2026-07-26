@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "lineage-audit discrepancy report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "node_count",
+    "edge_count",
+    "representation_differences",
+    "semantic_discrepancies"
+  ],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "node_count": { "type": "integer", "minimum": 0 },
+    "edge_count": { "type": "integer", "minimum": 0 },
+    "representation_differences": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/difference" }
+    },
+    "semantic_discrepancies": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/difference" }
+    }
+  },
+  "definitions": {
+    "difference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["alias_spelling", "annotation_placement"] },
+        "run_uid": { "type": "string" },
+        "edge": { "type": "string" },
+        "aliases": { "type": "array", "items": { "type": "string" } },
+        "attributes": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

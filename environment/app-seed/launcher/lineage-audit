@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+AUDITOR_HOME="/app/environment"
+INSTALL="$AUDITOR_HOME/build/install/lineage-audit/bin/lineage-audit"
+if [ ! -x "$INSTALL" ]; then
+    echo "lineage-audit: distribution not built; run './gradlew --offline installDist' in $AUDITOR_HOME" >&2
+    exit 127
+fi
+cd "$AUDITOR_HOME"
+exec "$INSTALL" "$@"
