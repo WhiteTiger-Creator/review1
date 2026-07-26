@@ -1,29 +1,11 @@
-FROM --platform=linux/amd64 public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-
-WORKDIR /app
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      asciinema \
-      ca-certificates \
-      python3-venv \
-      tmux \
- && rm -rf /var/lib/apt/lists/*
-
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends python3 python3-venv ca-certificates tmux asciinema \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m venv /opt/runtime-venv \
- && /opt/runtime-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock
-
-ENV PATH="/opt/runtime-venv/bin:${PATH}"
-ENV PYTHONPATH="/app"
-
-COPY --chown=65534:65534 fyop/ /app/fyop/
-COPY --chown=65534:65534 docs/ /app/docs/
-COPY --chown=65534:65534 yard-alpha/ /app/yard-alpha/
-COPY --chown=65534:65534 scripts/ /app/scripts/
-
-RUN mkdir -p /app/bin /app/state /app/output \
- && chown 65534:65534 /app /app/bin /app/state /app/output \
- && bash /app/scripts/build.sh
-
+RUN python3 -m venv /opt/verifier-venv \
+    && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock \
+    && rm /tmp/requirements.lock
 WORKDIR /app
+COPY task_file/ /app/
+RUN mkdir -p /app/bin /app/out /app/src

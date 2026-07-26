@@ -1,7 +1,7 @@
+tests
+solution
 .git
 .gitignore
-target
-*.class
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/

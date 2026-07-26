@@ -1,29 +1,78 @@
 version = "2.0"
 
 [metadata]
-author_name = "anonymous"
-author_email = "anonymous"
+author_name = "Anonymous"
+author_email = "anonymous@example.com"
 difficulty = "hard"
 category = "scientific-computing"
 subcategories = []
+tags = ["quantum-chemistry", "jacobi-rotations", "boys-localization", "k-best-matching", "deterministic-planning"]
+languages = ["go"]
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["python"]
-tags = ["yod-model", "discrete-dynamical-systems", "graph-occupancy-physics", "path-integral-measure", "residual-graph-closure", "capacity-inequalities"]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 360
+expert_time_estimate_min = 600.0
+junior_time_estimate_min = 1800.0
+codebase_size = "minimal"
 
 [verifier]
-timeout_sec = 900.0
+timeout_sec = 600.0
 
 [agent]
 timeout_sec = 1800.0
-user = 65534
 
 [environment]
 allow_internet = false
 build_timeout_sec = 900.0
-cpus = 2
+cpus = 1
+gpu_types = []
+gpus = 0
+docker_flags = []
 memory_mb = 4096
-storage_mb = 10240
-workdir = "/app"
+storage_mb = 5120
+
+[[rubric.positive]]
+criterion = "Agent uses /app/docs/numerical_spec.md to identify the input schema, output schema, rotation formulas, complete-plan ranking, validation behavior, tolerance, ordering, and atomic-output contract before implementing the CLI"
+weight = 5
+
+[[rubric.positive]]
+criterion = "Agent implements a Go executable at /app/bin/boys-localization-sweep that accepts exactly an input JSON path and an output JSON path, preserves the input file, and writes the required result object at the requested output path"
+weight = 5
+
+[[rubric.positive]]
+criterion = "Agent validates the documented input domain, including exact field sets, duplicate case IDs, duplicate JSON object member names, dipole dimensions and symmetry through 20 orbitals, frozen-vector length, frontier_size, finite numeric values, control ranges, task identity, and input/output path aliasing"
+weight = 5
+
+[[rubric.positive]]
+criterion = "Agent computes Boys rotation proposals from the unchanged start-of-sweep dipole matrices, including half-open angle canonicalization, capped versus full proposal generation, predicted_gain, gain_units, and strict min_gain eligibility"
+weight = 5
+
+[[rubric.positive]]
+criterion = "Agent selects each sweep with a scalable exact K-best matching-style planner over as many as 20 orbitals and 10 rotations, retaining up to five distinct complete plans under disjoint orbital membership, pair-count and work limits, total gain_units, proposal count, work cost, and canonical lexicographic tie-breaks"
+weight = 5
+
+[[rubric.positive]]
+criterion = "Agent applies selected rotations in canonical order to all three dipole matrices and to the accumulated transform using the documented old-value column and matrix update formulas"
+weight = 5
+
+[[rubric.positive]]
+criterion = "Agent records the exact best-to-worst plan_frontier and its choice sequences and totals, objective_trace, accepted_sweeps, sweep_audit totals, centroids, checksum, empty later sweeps, and empty arrays exactly as specified while keeping every numeric output finite and within tolerance"
+weight = 5
+
+[[rubric.positive]]
+criterion = "Agent runs the native Go CLI against the public fixture and at least one locally constructed compatible case through the required absolute executable path"
+weight = 3
+
+[[rubric.negative]]
+criterion = "Agent hardcodes public fixture identifiers, expected numeric arrays, or hidden-case-shaped lookup tables in place of implementing the Boys localization model"
+weight = -5
+
+[[rubric.negative]]
+criterion = "Agent omits the pi/4 canonicalization so theta_opt is not shifted by pi/2, uses a locally greedy, winner-only, or non-scalable exhaustive proposal-subset planner instead of exact K-best dynamic planning, or applies rotations from mutated start-of-sweep proposal state"
+weight = -5
+
+[[rubric.negative]]
+criterion = "Agent accepts duplicate JSON member names instead of rejecting them, duplicate case IDs, unknown or missing fields, invalid dimensions, asymmetric matrices, non-finite numeric values, invalid control ranges, or input/output path aliasing"
+weight = -3
+
+[[rubric.negative]]
+criterion = "Agent writes or replaces a successful output for an invalid batch, emits null arrays where empty arrays are required, changes the required field names or ordering, or relies on a non-native wrapper or runtime helper instead of the built executable"
+weight = -3
