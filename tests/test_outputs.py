@@ -1,504 +1,447 @@
+from __future__ import annotations
+
 import json
+import os
 import re
 import shutil
 import subprocess
-from itertools import pairwise
 from pathlib import Path
 
-ENV = Path("/app/environment")
-REPORT = Path("/app/output/residual_scope.json")
-INTERIM = next((ENV / "fixtures/interim_snaps").glob("q2_*.json"))
-ANNEX = ENV / "fixtures/annex"
-M1 = Path("/app/output/m1_tables.rds")
-COLS = ["doc_id", "win_ix", "tok_start", "tok_count", "carry_sum", "relevance"]
-OUTPUT_ARTIFACTS = ("m1_" + "tables.rds", "m2_" + "witness.rds", "residual_" + "scope.json")
-BUNDLES = ("w3", "w4", "k5")
-TAGS = ("strict_mono", "relaxed_fast")
-FOLD_ADJUSTMENT = 0.04
+import pytest
+from helpers.wakeclock_reference import reconcile
+
+APP_DIR = Path(os.environ.get("APP_DIR", "/app"))
+TESTS_DIR = Path(__file__).resolve().parent
+PUBLIC_FIXTURE_ROOT = TESTS_DIR / "fixtures" / "public_case"
+CANONICAL_OCCURRENCE_ID = re.compile(
+    r"^[^|]+\|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\|-?\d+\|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+)
 
 
-def _backup_outputs() -> None:
-    for name in OUTPUT_ARTIFACTS:
-        src = Path("/app/output") / name
-        if src.exists():
-            shutil.copy2(src, Path("/app/output") / f"{name}.bak")
-    for src in Path("/app/output").glob(".chain_cache_*.bin"):
-        shutil.copy2(src, Path("/app/output") / f"bak_{src.name}")
+def iter_fixture_occurrence_ids(fixture_root: Path) -> list[str]:
+    occurrence_ids: list[str] = []
+    snapshot = json.loads((fixture_root / "state" / "snapshot.json").read_text())
+    for item in snapshot.get("pending", []):
+        occurrence_ids.append(str(item["occurrence_id"]))
+    for cursor in snapshot.get("cursors", {}).values():
+        if cursor:
+            occurrence_ids.append(str(cursor))
+    journal_path = fixture_root / "state" / "journal.jsonl"
+    if journal_path.exists():
+        for line in journal_path.read_text().splitlines():
+            if line.strip():
+                record = json.loads(line)
+                occurrence_ids.extend(str(value) for value in record.get("occurrence_ids", []))
+    spool_dir = fixture_root / "state" / "spool"
+    if spool_dir.is_dir():
+        for path in spool_dir.glob("*.json"):
+            record = json.loads(path.read_text())
+            occurrence_ids.extend(str(value) for value in record.get("occurrence_ids", []))
+    return occurrence_ids
 
 
-def _restore_outputs() -> None:
-    for name in OUTPUT_ARTIFACTS:
-        bak = Path("/app/output") / f"{name}.bak"
-        if bak.exists():
-            shutil.copy2(bak, Path("/app/output") / name)
-            bak.unlink()
-    for bak in Path("/app/output").glob("bak" + "_" + ".chain_cache_*.bin"):
-        orig_name = bak.name[4:]
-        shutil.copy2(bak, Path("/app/output") / orig_name)
-        bak.unlink()
+def assert_fixture_occurrence_ids_are_canonical(fixture_root: Path) -> None:
+    for occurrence_id in iter_fixture_occurrence_ids(fixture_root):
+        assert occurrence_id.count("|") == 3, occurrence_id
+        assert CANONICAL_OCCURRENCE_ID.match(occurrence_id), occurrence_id
 
 
-def _cleanup_backup() -> None:
-    for name in OUTPUT_ARTIFACTS:
-        bak = Path("/app/output") / f"{name}.bak"
-        if bak.exists():
-            bak.unlink()
-    for bak in Path("/app/output").glob("bak" + "_" + ".chain_cache_*.bin"):
-        bak.unlink()
+@pytest.fixture(scope="session", autouse=True)
+def _validate_public_fixture_occurrence_ids() -> None:
+    assert_fixture_occurrence_ids_are_canonical(PUBLIC_FIXTURE_ROOT)
 
 
-def _load_report() -> dict:
-    return json.loads(REPORT.read_text())
+@pytest.fixture(scope="session")
+def binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    destination = tmp_path_factory.mktemp("bin") / "wakeclock"
+    subprocess.run(
+        ["go", "build", "-o", str(destination), "./cmd/wakeclock"],
+        cwd=APP_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return destination
 
 
-def _profile_field(tag: str, field: str):
-    text = (ENV / "profiles" / f"{tag}.toml").read_text()
-    for line in text.splitlines():
-        if line.startswith(f"{field} "):
-            value = line.split("=", 1)[1].strip()
-            if value.startswith("["):
-                return [x.strip().strip('"') for x in value.strip("[]").split(",")]
-            if "." in value:
-                return float(value)
-            return int(value)
-    raise AssertionError(f"missing {field} in {tag}")
+def copy_case(tmp_path: Path) -> tuple[Path, Path, Path]:
+    units = tmp_path / "units"
+    state = tmp_path / "state"
+    clock = tmp_path / "clock.jsonl"
+    shutil.copytree(PUBLIC_FIXTURE_ROOT / "units", units)
+    shutil.copytree(PUBLIC_FIXTURE_ROOT / "state", state)
+    (state / "spool").mkdir(exist_ok=True)
+    shutil.copy2(PUBLIC_FIXTURE_ROOT / "clock" / "trace.jsonl", clock)
+    return units, state, clock
 
 
-def _residual_rows(rep: dict, bundle: str, tag: str) -> list[dict]:
-    rows = rep["bundles"][bundle][tag]["residual_rows"]
-    if isinstance(rows, dict):
-        n = len(rows["fold"])
-        return [
-            {key: rows[key][i] for key in rows}
-            for i in range(n)
-        ]
-    return rows
-
-
-def _rows_in_fold_order(rows: list[dict], fold_order: list[str]) -> list[dict]:
-    by_fold = {row["fold"]: row for row in rows}
-    missing = [fold for fold in fold_order if fold not in by_fold]
-    assert not missing, f"missing folds {missing}"
-    return [by_fold[fold] for fold in fold_order]
-
-
-def _assert_lowercase_hex(value: str) -> None:
-    assert value == value.lower(), "chain_hex must be lowercase"
-    assert re.fullmatch(r"[0-9a-f]+", value), "chain_hex must be lowercase hex digits"
-    assert len(value) % 2 == 0 and len(value) > 0, "chain_hex must encode whole bytes"
-
-
-def _assert_score_variation(scores: list[float], label: str) -> None:
-    assert len({round(v, 6) for v in scores}) >= 2, label
-
-
-def _assert_non_decreasing_scores(scores: list[float]) -> None:
-    for prev, nxt in pairwise(scores):
-        assert nxt - prev >= -1e-9
-
-
-def _run_scope_chk() -> subprocess.CompletedProcess[str]:
+def run_candidate(
+    binary: Path,
+    units: Path,
+    state: Path,
+    clock: Path,
+    output: Path,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
-            "bash",
-            "/app/environment/scripts/run_scope_chk.sh",
-            "--suite",
-            "all",
-            "--tags",
-            "strict_mono,relaxed_fast",
-            "--bundle-out",
-            "/app/output/residual_scope.json",
+            str(binary),
+            "reconcile",
+            "--units",
+            str(units),
+            "--state",
+            str(state),
+            "--clock",
+            str(clock),
+            "--output",
+            str(output),
         ],
+        check=False,
         capture_output=True,
         text=True,
-        timeout=90,
-        check=False,
     )
 
 
-def _join_keys_ok(bundle: str) -> bool:
-    proc = subprocess.run(
+def assert_matches_reference(
+    binary: Path,
+    units: Path,
+    state: Path,
+    clock: Path,
+    output: Path,
+) -> dict[str, object]:
+    expected_report, expected_state, expected_journal, expected_spools = reconcile(
+        units, state, clock
+    )
+    result = run_candidate(binary, units, state, clock, output)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert json.loads(output.read_text()) == expected_report
+    assert json.loads((state / "snapshot.json").read_text()) == expected_state
+    actual_journal = [
+        json.loads(line)
+        for line in (state / "journal.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert actual_journal == expected_journal
+    for activation_id, spool in expected_spools.items():
+        assert json.loads((state / "spool" / f"{activation_id}.json").read_text()) == spool
+    assert output.read_bytes().endswith(b"\n")
+    return expected_report
+
+
+def write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2) + "\n")
+
+
+def write_trace(path: Path, events: list[dict[str, object]]) -> None:
+    path.write_text("".join(json.dumps(item, separators=(",", ":")) + "\n" for item in events))
+
+
+def initial_state(utc: str) -> dict[str, object]:
+    return {
+        "schema_version": "wakeclock.state.v1",
+        "trace_seq": 0,
+        "clock_utc": utc,
+        "high_water_utc": utc,
+        "boot_id": "initial",
+        "pending": [],
+        "committed_ids": [],
+        "last_activation": {},
+        "cursors": {},
+    }
+
+
+def unit(
+    unit_id: str,
+    timezone: str,
+    hour: int,
+    minute: int,
+    *,
+    delay: int = 0,
+    accuracy: int = 0,
+    depends_on: list[str] | None = None,
+    priority: int = 0,
+    persistent: bool = True,
+    cap: int = 8,
+) -> dict[str, object]:
+    return {
+        "schema_version": "wakeclock.unit.v1",
+        "unit_id": unit_id,
+        "timezone": timezone,
+        "hour": hour,
+        "minute": minute,
+        "weekdays": [0, 1, 2, 3, 4, 5, 6],
+        "persistent": persistent,
+        "random_delay_sec": delay,
+        "accuracy_sec": accuracy,
+        "depends_on": depends_on or [],
+        "priority": priority,
+        "enabled": True,
+        "catch_up_cap": cap,
+        "salt": f"{unit_id}-salt",
+    }
+
+
+def test_public_fold_recovery_contract_matches_independent_model(
+    binary: Path, tmp_path: Path
+) -> None:
+    """The bundled fold, dependency, and recovery stream matches an independent model."""
+    units, state, clock = copy_case(tmp_path)
+    report = assert_matches_reference(binary, units, state, clock, tmp_path / "out/report.json")
+    fold_ids = [
+        occurrence_id
+        for activation in report["activations"]
+        for occurrence_id in activation["occurrence_ids"]
+        if occurrence_id.startswith("index|2026-11-01T01:30:00|")
+    ]
+    assert len(fold_ids) == 2
+    assert len(set(fold_ids)) == 2
+    paired = [
+        activation
+        for activation in report["activations"]
+        if set(activation["unit_ids"]) == {"index", "archive"}
+    ]
+    assert all(activation["unit_ids"] == ["index", "archive"] for activation in paired)
+
+
+def test_spring_gap_and_fall_fold_are_utc_first(binary: Path, tmp_path: Path) -> None:
+    """UTC-first enumeration must omit a spring gap and preserve both fall-fold instants."""
+    units = tmp_path / "units"
+    units.mkdir()
+    write_json(units / "fold.timer.json", unit("fold", "America/New_York", 1, 30))
+    write_json(units / "gap.timer.json", unit("gap", "America/New_York", 2, 30))
+    state = tmp_path / "state"
+    (state / "spool").mkdir(parents=True)
+    write_json(state / "snapshot.json", initial_state("2026-03-08T05:00:00Z"))
+    (state / "journal.jsonl").write_text("")
+    clock = tmp_path / "clock.jsonl"
+    write_trace(
+        clock,
         [
-            "Rscript",
-            "-e",
-            (
-                "source('/app/environment/lib/common_io.R'); "
-                f"m1<-readRDS('/app/output/m1_tables.rds'); "
-                f"jt<-read_judgments('/app/environment/fixtures/judgments/bundle_{bundle}.tsv'); "
-                f"wt<-m1$window_tbls$bundle_{bundle}; "
-                "cat(all(jt$doc_id %in% wt$doc_id) && nrow(wt) > 0)"
-            ),
+            {"seq": 1, "kind": "advance", "utc": "2026-03-08T08:00:00Z"},
+            {"seq": 2, "kind": "advance", "utc": "2026-11-01T07:00:00Z"},
         ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
     )
-    if proc.returncode != 0:
-        raise AssertionError(proc.stderr)
-    return proc.stdout.strip() == "TRUE"
+    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
+    all_ids = [
+        occurrence_id
+        for activation in report["activations"]
+        for occurrence_id in activation["occurrence_ids"]
+    ]
+    assert not any(item.startswith("gap|2026-03-08T02:30:00|") for item in all_ids)
+    assert sum(item.startswith("fold|2026-11-01T01:30:00|") for item in all_ids) == 2
 
 
-def _interim_relevance(bundle: str, doc_ix: int) -> float | None:
-    snap = json.loads(INTERIM.read_text())
-    if snap.get("bundle") != bundle or snap.get("headline_ok") is not True:
-        return None
-    for entry in snap["residual_rows"]:
-        if int(entry["row_ix"]) == doc_ix:
-            return float(entry["band"])
-    return None
-
-
-def _staged_relevance(bundle: str, doc_ix: int) -> float:
-    proc = subprocess.run(
-        [
-            "Rscript",
-            "-e",
-            (
-                "source('/app/environment/lib/common_io.R'); "
-                f"m1<-readRDS('/app/output/m1_tables.rds'); "
-                f"jt<-read_judgments('/app/environment/fixtures/judgments/bundle_{bundle}.tsv'); "
-                f"wt<-m1$window_tbls$bundle_{bundle}; "
-                f"doc_id<-jt$doc_id[{doc_ix}]; "
-                "cat(mean(wt$relevance[wt$doc_id == doc_id]))"
-            ),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+def test_delay_and_results_ignore_unit_filename_order(binary: Path, tmp_path: Path) -> None:
+    """Stable delay and relevant activations must ignore filenames and unrelated units."""
+    units_a, state_a, clock_a = copy_case(tmp_path / "a")
+    units_b, state_b, clock_b = copy_case(tmp_path / "b")
+    for index, path in enumerate(sorted(units_b.glob("*.timer.json"), reverse=True)):
+        path.rename(units_b / f"renamed-{index}.timer.json")
+    write_json(
+        units_b / "unrelated.timer.json",
+        unit("unrelated", "UTC", 23, 59, delay=999, accuracy=1),
     )
-    if proc.returncode != 0:
-        raise AssertionError(proc.stderr)
-    return float(proc.stdout.strip())
+    out_a = tmp_path / "a.json"
+    out_b = tmp_path / "b.json"
+    report_a = assert_matches_reference(binary, units_a, state_a, clock_a, out_a)
+    report_b = assert_matches_reference(binary, units_b, state_b, clock_b, out_b)
+    relevant_a = [item for item in report_a["activations"] if "unrelated" not in item["unit_ids"]]
+    relevant_b = [item for item in report_b["activations"] if "unrelated" not in item["unit_ids"]]
+    assert relevant_a == relevant_b
 
 
-class TestOutputs:
-    def test_cta01_table_shape(self) -> None:
-        """Staged window tables must expose the public column layout."""
-        assert M1.is_file(), "staged tables missing from pipeline output"
-        proc = subprocess.run(
-            ["bash", "/app/environment/scripts/inspect_cols.sh"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
+def test_coalescing_uses_delayed_windows_and_dependency_topology(
+    binary: Path, tmp_path: Path
+) -> None:
+    """Delayed-window intersection and dependency topology determine one dispatch order."""
+    units = tmp_path / "units"
+    units.mkdir()
+    write_json(units / "base.timer.json", unit("base", "UTC", 0, 1, accuracy=30, priority=1))
+    write_json(
+        units / "child.timer.json",
+        unit("child", "UTC", 0, 2, accuracy=30, depends_on=["base"], priority=99),
+    )
+    state = tmp_path / "state"
+    (state / "spool").mkdir(parents=True)
+    snapshot = initial_state("2026-01-01T00:04:00Z")
+    snapshot["pending"] = [
+        {
+            "unit_id": "base",
+            "occurrence_id": "base|2026-01-01T00:01:00|0|2026-01-01T00:01:00Z",
+            "scheduled_local": "2026-01-01T00:01:00",
+            "scheduled_utc": "2026-01-01T00:01:00Z",
+            "offset_sec": 0,
+            "delayed_utc": "2026-01-01T00:02:10Z",
+            "accuracy_sec": 30,
+            "priority": 1,
+            "depends_on": [],
+        },
+        {
+            "unit_id": "child",
+            "occurrence_id": "child|2026-01-01T00:02:00|0|2026-01-01T00:02:00Z",
+            "scheduled_local": "2026-01-01T00:02:00",
+            "scheduled_utc": "2026-01-01T00:02:00Z",
+            "offset_sec": 0,
+            "delayed_utc": "2026-01-01T00:02:20Z",
+            "accuracy_sec": 30,
+            "priority": 99,
+            "depends_on": ["base"],
+        },
+    ]
+    write_json(state / "snapshot.json", snapshot)
+    (state / "journal.jsonl").write_text("")
+    clock = tmp_path / "clock.jsonl"
+    write_trace(clock, [{"seq": 1, "kind": "set", "utc": "2026-01-01T00:04:00Z"}])
+    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
+    assert report["activations"][0]["unit_ids"] == ["base", "child"]
+
+
+def test_prepare_only_is_discarded_and_retried(binary: Path, tmp_path: Path) -> None:
+    """A lone prepare is removed while its occurrence remains available for one retry."""
+    units = tmp_path / "units"
+    units.mkdir()
+    write_json(units / "job.timer.json", unit("job", "UTC", 0, 0))
+    state = tmp_path / "state"
+    (state / "spool").mkdir(parents=True)
+    pending = {
+        "unit_id": "job",
+        "occurrence_id": "job|2026-01-01T00:00:00|0|2026-01-01T00:00:00Z",
+        "scheduled_local": "2026-01-01T00:00:00",
+        "scheduled_utc": "2026-01-01T00:00:00Z",
+        "offset_sec": 0,
+        "delayed_utc": "2026-01-01T00:00:00Z",
+        "accuracy_sec": 0,
+        "priority": 0,
+        "depends_on": [],
+    }
+    snapshot = initial_state("2026-01-01T00:00:00Z")
+    snapshot["pending"] = [pending]
+    write_json(state / "snapshot.json", snapshot)
+    prepare = {
+        "activation_id": "orphan-prepare",
+        "phase": "prepare",
+        "group_id": "orphan-group",
+        "occurrence_ids": [pending["occurrence_id"]],
+    }
+    (state / "journal.jsonl").write_text(json.dumps(prepare, separators=(",", ":")) + "\n")
+    clock = tmp_path / "clock.jsonl"
+    write_trace(clock, [{"seq": 1, "kind": "advance", "utc": "2026-01-01T00:00:01Z"}])
+    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
+    assert report["recovered"] == [
+        {"activation_id": "orphan-prepare", "decision": "discarded_prepare"}
+    ]
+    assert len(report["activations"]) == 1
+
+
+@pytest.mark.parametrize("phase_count", [2, 3])
+def test_spooled_and_committed_partial_state_recovers_once(
+    binary: Path, tmp_path: Path, phase_count: int
+) -> None:
+    """Spooled and committed partial dispatches recover exactly once from durable evidence."""
+    units = tmp_path / "units"
+    units.mkdir()
+    write_json(units / "job.timer.json", unit("job", "UTC", 0, 0))
+    state = tmp_path / "state"
+    (state / "spool").mkdir(parents=True)
+    pending = {
+        "unit_id": "job",
+        "occurrence_id": "job|2026-01-01T00:00:00|0|2026-01-01T00:00:00Z",
+        "scheduled_local": "2026-01-01T00:00:00",
+        "scheduled_utc": "2026-01-01T00:00:00Z",
+        "offset_sec": 0,
+        "delayed_utc": "2026-01-01T00:00:00Z",
+        "accuracy_sec": 0,
+        "priority": 0,
+        "depends_on": [],
+    }
+    snapshot = initial_state("2026-01-01T00:00:00Z")
+    snapshot["pending"] = [pending]
+    write_json(state / "snapshot.json", snapshot)
+    activation_id = "partial-activation"
+    group_id = "partial-group"
+    records = [
+        {
+            "activation_id": activation_id,
+            "phase": phase,
+            "group_id": group_id,
+            "occurrence_ids": [pending["occurrence_id"]],
+        }
+        for phase in ("prepare", "spool", "commit")[:phase_count]
+    ]
+    (state / "journal.jsonl").write_text(
+        "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records)
+    )
+    write_json(
+        state / "spool" / f"{activation_id}.json",
+        {
+            "activation_id": activation_id,
+            "group_id": group_id,
+            "effective_utc": "2026-01-01T00:00:00Z",
+            "unit_ids": ["job"],
+            "occurrence_ids": [pending["occurrence_id"]],
+        },
+    )
+    clock = tmp_path / "clock.jsonl"
+    clock.write_text("")
+    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
+    expected = "completed_spool" if phase_count == 2 else "replayed_commit"
+    assert report["recovered"] == [{"activation_id": activation_id, "decision": expected}]
+    first_state = (state / "snapshot.json").read_bytes()
+    first_journal = (state / "journal.jsonl").read_bytes()
+    second = run_candidate(binary, units, state, clock, tmp_path / "second.json")
+    assert second.returncode == 0
+    assert (state / "snapshot.json").read_bytes() == first_state
+    assert (state / "journal.jsonl").read_bytes() == first_journal
+    assert json.loads((tmp_path / "second.json").read_text())["recovered"] == []
+
+
+def test_backward_clock_rerun_is_idempotent(binary: Path, tmp_path: Path) -> None:
+    """Backward clock history and a completed rerun must not recreate durable work."""
+    units, state, clock = copy_case(tmp_path)
+    output = tmp_path / "first.json"
+    assert_matches_reference(binary, units, state, clock, output)
+    snapshot = (state / "snapshot.json").read_bytes()
+    journal = (state / "journal.jsonl").read_bytes()
+    spool_bytes = {path.name: path.read_bytes() for path in (state / "spool").glob("*.json")}
+    second = run_candidate(binary, units, state, clock, tmp_path / "second.json")
+    assert second.returncode == 0
+    assert (state / "snapshot.json").read_bytes() == snapshot
+    assert (state / "journal.jsonl").read_bytes() == journal
+    assert {path.name: path.read_bytes() for path in (state / "spool").glob("*.json")} == spool_bytes
+    second_report = json.loads((tmp_path / "second.json").read_text())
+    assert second_report["activations"] == []
+    assert second_report["recovered"] == []
+
+
+@pytest.mark.parametrize("invalid_kind", ["cycle", "trace"])
+def test_invalid_inputs_preserve_state_and_output(
+    binary: Path, tmp_path: Path, invalid_kind: str
+) -> None:
+    """Invalid dependencies and traces must preserve every durable byte and report sentinel."""
+    units, state, clock = copy_case(tmp_path)
+    if invalid_kind == "cycle":
+        index_path = units / "10-index.timer.json"
+        index = json.loads(index_path.read_text())
+        index["depends_on"] = ["archive"]
+        write_json(index_path, index)
+    else:
+        write_trace(
+            clock,
+            [
+                {"seq": 2, "kind": "advance", "utc": "2026-11-01T05:00:00Z"},
+                {"seq": 1, "kind": "advance", "utc": "2026-11-01T06:00:00Z"},
+            ],
         )
-        if proc.returncode != 0:
-            raise AssertionError(proc.stderr)
-        cols = json.loads(proc.stdout.strip())
-        assert cols == COLS
-
-    def test_cta02_join_keys(self) -> None:
-        """Judgment doc_id keys must appear in staged window tables."""
-        assert M1.is_file(), "staged tables missing from pipeline output"
-        proc = subprocess.run(
-            ["bash", "/app/environment/scripts/inspect_join.sh"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise AssertionError(proc.stderr)
-        assert proc.stdout.strip() == "TRUE"
-
-        for bundle in BUNDLES:
-            assert _join_keys_ok(bundle), f"judgment keys missing for bundle {bundle}"
-
-        for doc_ix in (2, 5):
-            band = _interim_relevance("w3", doc_ix)
-            assert band is not None, f"interim snap missing row_ix {doc_ix}"
-            proc = subprocess.run(
-                [
-                    "Rscript",
-                    "-e",
-                    (
-                        "source('/app/environment/lib/common_io.R'); "
-                        "jt<-read_judgments('/app/environment/fixtures/judgments/bundle_w3.tsv'); "
-                        f"cat(jt$relevance[{doc_ix}])"
-                    ),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-            )
-            if proc.returncode != 0:
-                raise AssertionError(proc.stderr)
-            base = float(proc.stdout.strip())
-            expected = base * (1.0 + band)
-            actual = _staged_relevance("w3", doc_ix)
-            assert abs(actual - expected) <= 1e-9, (
-                f"w3 doc_ix {doc_ix} relevance must reflect interim band merge"
-            )
-
-        for doc_ix in (1, 3):
-            proc = subprocess.run(
-                [
-                    "Rscript",
-                    "-e",
-                    (
-                        "source('/app/environment/lib/common_io.R'); "
-                        "jt<-read_judgments('/app/environment/fixtures/judgments/bundle_w3.tsv'); "
-                        f"cat(jt$relevance[{doc_ix}])"
-                    ),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-            )
-            if proc.returncode != 0:
-                raise AssertionError(proc.stderr)
-            base = float(proc.stdout.strip())
-            actual = _staged_relevance("w3", doc_ix)
-            assert abs(actual - base) <= 1e-9, (
-                f"w3 doc_ix {doc_ix} must keep unadjusted judgment relevance"
-            )
-
-    def test_cta04_bounds_row(self) -> None:
-        """Witness residual magnitudes must stay inside public tolerance classes."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        rep = _load_report()
-        for bundle in BUNDLES:
-            for tag in TAGS:
-                rows = _rows_in_fold_order(
-                    _residual_rows(rep, bundle, tag),
-                    _profile_field(tag, "fold_order"),
-                )
-                floor_v = float(_profile_field(tag, "residual_floor"))
-                eps = float(_profile_field(tag, "band_eps"))
-                base_vals = [float(row["score"]) - float(row["residual"]) for row in rows]
-                base_pred = base_vals[0]
-                assert all(abs(v - base_pred) <= 1e-9 for v in base_vals), (
-                    f"{bundle}/{tag} residual rows must share one base_pred"
-                )
-                for idx, row in enumerate(rows, start=1):
-                    residual = float(row["residual"])
-                    score = float(row["score"])
-                    assert abs(residual - (score - base_pred)) <= 1e-9
-                    assert abs(residual) <= floor_v + eps + 1e-9
-                    assert abs(residual) <= FOLD_ADJUSTMENT * idx + eps + 1e-9, (
-                        f"{bundle}/{tag} fold {idx} residual exceeds public fold band"
-                    )
-                scores = [float(row["score"]) for row in rows]
-                _assert_score_variation(
-                    scores,
-                    f"{bundle}/{tag} fold scores must not collapse to one constant",
-                )
-
-    def test_cta05_band_row(self) -> None:
-        """Monotonic score ordering must hold on training folds per active profile."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        rep = _load_report()
-        for bundle in BUNDLES:
-            for tag in TAGS:
-                fold_order = _profile_field(tag, "fold_order")
-                rows = _rows_in_fold_order(_residual_rows(rep, bundle, tag), fold_order)
-                band = float(rep["bundles"][bundle][tag]["mono_band"])
-                expected = float(_profile_field(tag, "band_eps"))
-                assert abs(band - expected) <= 1e-9
-                base_pred = float(rows[0]["score"]) - float(rows[0]["residual"])
-                scores = [float(row["score"]) for row in rows]
-                assert base_pred > 0, f"{bundle}/{tag} base_pred must come from staged relevance"
-                _assert_non_decreasing_scores(scores)
-                _assert_score_variation(
-                    scores,
-                    f"{bundle}/{tag} monotonic fold scores must vary across folds",
-                )
-
-    def test_cta06_grid_row(self) -> None:
-        """strict_mono and relaxed_fast suite semantics must differ as documented."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        rep = _load_report()
-        strict_order = _profile_field("strict_mono", "fold_order")
-        fast_order = _profile_field("relaxed_fast", "fold_order")
-        assert strict_order != fast_order
-        assert float(_profile_field("strict_mono", "band_eps")) != float(
-            _profile_field("relaxed_fast", "band_eps")
-        )
-
-        seen_hex: set[str] = set()
-        for bundle in BUNDLES:
-            strict_hex = rep["bundles"][bundle]["strict_mono"]["chain_hex"]
-            fast_hex = rep["bundles"][bundle]["relaxed_fast"]["chain_hex"]
-            _assert_lowercase_hex(strict_hex)
-            _assert_lowercase_hex(fast_hex)
-            assert strict_hex != fast_hex, f"{bundle} tag profiles must diverge in replay digest"
-            assert strict_hex not in seen_hex and fast_hex not in seen_hex, (
-                f"{bundle} chain_hex must not duplicate another bundle/tag pair"
-            )
-            seen_hex.update({strict_hex, fast_hex})
-
-            strict_rows = _rows_in_fold_order(
-                _residual_rows(rep, bundle, "strict_mono"),
-                strict_order,
-            )
-            fast_rows = _rows_in_fold_order(
-                _residual_rows(rep, bundle, "relaxed_fast"),
-                fast_order,
-            )
-            assert [row["fold"] for row in strict_rows] == strict_order
-            assert [row["fold"] for row in fast_rows] == fast_order
-            assert [float(row["score"]) for row in strict_rows] != [
-                float(row["score"]) for row in fast_rows
-            ], f"{bundle} witness scores must differ across active profiles"
-
-    def test_cta07_chain_hex(self) -> None:
-        """chain_hex must match hex encoding of rebuilt replay bytes for each bundle and tag."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        rep = _load_report()
-        lengths: set[int] = set()
-        for bundle in BUNDLES:
-            for tag in TAGS:
-                reported = rep["bundles"][bundle][tag]["chain_hex"]
-                _assert_lowercase_hex(reported)
-                lengths.add(len(reported))
-                proc_r = subprocess.run(
-                    ["bash", "/app/environment/scripts/inspect_chain.sh", bundle, tag],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    check=False,
-                )
-                if proc_r.returncode != 0:
-                    raise AssertionError(proc_r.stderr)
-                rebuilt = proc_r.stdout.strip()
-                _assert_lowercase_hex(rebuilt)
-                assert reported == rebuilt
-                cache_path = Path(f"/app/output/.chain_cache_{bundle}_{tag}.bin")
-                assert cache_path.is_file(), f"missing cache ledger for {bundle}/{tag}"
-                assert cache_path.stat().st_size * 2 == len(reported), (
-                    f"{bundle}/{tag} chain_hex must cover the full cache ledger bytes"
-                )
-        assert len(lengths) == 1, "all bundle/tag digests must encode the same ledger byte length"
-
-    def test_cta08_fold_agree(self) -> None:
-        """Training witness rows and certificate replay must agree on holdout folds."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        rep = _load_report()
-        for bundle in BUNDLES:
-            for tag in TAGS:
-                fold_order = _profile_field(tag, "fold_order")
-                rows = _rows_in_fold_order(_residual_rows(rep, bundle, tag), fold_order)
-                assert len(rows) == len(fold_order)
-                assert {row["fold"] for row in rows} == set(fold_order)
-                base_pred = float(rows[0]["score"]) - float(rows[0]["residual"])
-                scores = [float(row["score"]) for row in rows]
-                for row in rows:
-                    residual = float(row["residual"])
-                    score = float(row["score"])
-                    assert abs(residual - (score - base_pred)) <= 1e-9
-                _assert_non_decreasing_scores(scores)
-                _assert_score_variation(
-                    scores,
-                    f"{bundle}/{tag} witness scores must not be identical on every fold",
-                )
-                proc_r = subprocess.run(
-                    ["bash", "/app/environment/scripts/inspect_mono.sh", bundle, tag],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    check=False,
-                )
-                if proc_r.returncode != 0:
-                    raise AssertionError(proc_r.stderr)
-                assert proc_r.stdout.strip() == "TRUE"
-
-    def test_cta09_repeat_guard(self) -> None:
-        """Repeat cache wipe without documented recovery must fail cross-run bands."""
-        assert REPORT.is_file(), "terminal report missing from pipeline output"
-        _backup_outputs()
-        try:
-            wipe = subprocess.run(
-                ["bash", "/app/environment/migrations/cln4.sh"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-            )
-            if wipe.returncode != 0:
-                raise AssertionError(wipe.stderr)
-            for name in OUTPUT_ARTIFACTS:
-                assert not (Path("/app/output") / name).exists(), (
-                    f"{name} must be removed by cache wipe"
-                )
-            assert not any(Path("/app/output").glob(".chain_cache_*.bin")), (
-                "chain cache ledgers must be removed by cache wipe"
-            )
-            fail_proc = _run_scope_chk()
-            if fail_proc.returncode == 0:
-                raise AssertionError("expected checker failure after cache wipe")
-            assert not REPORT.is_file() or fail_proc.returncode != 0
-        finally:
-            _restore_outputs()
-            _cleanup_backup()
-
-    def test_cta10_q4_trap(self) -> None:
-        """Interim snap tallies alone must not satisfy terminal grading."""
-        snap = json.loads(INTERIM.read_text())
-        assert snap.get("headline_ok") is True
-        assert snap.get("bundle") == "w3"
-        assert snap.get("residual_rows"), "interim snap must carry historical adjustment bands"
-        _backup_outputs()
-        try:
-            for name in OUTPUT_ARTIFACTS:
-                artifact = Path("/app/output") / name
-                if artifact.exists():
-                    artifact.unlink()
-            for cache in Path("/app/output").glob(".chain_cache_*.bin"):
-                cache.unlink()
-            fail_proc = _run_scope_chk()
-            if fail_proc.returncode == 0:
-                raise AssertionError("expected checker failure without pipeline output")
-            assert not M1.is_file(), "stage_tables output must not appear without the pipeline"
-            assert not Path("/app/output/m2_witness.rds").is_file()
-            assert not REPORT.is_file() or fail_proc.returncode != 0
-        finally:
-            _restore_outputs()
-            _cleanup_backup()
-
-    def test_cta11_clean_rebuild(self) -> None:
-        """Pipeline must regenerate valid outputs from scratch after a cache wipe."""
-        _backup_outputs()
-        try:
-            subprocess.run(
-                ["bash", "/app/environment/migrations/cln4.sh"],
-                check=True,
-                timeout=60,
-            )
-            subprocess.run(
-                ["bash", "/app/environment/scripts/stage_tables.sh"],
-                check=True,
-                timeout=120,
-            )
-            subprocess.run(
-                ["bash", "/app/environment/scripts/drive_suite.sh"],
-                check=True,
-                timeout=120,
-            )
-            proc = _run_scope_chk()
-            assert proc.returncode == 0, proc.stderr
-            assert M1.is_file()
-            assert Path("/app/output/m2_witness.rds").is_file()
-            assert REPORT.is_file()
-            rep = _load_report()
-            for bundle in BUNDLES:
-                for tag in TAGS:
-                    cache_path = Path(f"/app/output/.chain_cache_{bundle}_{tag}.bin")
-                    assert cache_path.is_file(), f"missing rebuilt cache ledger for {bundle}/{tag}"
-                    reported = rep["bundles"][bundle][tag]["chain_hex"]
-                    proc_r = subprocess.run(
-                        ["bash", "/app/environment/scripts/inspect_chain.sh", bundle, tag],
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                        check=False,
-                    )
-                    if proc_r.returncode != 0:
-                        raise AssertionError(proc_r.stderr)
-                    assert reported == proc_r.stdout.strip()
-        finally:
-            _restore_outputs()
-            _cleanup_backup()
+    before = {path.relative_to(state): path.read_bytes() for path in state.rglob("*") if path.is_file()}
+    output = tmp_path / "report.json"
+    output.write_bytes(b"sentinel\n")
+    result = run_candidate(binary, units, state, clock, output)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr.startswith("wakeclock: ")
+    assert result.stderr.count("\n") == 1
+    after = {path.relative_to(state): path.read_bytes() for path in state.rglob("*") if path.is_file()}
+    assert after == before
+    assert output.read_bytes() == b"sentinel\n"
