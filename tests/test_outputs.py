@@ -1,642 +1,760 @@
-"""Behavioral verifier for the ground-station kernel lockdown fortify gate."""
-
-from __future__ import annotations
-
+import hashlib
 import json
-import math
-import os
 import subprocess
 from pathlib import Path
 
-import pytest
+APP = Path('/app')
+OUT = APP / 'output' / 'build-plan.json'
+CMD = ['node', '/app/bin/repair-lock.js']
 
-COMMAND = Path("/app/kernel-fortify")
-CATALOG = Path("/app/config/sysctl-module-catalog.json")
-POLICY = Path("/app/control/policy.json")
-LEDGER = Path("/app/ground-canon/ground-lockdown-ledger-v1.json")
-SUMMARY = Path("/app/output/gate_summary.json")
-
-
-def _ledger() -> dict:
-    return json.loads(LEDGER.read_text(encoding="utf-8"))
-
-
-def _contract() -> dict:
-    return _ledger()["catalog_contract"]
-
-
-def _write_json(path: Path, value: object) -> Path:
-    path.write_text(json.dumps(value), encoding="utf-8")
-    return path
+BASE_POLICY = {
+    'nodeVersion': '20.11.1',
+    'buildHost': 'linux',
+    'includeDevDependencies': False,
+    'includeOptionalDependencies': False,
+    'preferStable': True,
+    'licenseAllowlist': ['MIT'],
+    'blockedPackages': [],
+    'expectedIntegrityHost': 'mirror.local',
+    'overrides': {},
+    'resolutions': {},
+    'patches': {},
+}
 
 
-def _policy(**overrides: object) -> dict:
-    value = {
-        "version": 1,
-        "default_action": "LOCK_ACT_ERRNO",
-        "errno": 1,
-        "station_channel": "ground-v2",
-        "lockdown_modes": ["LOCKDOWN_CONFIDENTIALITY", "LOCKDOWN_INTEGRITY"],
-        "blocked_sysctls": [],
-        "allowed_bands": ["uplink", "telemetry", "ranging"],
-        "allow_feature_stacking": True,
-        "band_allowlist": ["band-alpha", "band-beta"],
-        "leak_score_ceiling": 40,
-    }
-    value.update(overrides)
-    return value
-
-
-def _manifest(**overrides: object) -> dict:
-    value = {
-        "station_id": "uplink-north",
-        "band_id": "uplink",
-        "band": "band-alpha",
-        "features": [],
-        "additional_sysctls": [],
-    }
-    value.update(overrides)
-    return value
-
-
-def _run_compile(
-    tmp_path: Path,
-    policy: dict | None = None,
-    manifest: dict | None = None,
-    *,
-    env: dict[str, str] | None = None,
-) -> tuple[subprocess.CompletedProcess[str], Path]:
-    policy_path = _write_json(tmp_path / "policy.json", policy or _policy())
-    manifest_path = _write_json(tmp_path / "manifest.json", manifest or _manifest())
-    output = tmp_path / "profile.json"
+def run_tool():
+    if OUT.exists():
+        OUT.unlink()
     result = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--manifest",
-            str(manifest_path),
-            "--output",
-            str(output),
-            "--policy",
-            str(policy_path),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
+        CMD, cwd='/app', text=True, capture_output=True, timeout=30, check=False
     )
-    return result, output
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert OUT.exists(), 'build-plan.json was not created'
+    raw = OUT.read_text()
+    return raw, json.loads(raw)
 
 
-def _run_audit(
-    tmp_path: Path,
-    profile: Path,
-    trace_text: str,
-) -> tuple[subprocess.CompletedProcess[str], Path]:
-    trace = tmp_path / "trace.jsonl"
-    trace.write_text(trace_text, encoding="utf-8")
-    report = tmp_path / "report.json"
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "audit",
-            "--report",
-            str(report),
-            "--trace",
-            str(trace),
-            "--profile",
-            str(profile),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result, report
+def by_name(plan):
+    return {pkg['name']: pkg for pkg in plan['packages']}
 
 
-def _severity(seq: int, sysctl: str) -> int:
-    return math.floor((len(sysctl) * 37 + seq * 11) / 5)
+def input_fingerprints(app_root=APP):
+    fingerprints = {}
+    for directory in ('workspace', 'registry', 'config', 'docs'):
+        root = app_root / directory
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob('*')):
+            if path.is_file():
+                rel = path.relative_to(app_root).as_posix()
+                fingerprints[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return fingerprints
 
 
-def _fortify_not_fortified(seq: int, sysctl: str) -> int:
-    sev = _severity(seq, sysctl)
-    return math.floor((sev * 43 + seq * 17) / 4)
+EXPECTED_INPUT_FINGERPRINTS = {
+    'workspace/package-lock.json': '83d758b7f6688af47c17c90945a19cbb6c79ea31ea6efc8ff78a3a4748cc3f12',
+    'workspace/package.json': 'e26b5b2f48c772b9d4cfc05397a06df53364710e1f59003de38c92a55c2d9545',
+    'workspace/packages/core/package.json': 'a34997a7c8f9e64f62a5e65f16600f79e96600b995b7a2d0140b47453e547156',
+    'workspace/packages/plugin-auth/package.json': 'ffbb4f5fb65aa591f968d79c763facf78a61c87930a7d9cf0d2502344edb37f7',
+    'workspace/packages/telemetry/package.json': '0cb4980f40a359404fe7b6a42e2a1b0033306cdd88722f42199f467f92d52e64',
+    'registry/packages.json': '6b6e4bc17dee211eb445a6671afde81abe4b2d6dfb564b1fa5ebca59dffa4b77',
+    'config/archive_policy.json': 'd5ffa1bf3361173802e3c49718c331727f3971df0bac3df133782d2108dae58d',
+    'config/policy.json': '4a29473c3e523781038e86eb41f950e1a7aec764b6372b4fe2e89d8698401c27',
+    'docs/mirror_contract.md': 'a766ccc859415e4e3d5cb91fa27fb2d8235085ce5c7a8f577860684eebdf0279',
+}
 
 
-def _fortify_leak(seq: int, sysctl: str, leak_score: int) -> int:
-    sev = _severity(seq, sysctl)
-    return math.floor((sev * 23 + leak_score + seq * 5) / 3)
+def test_bundled_inputs_remain_unchanged():
+    before = input_fingerprints()
+    assert before == EXPECTED_INPUT_FINGERPRINTS
+    run_tool()
+    after = input_fingerprints()
+    assert after == EXPECTED_INPUT_FINGERPRINTS
 
 
-def _pressure(
-    violation_events: int, unique_denied: int, leak_violations: int, events_total: int
-) -> int:
-    return math.floor(
-        (violation_events * 100 + unique_denied * 31 + leak_violations * 13)
-        / max(events_total, 1)
-    )
-
-
-def test_authoritative_ledger_overrides_decoy_documents():
-    """The lockdown ledger must declare itself authoritative and list every decoy path."""
-    ledger = _ledger()
-    assert ledger["authoritative"] is True
-    assert ledger["contains_precomputed_outputs"] is False
-    for decoy in ledger["override_decoy_documents"]:
-        assert Path(decoy).exists()
-
-
-def test_deployed_catalog_matches_revision_nine_security_contract():
-    """The live catalog must exactly expose the ledger revision-9 sysctl sets."""
-    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
-    contract = _contract()
-    assert list(catalog.keys()) == contract["top_level_key_order"]
-    assert catalog == {
-        "revision": contract["required_revision"],
-        "baseline": contract["baseline"],
-        "features": contract["features"],
-        "hard_deny": contract["immutable_floor"],
-    }
-    assert contract["required_revision"] == 9
-    assert catalog["hard_deny"] == [
-        "kernel.sysrq",
-        "kernel.core_uses_pid",
-        "net.ipv4.conf.all.accept_source_route",
-        "net.ipv4.conf.default.accept_source_route",
+def test_top_level_schema_formatting_and_determinism():
+    raw1, plan1 = run_tool()
+    raw2, _ = run_tool()
+    assert raw1 == raw2
+    assert raw1 == json.dumps(plan1, indent=2)
+    assert '\t' not in raw1
+    assert list(plan1.keys()) == [
+        'root', 'nodeVersion', 'packages', 'unresolved', 'peerWarnings',
+        'policyViolations', 'mirrorWarnings', 'lockDrift', 'summary'
     ]
-    assert "fs.protected_hardlinks" in catalog["features"]["leak-shield"]
-    assert "kernel.perf_event_paranoid" in catalog["features"]["ptrace-lock"]
+    assert plan1['root'] == 'ridge-ui'
+    assert plan1['nodeVersion'] == '20.11.1'
+    assert [p['name'] for p in plan1['packages']] == sorted(p['name'] for p in plan1['packages'])
 
 
-def test_live_policy_station_channel_matches_promotion_contract():
-    """The deployed policy must advertise the required ground-v2 station channel."""
-    policy = json.loads(POLICY.read_text(encoding="utf-8"))
-    assert policy["station_channel"] == _ledger()["policy_promotion"]["required_station_channel"]
-    assert policy["station_channel"] == "ground-v2"
+def test_package_entry_key_order_and_requested_by():
+    _, plan = run_tool()
+    for pkg in plan['packages']:
+        assert list(pkg.keys()) == [
+            'name', 'package', 'version', 'source', 'requestedBy',
+            'license', 'integrity', 'tarball', 'patched', 'yanked'
+        ]
+        assert pkg['requestedBy'] == sorted(set(pkg['requestedBy']))
 
 
-def test_compile_merges_deduplicates_blocks_and_sorts_sysctls(tmp_path: Path):
-    """Compilation must deterministically merge baseline, features, and additions."""
-    contract = _contract()
-    policy = _policy(blocked_sysctls=["kernel.perf_event_paranoid"])
-    manifest = _manifest(
-        features=["leak-shield", "ptrace-lock"],
-        additional_sysctls=["vm.mmap_min_addr", "kernel.kptr_restrict"],
-    )
-    result, output = _run_compile(tmp_path, policy, manifest)
-    assert result.returncode == 0, result.stderr
-    raw = output.read_bytes()
-    assert raw.endswith(b"\n")
-    assert not raw.endswith(b"\n\n")
-    profile = json.loads(raw.decode("utf-8"))
-    expected = sorted(
-        (
-            set(contract["baseline"])
-            | set(contract["features"]["leak-shield"])
-            | set(contract["features"]["ptrace-lock"])
-            | {"vm.mmap_min_addr"}
-        )
-        - {"kernel.perf_event_paranoid"}
-    )
-    assert list(profile.keys()) == _ledger()["profile.json"]["top_level_key_order_errno"]
-    assert profile["lockdownModes"] == ["LOCKDOWN_CONFIDENTIALITY", "LOCKDOWN_INTEGRITY"]
-    assert list(profile["sysctls"][0].keys()) == ["names", "action"]
-    assert profile["sysctls"][0]["names"] == expected
-    assert (tmp_path / "profile.json.station").read_text(encoding="utf-8") == "uplink-north"
-    assert (tmp_path / "profile.policy").exists()
+def test_resolution_overrides_aliases_workspaces_and_shared_versions():
+    _, plan = run_tool()
+    pkgs = by_name(plan)
+    expected_names = {
+        '@ridge/core', '@ridge/plugin-auth', '@types/node', 'ansi-regex', 'debug',
+        'jsonwebtoken', 'jwa', 'jws', 'left-pad', 'left-pad-safe',
+        'ms', 'rollup', 'undici-types'
+    }
+    assert set(pkgs) == expected_names
+    assert '@ridge/telemetry' not in pkgs
+    assert 'source-map' not in pkgs
+    assert pkgs['@ridge/core']['source'] == 'workspace'
+    assert pkgs['debug']['version'] == '4.3.5'
+    assert pkgs['debug']['integrity'] == 'sha512-debug435-patched'
+    assert pkgs['ansi-regex']['version'] == '6.1.0'
+    assert pkgs['left-pad-safe']['package'] == 'left-pad'
+    assert pkgs['left-pad']['integrity'] == 'sha512-left130-patched'
+    assert pkgs['ms']['version'] == '2.1.3'
+    assert pkgs['ms']['requestedBy'] == ['@ridge/core', 'debug', 'root']
 
 
-def test_kill_action_profile_omits_errno_and_accepts_boundary_manifest(tmp_path: Path):
-    """A no-feature kill-action profile must omit errno and keep ledger key order."""
-    policy = _policy(default_action="LOCK_ACT_KILL")
-    del policy["errno"]
-    manifest = _manifest(station_id="abc", additional_sysctls=["z" * 64])
-    result, output = _run_compile(tmp_path, policy, manifest)
-    assert result.returncode == 0, result.stderr
-    profile = json.loads(output.read_text(encoding="utf-8"))
-    assert list(profile.keys()) == _ledger()["profile.json"]["top_level_key_order_kill"]
-    assert "defaultErrnoRet" not in profile
+def test_resolutions_pins_and_transitive_chain():
+    _, plan = run_tool()
+    pkgs = by_name(plan)
+    assert pkgs['jsonwebtoken']['version'] == '9.0.0'
+    assert pkgs['jsonwebtoken']['integrity'] == 'sha512-jwt900'
+    assert pkgs['jws']['version'] == '3.2.2'
+    assert pkgs['jwa']['requestedBy'] == ['jws']
+    assert pkgs['undici-types']['requestedBy'] == ['@types/node']
 
 
-@pytest.mark.parametrize("errno_value", [1, 255])
-def test_errno_action_accepts_inclusive_lock_errno_boundaries(
-    tmp_path: Path, errno_value: int
-):
-    """Errno values at both documented boundaries must survive compilation."""
-    result, output = _run_compile(tmp_path, _policy(errno=errno_value))
-    assert result.returncode == 0, result.stderr
-    assert json.loads(output.read_text(encoding="utf-8"))["defaultErrnoRet"] == errno_value
+def test_transitive_dev_engine_blocked_and_patch_behavior():
+    _, plan = run_tool()
+    pkgs = by_name(plan)
+    assert pkgs['rollup']['version'] == '3.29.5'
+    assert 'fsevents' not in pkgs
+    assert pkgs['jwa']['version'] == '1.4.1'
+    assert pkgs['debug']['patched'] is True
+    assert pkgs['left-pad-safe']['patched'] is True
+    assert plan['unresolved'] == [{
+        'name': 'event-stream',
+        'range': '^4.0.0',
+        'requestedBy': 'root',
+        'reason': 'blocked by policy'
+    }]
 
 
-@pytest.mark.parametrize("errno_value", [0, 256, 28.5, "28"])
-def test_errno_action_rejects_out_of_range_or_noninteger_values(
-    tmp_path: Path, errno_value: object
-):
-    """Out-of-range, fractional, and string errno values are schema failures."""
-    result, output = _run_compile(tmp_path, _policy(errno=errno_value))
-    assert result.returncode == 65
-    assert not output.exists()
+def test_peer_optional_meta_and_mirror_warnings():
+    _, plan = run_tool()
+    peers = {(w['package'], w['peer']) for w in plan['peerWarnings']}
+    assert ('@ridge/plugin-auth', 'legacy-shim') not in peers
+    assert ('jsonwebtoken', 'crypto-helper') in peers
+    assert plan['policyViolations'] == []
+    assert plan['mirrorWarnings'] == [{
+        'package': 'ansi-regex',
+        'version': '6.1.0',
+        'tarball': 'https://cdn.badmirror.test/ansi-regex-6.1.0.tgz',
+        'expectedHost': 'mirror.local'
+    }]
 
 
-def test_unknown_feature_and_extra_document_fields_are_fatal(tmp_path: Path):
-    """Unknown capabilities and undeclared JSON keys must not be silently accepted."""
-    invalid_manifest = _manifest(features=["gpu-passthrough"])
-    invalid_manifest["notes"] = "not part of the contract"
-    result, output = _run_compile(tmp_path, manifest=invalid_manifest)
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_unknown_band_id_binding_is_schema_fatal(tmp_path: Path):
-    """A station band_id outside policy.allowed_bands must exit 65 without writing."""
-    result, output = _run_compile(tmp_path, manifest=_manifest(band_id="deep-space"))
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_unknown_band_allowlist_binding_is_schema_fatal(tmp_path: Path):
-    """A station band outside policy.band_allowlist must exit 65 without writing."""
-    result, output = _run_compile(tmp_path, manifest=_manifest(band="band-gamma"))
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_feature_stacking_disabled_rejects_multi_feature_manifest(tmp_path: Path):
-    """When allow_feature_stacking is false, more than one feature is schema-invalid."""
-    result, output = _run_compile(
-        tmp_path,
-        policy=_policy(allow_feature_stacking=False),
-        manifest=_manifest(features=["leak-shield", "ptrace-lock"]),
-    )
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_feature_exclusion_pair_leak_shield_and_module_seal_is_fatal(tmp_path: Path):
-    """Selecting both members of a ledger feature exclusion pair must exit 65."""
-    result, output = _run_compile(
-        tmp_path,
-        manifest=_manifest(features=["leak-shield", "module-seal"]),
-    )
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_immutable_floor_request_is_denied_without_replacing_output(tmp_path: Path):
-    """An explicit high-risk sysctl request must exit 77 and preserve prior output."""
-    output = tmp_path / "profile.json"
-    output.write_text('{"sentinel":"preserve"}', encoding="utf-8")
-    policy_path = _write_json(tmp_path / "policy.json", _policy())
-    manifest_path = _write_json(
-        tmp_path / "manifest.json", _manifest(additional_sysctls=["kernel.sysrq"])
-    )
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(policy_path),
-            "--manifest",
-            str(manifest_path),
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 77
-    assert json.loads(output.read_text(encoding="utf-8")) == {"sentinel": "preserve"}
-
-
-def test_compiler_enforces_floor_when_catalog_content_is_tampered(tmp_path: Path):
-    """Immutable-floor filtering must follow the ledger even if the catalog is rewritten."""
-    original = CATALOG.read_bytes()
-    catalog = json.loads(original)
-    catalog["baseline"].extend(["kernel.sysrq", "kernel.core_uses_pid"])
-    catalog["baseline"] = sorted(set(catalog["baseline"]))
-    catalog["hard_deny"] = [
-        name
-        for name in catalog["hard_deny"]
-        if name not in {"kernel.sysrq", "kernel.core_uses_pid"}
+def test_lock_drift_matches_stale_snapshot():
+    _, plan = run_tool()
+    assert plan['lockDrift'] == [
+        {
+            'package': 'ansi-regex',
+            'lockVersion': '5.0.1',
+            'plannedVersion': '6.1.0',
+            'lockIntegrity': 'sha512-oldansi',
+            'plannedIntegrity': 'sha512-ansi610'
+        },
+        {
+            'package': 'debug',
+            'lockVersion': '3.2.7',
+            'plannedVersion': '4.3.5',
+            'lockIntegrity': 'sha512-olddebug',
+            'plannedIntegrity': 'sha512-debug435-patched'
+        },
+        {
+            'package': 'left-pad',
+            'lockVersion': '1.1.3',
+            'plannedVersion': '1.3.0',
+            'lockIntegrity': 'sha512-oldleft',
+            'plannedIntegrity': 'sha512-left130-patched'
+        },
+        {
+            'package': 'ms',
+            'lockVersion': '2.1.1',
+            'plannedVersion': '2.1.3',
+            'lockIntegrity': 'sha512-oldms',
+            'plannedIntegrity': 'sha512-ms213'
+        }
     ]
+
+
+def test_warning_section_sort_orders():
+    _, plan = run_tool()
+    assert plan['unresolved'] == sorted(
+        plan['unresolved'], key=lambda e: (e['name'], e['requestedBy'], e['range'])
+    )
+    assert plan['peerWarnings'] == sorted(
+        plan['peerWarnings'], key=lambda e: (e['package'], e['peer'], e['requested'])
+    )
+    assert plan['mirrorWarnings'] == sorted(
+        plan['mirrorWarnings'], key=lambda e: (e['package'], e['version'])
+    )
+    assert plan['lockDrift'] == sorted(plan['lockDrift'], key=lambda e: e['package'])
+
+
+def test_summary_matches_report_sections():
+    _, plan = run_tool()
+    packages = plan['packages']
+    summary = plan['summary']
+    assert summary == {
+        'packageCount': len(packages),
+        'workspaceCount': sum(1 for p in packages if p['source'] == 'workspace'),
+        'registryCount': sum(1 for p in packages if p['source'] == 'registry'),
+        'patchedCount': sum(1 for p in packages if p['patched']),
+        'yankedSelectedCount': sum(1 for p in packages if p['yanked']),
+        'unresolvedCount': len(plan['unresolved']),
+        'peerWarningCount': len(plan['peerWarnings']),
+        'policyViolationCount': len(plan['policyViolations']),
+        'mirrorWarningCount': len(plan['mirrorWarnings']),
+        'lockDriftCount': len(plan['lockDrift'])
+    }
+    assert summary['packageCount'] == 13
+    assert summary['patchedCount'] == 3
+    assert summary['lockDriftCount'] == 4
+    assert summary['yankedSelectedCount'] == 0
+
+
+def _write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + '\n')
+
+
+def _swap_app_files(overrides):
+    backups = {}
+    for rel, content in overrides.items():
+        target = APP / rel
+        backups[target] = target.read_text() if target.exists() else None
+        if content is None:
+            if target.exists():
+                target.unlink()
+        elif rel.endswith('.json'):
+            _write_json(target, content)
+        else:
+            target.write_text(content)
+    return backups
+
+
+def _restore_app_files(backups):
+    for target, original in backups.items():
+        if original is None:
+            if target.exists():
+                target.unlink()
+        else:
+            target.write_text(original)
+
+
+def _minimal_workspace(deps=None, dev_deps=None, optional_deps=None):
+    pkg = {
+        'name': 'ridge-ui',
+        'version': '1.0.0',
+        'private': True,
+        'workspaces': ['packages/*'],
+        'dependencies': deps or {}
+    }
+    if dev_deps is not None:
+        pkg['devDependencies'] = dev_deps
+    if optional_deps is not None:
+        pkg['optionalDependencies'] = optional_deps
+    return pkg
+
+
+def test_license_violation_synthetic():
+    policy = dict(BASE_POLICY)
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'bad-license-lib': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'bad-license-lib': {
+                    '1.0.0': {
+                        'license': 'GPL-3.0',
+                        'integrity': 'sha512-gpl',
+                        'tarball': 'https://mirror.local/bad-license-lib-1.0.0.tgz',
+                        'dependencies': {}
+                    }
+                }
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
     try:
-        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
-        result, output = _run_compile(tmp_path)
-        assert result.returncode == 0, result.stderr
-        allowed = set(json.loads(output.read_text(encoding="utf-8"))["sysctls"][0]["names"])
-        assert allowed.isdisjoint(set(_contract()["immutable_floor"]))
+        _, plan = run_tool()
+        assert plan['policyViolations'] == [{
+            'package': 'bad-license-lib',
+            'version': '1.0.0',
+            'rule': 'license',
+            'message': 'license GPL-3.0 is not allowed'
+        }]
     finally:
-        CATALOG.write_bytes(original)
+        _restore_app_files(backups)
 
 
-def test_feature_sourced_floor_sysctls_are_silently_dropped(tmp_path: Path):
-    """Floor names injected through a tampered feature set must drop silently, not exit 77."""
-    original = CATALOG.read_bytes()
-    catalog = json.loads(original)
-    catalog["features"]["leak-shield"] = sorted(
-        set(catalog["features"]["leak-shield"])
-        | {"kernel.sysrq", "kernel.core_uses_pid"}
-    )
+def test_deprecated_only_unresolved_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'legacy-only': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'legacy-only': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'a', 'tarball': 'https://mirror.local/a.tgz', 'deprecated': True, 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'b', 'tarball': 'https://mirror.local/b.tgz', 'deprecated': True, 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
     try:
-        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
-        result, output = _run_compile(
-            tmp_path, manifest=_manifest(features=["leak-shield"])
-        )
-        assert result.returncode == 0, result.stderr
-        allowed = set(json.loads(output.read_text(encoding="utf-8"))["sysctls"][0]["names"])
-        assert "kernel.sysrq" not in allowed
-        assert "kernel.core_uses_pid" not in allowed
-        assert "fs.protected_hardlinks" in allowed
+        _, plan = run_tool()
+        assert plan['packages'] == []
+        assert plan['unresolved'][0]['reason'] == 'no compatible version'
     finally:
-        CATALOG.write_bytes(original)
+        _restore_app_files(backups)
 
 
-def test_empty_and_malformed_compile_documents_exit_data_error(tmp_path: Path):
-    """Empty or syntactically malformed control documents must exit 65."""
-    policy = tmp_path / "empty-policy.json"
-    manifest = tmp_path / "bad-manifest.json"
-    output = tmp_path / "profile.json"
-    policy.write_text("", encoding="utf-8")
-    manifest.write_text("{", encoding="utf-8")
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(policy),
-            "--manifest",
-            str(manifest),
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_usage_relative_paths_and_missing_inputs_have_distinct_exit_codes(tmp_path: Path):
-    """Unknown, relative, and repeated options exit 64; missing inputs exit 66."""
-    unknown = subprocess.run(
-        [str(COMMAND), "compile", "--unknown", "x"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    relative = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            "policy.json",
-            "--manifest",
-            "manifest.json",
-            "--output",
-            "profile.json",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    repeated = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(tmp_path / "one.json"),
-            "--policy",
-            str(tmp_path / "two.json"),
-            "--manifest",
-            str(tmp_path / "manifest.json"),
-            "--output",
-            str(tmp_path / "profile.json"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    missing = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(tmp_path / "absent.json"),
-            "--manifest",
-            str(tmp_path / "also-absent.json"),
-            "--output",
-            str(tmp_path / "profile.json"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert unknown.returncode == 64
-    assert relative.returncode == 64
-    assert repeated.returncode == 64
-    assert missing.returncode == 66
-
-
-def test_empty_trace_produces_passing_zero_count_report(tmp_path: Path):
-    """An empty JSON Lines trace is valid and must produce a zero-count pass."""
-    compile_result, profile = _run_compile(tmp_path)
-    assert compile_result.returncode == 0, compile_result.stderr
-    result, report = _run_audit(tmp_path, profile, "")
-    assert result.returncode == 0, result.stderr
-    payload = report.read_bytes()
-    assert not payload.endswith(b"\n")
-    body = json.loads(payload.decode("utf-8"))
-    assert list(body.keys()) == _ledger()["audit_report"]["top_level_key_order"]
-    assert body == _ledger()["audit_report"]["empty_trace"]
-    summary_raw = SUMMARY.read_bytes()
-    assert summary_raw.endswith(b"\x1c")
-    summary = json.loads(summary_raw[:-1].decode("utf-8"))
-    assert list(summary.keys()) == _ledger()["gate_summary.json"]["top_level_key_order"]
-    assert summary["pressure_index"] == 0
-    assert summary["unique_denied"] == 0
-    assert summary["fortify_peak"] == 0
-    assert summary["leak_violations"] == 0
-
-
-def test_audit_precedence_sorts_mixed_not_fortified_and_leak_violations(
-    tmp_path: Path,
-):
-    """Audit must apply reason precedence, per-reason fortify math, and four-key sort."""
-    compile_result, profile = _run_compile(
-        tmp_path,
-        policy=_policy(leak_score_ceiling=50),
-        manifest=_manifest(features=["leak-shield"]),
-    )
-    assert compile_result.returncode == 0, compile_result.stderr
-    trace = (
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n'
-        '{"seq":2,"sysctl":"kernel.sysrq","leak_score":900}\n'
-        '{"seq":3,"sysctl":"fs.protected_hardlinks","leak_score":80}\n'
-        '{"seq":4,"sysctl":"kernel.core_uses_pid","leak_score":0}\n'
-        '{"seq":5,"sysctl":"fs.protected_hardlinks","leak_score":120}'
-    )
-    result, report = _run_audit(tmp_path, profile, trace)
-    assert result.returncode == 3
-    body = json.loads(report.read_text(encoding="utf-8"))
-    expected_rows = [
-        {
-            "seq": 2,
-            "sysctl": "kernel.sysrq",
-            "reason": "not_fortified",
-            "severity_weight": _severity(2, "kernel.sysrq"),
-            "fortify_score": _fortify_not_fortified(2, "kernel.sysrq"),
-            "leak_score": 900,
+def test_resolution_out_of_range_synthetic():
+    policy = dict(BASE_POLICY, resolutions={'widget': '2.0.0'})
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
+                }
+            }
         },
-        {
-            "seq": 4,
-            "sysctl": "kernel.core_uses_pid",
-            "reason": "not_fortified",
-            "severity_weight": _severity(4, "kernel.core_uses_pid"),
-            "fortify_score": _fortify_not_fortified(4, "kernel.core_uses_pid"),
-            "leak_score": 0,
-        },
-        {
-            "seq": 3,
-            "sysctl": "fs.protected_hardlinks",
-            "reason": "leak_exceeded",
-            "severity_weight": _severity(3, "fs.protected_hardlinks"),
-            "fortify_score": _fortify_leak(3, "fs.protected_hardlinks", 80),
-            "leak_score": 80,
-        },
-        {
-            "seq": 5,
-            "sysctl": "fs.protected_hardlinks",
-            "reason": "leak_exceeded",
-            "severity_weight": _severity(5, "fs.protected_hardlinks"),
-            "fortify_score": _fortify_leak(5, "fs.protected_hardlinks", 120),
-            "leak_score": 120,
-        },
-    ]
-    expected_rows.sort(
-        key=lambda row: (
-            -row["fortify_score"],
-            row["reason"],
-            row["sysctl"],
-            row["seq"],
-        )
-    )
-    assert body["status"] == "violation"
-    assert body["events_total"] == 5
-    assert body["allowed_events"] == 1
-    assert body["violation_events"] == 4
-    assert body["pressure_index"] == _pressure(4, 3, 2, 5)
-    assert body["violations"] == expected_rows
-    assert list(body["violations"][0].keys()) == _ledger()["audit_report"]["violation_key_order"]
-    summary = json.loads(SUMMARY.read_bytes()[:-1].decode("utf-8"))
-    assert summary["unique_denied"] == 3
-    assert summary["leak_violations"] == 2
-    assert summary["fortify_peak"] == max(row["fortify_score"] for row in expected_rows)
-    assert summary["pressure_index"] == body["pressure_index"]
-
-
-def test_allowlisted_sysctl_at_exact_leak_ceiling_is_not_a_violation(
-    tmp_path: Path,
-):
-    """leak_score equal to leak_score_ceiling must pass; only values above the ceiling violate."""
-    compile_result, profile = _run_compile(
-        tmp_path,
-        policy=_policy(leak_score_ceiling=100),
-        manifest=_manifest(features=["leak-shield"]),
-    )
-    assert compile_result.returncode == 0, compile_result.stderr
-    trace = (
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n'
-        '{"seq":2,"sysctl":"fs.protected_hardlinks","leak_score":100}'
-    )
-    result, report = _run_audit(tmp_path, profile, trace)
-    assert result.returncode == 0, result.stderr
-    body = json.loads(report.read_text(encoding="utf-8"))
-    assert body["violation_events"] == 0
-    assert body["violations"] == []
-
-
-@pytest.mark.parametrize(
-    "trace_text",
-    [
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n\n{"seq":2,"sysctl":"kernel.dmesg_restrict","leak_score":0}',
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n{"seq":3,"sysctl":"kernel.dmesg_restrict","leak_score":0}',
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0,"pid":9}',
-        '{"seq":1,"sysctl":"kernel.kptr_restrict"}',
-        '{"seq":1,"sysctl":',
-    ],
-)
-def test_malformed_trace_never_replaces_existing_report(
-    tmp_path: Path, trace_text: str
-):
-    """Blank, noncontiguous, extra-field, missing leak, and broken traces are fatal."""
-    compile_result, profile = _run_compile(tmp_path)
-    assert compile_result.returncode == 0, compile_result.stderr
-    report = tmp_path / "report.json"
-    report.write_text('{"sentinel":"preserve"}', encoding="utf-8")
-    before_summary = SUMMARY.read_bytes() if SUMMARY.exists() else None
-    trace = tmp_path / "trace.jsonl"
-    trace.write_text(trace_text, encoding="utf-8")
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "audit",
-            "--profile",
-            str(profile),
-            "--trace",
-            str(trace),
-            "--report",
-            str(report),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 65
-    assert json.loads(report.read_text(encoding="utf-8")) == {"sentinel": "preserve"}
-    if before_summary is not None:
-        assert SUMMARY.read_bytes() == before_summary
-
-
-def test_catalog_feature_mutation_forces_profile_update(tmp_path: Path):
-    """Mutating a catalog feature membership must change the compiled allowlist."""
-    original = CATALOG.read_bytes()
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
     try:
-        first, profile = _run_compile(
-            tmp_path, manifest=_manifest(features=["leak-shield"])
-        )
-        assert first.returncode == 0, first.stderr
-        before = json.loads(profile.read_text(encoding="utf-8"))["sysctls"][0]["names"]
-
-        catalog = json.loads(original)
-        catalog["features"]["leak-shield"] = sorted(
-            set(catalog["features"]["leak-shield"]) | {"net.core.bpf_jit_harden"}
-        )
-        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
-
-        second, profile = _run_compile(
-            tmp_path, manifest=_manifest(features=["leak-shield"])
-        )
-        assert second.returncode == 0, second.stderr
-        after = json.loads(profile.read_text(encoding="utf-8"))["sysctls"][0]["names"]
-        assert after != before
-        assert "net.core.bpf_jit_harden" in after
+        _, plan = run_tool()
+        assert plan['unresolved'] == [{
+            'name': 'widget',
+            'range': '^1.0.0',
+            'requestedBy': 'root',
+            'reason': 'resolution out of range'
+        }]
     finally:
-        CATALOG.write_bytes(original)
+        _restore_app_files(backups)
 
 
-def test_runtime_succeeds_when_python_commands_are_blocked(tmp_path: Path):
-    """Profile compilation must use shell utilities and never invoke Python."""
-    fake_bin = tmp_path / "blocked-python"
-    fake_bin.mkdir()
-    blocker = "#!/bin/sh\nexit 99\n"
-    for name in ("python", "python3", "pypy", "pypy3"):
-        executable = fake_bin / name
-        executable.write_text(blocker, encoding="utf-8")
-        executable.chmod(0o755)
-    env = os.environ.copy()
-    env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    result, output = _run_compile(tmp_path, env=env)
-    assert result.returncode == 0, result.stderr
-    assert output.exists()
+def test_version_conflict_suffix_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({
+            'widget': '^1.0.0',
+            'widget-alt': 'npm:widget@^2.0.0'
+        }),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['version'] == '1.0.0'
+        assert pkgs['widget-alt']['version'] == '2.0.0'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_version_conflict_hash_suffix_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({
+            '@ridge/core': 'workspace:*',
+            'widget': '^1.0.0'
+        }),
+        'workspace/packages/core/package.json': {
+            'name': '@ridge/core',
+            'version': '1.0.0',
+            'dependencies': {'widget': '^2.0.0'}
+        },
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['version'] == '1.0.0'
+        assert pkgs['widget#2']['version'] == '2.0.0'
+        assert pkgs['widget#2']['package'] == 'widget'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_workspace_missing_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'@ridge/missing': 'workspace:*'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {'packages': {}},
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['unresolved'][0]['reason'] == 'workspace package missing'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_peer_range_mismatch_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'host': '1.0.0', 'peer-lib': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'host': {
+                    '1.0.0': {
+                        'license': 'MIT',
+                        'integrity': 'host',
+                        'tarball': 'https://mirror.local/host.tgz',
+                        'peerDependencies': {'peer-lib': '^2.0.0'},
+                        'dependencies': {}
+                    }
+                },
+                'peer-lib': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'peer', 'tarball': 'https://mirror.local/peer.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['peerWarnings'][0]['reason'] == 'peer range mismatch'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_patch_integrity_only_on_matching_version():
+    policy = dict(BASE_POLICY, patches={'widget': {'version': '1.0.0', 'file': 'p.patch', 'integrity': 'sha512-patched'}})
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['version'] == '1.1.0'
+        assert pkgs['widget']['patched'] is False
+        assert pkgs['widget']['integrity'] == 'w110'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_prefer_stable_skips_prerelease_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '1.1.0-rc.1': {'license': 'MIT', 'integrity': 'w110rc', 'tarball': 'https://mirror.local/w110rc.tgz', 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY, preferStable=True)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert by_name(plan)['widget']['version'] == '1.1.0'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_yanked_fallback_when_only_option_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'yanked': True, 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['yanked'] is True
+        assert plan['summary']['yankedSelectedCount'] == 1
+    finally:
+        _restore_app_files(backups)
+
+
+def test_yanked_deprioritized_when_stable_exists_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'yanked': True, 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert by_name(plan)['widget']['version'] == '1.0.0'
+        assert plan['summary']['yankedSelectedCount'] == 0
+    finally:
+        _restore_app_files(backups)
+
+
+def test_optional_dependencies_respect_policy_flag():
+    overrides = {
+        'workspace/package.json': _minimal_workspace(
+            {},
+            optional_deps={'opt-root': '^1.0.0'}
+        ),
+        'workspace/packages/core/package.json': {
+            'name': '@ridge/core',
+            'version': '1.0.0',
+            'dependencies': {},
+            'optionalDependencies': {'opt-ws': '^1.0.0'}
+        },
+        'registry/packages.json': {
+            'packages': {
+                'opt-root': {'1.0.0': {'license': 'MIT', 'integrity': 'or', 'tarball': 'https://mirror.local/or.tgz', 'dependencies': {}}},
+                'opt-ws': {'1.0.0': {'license': 'MIT', 'integrity': 'ow', 'tarball': 'https://mirror.local/ow.tgz', 'dependencies': {}}},
+                'host': {
+                    '1.0.0': {
+                        'license': 'MIT',
+                        'integrity': 'host',
+                        'tarball': 'https://mirror.local/host.tgz',
+                        'dependencies': {},
+                        'optionalDependencies': {'opt-reg': '^1.0.0'}
+                    }
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY, includeOptionalDependencies=False)
+    }
+    overrides['workspace/package.json']['dependencies'] = {'host': '1.0.0'}
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        names = set(by_name(plan))
+        assert names == {'host'}
+    finally:
+        _restore_app_files(backups)
+
+
+def test_optional_dependencies_install_when_enabled():
+    policy = dict(BASE_POLICY, includeOptionalDependencies=True)
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'host': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'host': {
+                    '1.0.0': {
+                        'license': 'MIT',
+                        'integrity': 'host',
+                        'tarball': 'https://mirror.local/host.tgz',
+                        'dependencies': {},
+                        'optionalDependencies': {'opt-reg': '1.0.0'}
+                    }
+                },
+                'opt-reg': {'1.0.0': {'license': 'MIT', 'integrity': 'or', 'tarball': 'https://mirror.local/or.tgz', 'dependencies': {}}}
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert 'opt-reg' in by_name(plan)
+    finally:
+        _restore_app_files(backups)
+
+
+def test_workspace_semver_prefers_local_package():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'@ridge/lib': '^1.2.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'workspace/packages/lib/package.json': {'name': '@ridge/lib', 'version': '1.4.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                '@ridge/lib': {
+                    '1.9.0': {'license': 'MIT', 'integrity': 'lib190', 'tarball': 'https://mirror.local/lib190.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['@ridge/lib']['source'] == 'workspace'
+        assert pkgs['@ridge/lib']['version'] == '1.4.0'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_x_range_hyphen_and_union_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({
+            'x-lib': '1.2.x',
+            'range-lib': '1.0.0 - 1.2.0',
+            'union-lib': '^1.0.0 || ^2.0.0'
+        }),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'x-lib': {
+                    '1.1.0': {'license': 'MIT', 'integrity': 'x110', 'tarball': 'https://mirror.local/x110.tgz', 'dependencies': {}},
+                    '1.2.7': {'license': 'MIT', 'integrity': 'x127', 'tarball': 'https://mirror.local/x127.tgz', 'dependencies': {}},
+                    '1.3.0': {'license': 'MIT', 'integrity': 'x130', 'tarball': 'https://mirror.local/x130.tgz', 'dependencies': {}}
+                },
+                'range-lib': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'r100', 'tarball': 'https://mirror.local/r100.tgz', 'dependencies': {}},
+                    '1.2.0': {'license': 'MIT', 'integrity': 'r120', 'tarball': 'https://mirror.local/r120.tgz', 'dependencies': {}},
+                    '1.3.0': {'license': 'MIT', 'integrity': 'r130', 'tarball': 'https://mirror.local/r130.tgz', 'dependencies': {}}
+                },
+                'union-lib': {
+                    '1.5.0': {'license': 'MIT', 'integrity': 'u150', 'tarball': 'https://mirror.local/u150.tgz', 'dependencies': {}},
+                    '2.1.0': {'license': 'MIT', 'integrity': 'u210', 'tarball': 'https://mirror.local/u210.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['x-lib']['version'] == '1.2.7'
+        assert pkgs['range-lib']['version'] == '1.2.0'
+        assert pkgs['union-lib']['version'] == '2.1.0'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_lock_drift_ignores_workspace_and_missing_entries():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'workspace/package-lock.json': {
+            'name': 'ridge-ui',
+            'lockfileVersion': 3,
+            'packages': {
+                '': {'dependencies': {'widget': '1.0.0'}},
+                'node_modules/widget': {'version': '0.9.0', 'integrity': 'old'},
+                'node_modules/@ridge/core': {'version': '1.0.0', 'integrity': 'ws'}
+            }
+        },
+        'registry/packages.json': {
+            'packages': {
+                'widget': {'1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}}}
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['lockDrift'] == [{
+            'package': 'widget',
+            'lockVersion': '0.9.0',
+            'plannedVersion': '1.0.0',
+            'lockIntegrity': 'old',
+            'plannedIntegrity': 'w100'
+        }]
+    finally:
+        _restore_app_files(backups)
+
+
+def test_lock_drift_includes_scoped_registry_entries():
+    policy = dict(BASE_POLICY, includeDevDependencies=True)
+    overrides = {
+        'workspace/package.json': _minimal_workspace({}, dev_deps={'@types/node': '^20.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'workspace/package-lock.json': {
+            'name': 'ridge-ui',
+            'lockfileVersion': 3,
+            'packages': {
+                '': {'devDependencies': {'@types/node': '^20.0.0'}},
+                'node_modules/@types/node': {'version': '20.0.0', 'integrity': 'old-types'}
+            }
+        },
+        'registry/packages.json': {
+            'packages': {
+                '@types/node': {
+                    '20.11.30': {
+                        'license': 'MIT',
+                        'integrity': 'sha512-types201130',
+                        'tarball': 'https://mirror.local/@types/node/-/node-20.11.30.tgz',
+                        'dependencies': {}
+                    }
+                }
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['lockDrift'] == [{
+            'package': '@types/node',
+            'lockVersion': '20.0.0',
+            'plannedVersion': '20.11.30',
+            'lockIntegrity': 'old-types',
+            'plannedIntegrity': 'sha512-types201130'
+        }]
+    finally:
+        _restore_app_files(backups)

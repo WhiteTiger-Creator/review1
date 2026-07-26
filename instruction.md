@@ -1,7 +1,7 @@
-Harden the offline kernel lockdown fortify gate against kptr leaks, soft Yama ptrace, unrestricted dmesg, and unprivileged BPF. Security contract: `/app/ground-canon/ground-lockdown-ledger-v1.json` - ignore `/app/docs` and `/app/control/last-fortify.json`. Inputs: `/app/config/sysctl-module-catalog.json`, `/app/control/policy.json`, `/app/control/station-manifest.json`, `/app/traces/station-probe.jsonl`.
+Release engineering moved the npm mirror last week and the offline build for `/app/workspace` now fails on a stale lock snapshot. Finish `/app/bin/repair-lock.js` so it reads the bundled workspace, registry, and policy under `/app/`, follows `/app/docs/mirror_contract.md`, and writes `/app/output/build-plan.json`.
 
-One-time deploy: promote catalog `revision`/`baseline`/`features` to the ledger contract and set `hard_deny` to exactly `immutable_floor` in ledger order; set policy `station_channel` to the ledger required channel. After that, every compile reads the live catalog on disk for baseline/features - do not re-copy the ledger each run. Still strip ledger floor sysctls if that live catalog is later tampered (silent drop, not exit 77). Empty `features` is valid. Picking both sides of a ledger `feature_exclusion_pairs` entry is exit 65.
+```
+node /app/bin/repair-lock.js
+```
 
-`/app/kernel-fortify`: `compile --policy/--manifest/--output` and `audit --profile/--trace/--report`. Absolute paths only; relative, unknown, or repeated flags are usage errors. Compile writes the lockdown profile plus `<output>.station` (`station_id` bytes, no trailing newline) and `<output_without_.json>.policy`. Audit writes `--report` and refreshes `/app/output/gate_summary.json`. Reason order: `not_fortified` then `leak_exceeded`. Scoring, sorts, endings (profile newline, report none, summary `0x1c`) are ledger-only.
-
-Empty traces pass zeros. Exit 64 usage, 65 bad docs, 66 missing, 77 only when `additional_sysctls` names a ledger floor sysctl. Clean audit 0; violations write then exit 3. Don't replace outputs on failure. Shell only, no Python.
+All resolution rules and output schema are defined in `/app/docs/mirror_contract.md`. The build runs without network access. Do not modify bundled inputs under `/app/`. Exit with code 0 after successfully writing the output file. Repeated runs must produce identical output bytes.

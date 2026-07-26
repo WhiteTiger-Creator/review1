@@ -1,5 +1,0 @@
-{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}
-{"seq":2,"sysctl":"kernel.sysrq","leak_score":900}
-{"seq":3,"sysctl":"fs.protected_hardlinks","leak_score":80}
-{"seq":4,"sysctl":"kernel.core_uses_pid","leak_score":0}
-{"seq":5,"sysctl":"fs.protected_hardlinks","leak_score":120}

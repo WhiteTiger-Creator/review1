@@ -1,36 +1,18 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux=3.3a-3 \
-    asciinema=2.2.0-1 \
-    jq=1.6-2.1+deb12u2 \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3=3.11.2-1+b1 \
+        python3-pip=23.0.1+dfsg-1 \
+        ca-certificates=20230311+deb12u1 \
+        tmux=3.3a-3 \
+        asciinema=2.2.0-1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt \
-    && rm -f /tmp/requirements.txt
+RUN pip3 install --break-system-packages --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.txt
 
-COPY kernel-fortify /app/kernel-fortify
-COPY lib /app/lib
-COPY config /app/config
-COPY control /app/control
-COPY traces /app/traces
-COPY ground-canon /app/ground-canon
-COPY docs /app/docs
-COPY README.md /app/README.md
-COPY CHANGELOG.md /app/CHANGELOG.md
-
-RUN sed -i 's/\r$//' /app/kernel-fortify /app/lib/*.sh \
-    && chmod +x /app/kernel-fortify /app/lib/*.sh \
-    && mkdir -p /app/output
-
-LABEL org.opencontainers.image.source="https://github.com/snorkel-ai/harbor"
-LABEL org.opencontainers.image.description="Kernel lockdown fortify gate for satellite ground-station sysctl hardening"
-LABEL org.opencontainers.image.created="2026-07-24T00:00:00Z"
-LABEL org.opencontainers.image.revision="1"
-LABEL org.opencontainers.image.version="1.0"
-LABEL org.opencontainers.image.licenses="MIT"
-
-CMD ["sleep", "infinity"]
+COPY app/ /app/
+RUN mkdir -p /app/output
