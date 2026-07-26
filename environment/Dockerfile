@@ -1,36 +1,17 @@
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        python3 \
-        python3-pip \
-        python3-venv \
-        tmux \
+RUN apt-get -o Acquire::Retries=3 update \
+    && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        asciinema bash ca-certificates python3 python3-venv tmux \
     && rm -rf /var/lib/apt/lists/*
-
+COPY requirements.lock /opt/requirements.lock
 RUN python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir \
-        pytest==9.0.3 \
-        pytest-json-ctrf==0.5.0
-
+    && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes --no-deps -r /opt/requirements.lock
 WORKDIR /app
-
-COPY docs /app/docs
-COPY fixtures /app/fixtures
-COPY latchml /app/latchml
-COPY featbank /app/featbank
-COPY metriclab /app/metriclab
-COPY sidecut /app/sidecut
-COPY decoy /app/decoy
-COPY schemas /app/schemas
-COPY binx /app/binx
-COPY scripts /app/scripts
-COPY verifier-fixtures /opt/verifier-fixtures
-
-RUN chmod +x /app/binx/hwml /app/scripts/run-eval.sh \
-    && mkdir -p /app/state /app/plaque
-
-ENV PATH="/opt/verifier-venv/bin:/app/binx:${PATH}"
-ENV PYTHONPATH="/app"
+COPY main.go /app/main.go
+COPY task_file/ /app/task_file/
+RUN mkdir -p /app/bin \
+    && command -v go \
+    && command -v tmux \
+    && command -v asciinema \
+    && /opt/verifier-venv/bin/python -m pytest --version

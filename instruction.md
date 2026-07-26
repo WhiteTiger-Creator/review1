@@ -1,45 +1,11 @@
-Hallwarden operators run an operational ML feature-pipeline training and
-inference eval lab under /app for latch-contention energy. The model workflow
-expands quadratic features, fits learning-cohort OLS weights, scores
-reserved-cohort inference with MAPE/R2 metrics, then emits a promotion plaque.
-The pass is a vault→forecast→emit split: vault writes a durable design matrix,
-design vault, and latch pin under /app/state; forecast reads that on-disk vault
-(never a fresh re-parse of labeled traces) to fit train-cohort OLS weights, seal
-a beta–latch binding, score the reserved cohort, seal emit trust, append a
-pass-chain line, and emit the plaque gated by dual metric ceilings. Emit reloads
-staged state, re-checks emit trust plus the beta–latch seal before rewriting the
-plaque, and appends an emit-witness ledger line to /app/state/emit_witness.jsonl
-on success. Outputs must stay byte-stable under the same traces: offline
-verifiers recompute vault, latch_pin, seal, fit, forecast, emit_trust, plaque,
-and pass-chain digests from /app/docs with cohort and trunc rules.
+## Crystallographic objective
 
-Authoritative contracts live under /app/docs:
-/app/docs/ml-poly-ols-workflow.md, /app/docs/specimen-vector-schema.md,
-/app/docs/trunc-decimals-contract.md, /app/docs/learning-reserved-cohort.md,
-/app/docs/design-vault-contract.md, /app/docs/latch-pin-contract.md,
-/app/docs/beta-latch-seal-contract.md, /app/docs/emit-trust-contract.md,
-/app/docs/ols-beta-fit-contract.md, /app/docs/fit-commit-contract.md,
-/app/docs/mape-r2-metric-contract.md, /app/docs/promotion-plaque-contract.md,
-/app/docs/run-log-contract.md, /app/docs/pass-chain-contract.md,
-/app/docs/redrive-witness-rules.md, /app/docs/hwml-cli.md,
-/app/docs/specimen-catalog.md, /app/docs/sidecut-offpath.md, and
-/app/docs/decoy-ignore-rules.md.
+Compute the exact symmetry orbits, stabilizers, and cross-site collisions needed to validate a rational-coordinate crystal structure before refinement. Complete `/app/main.go`, build `/app/bin/crystal-orbit-inventory` with exactly `go build -trimpath -ldflags=-buildid= -o /app/bin/crystal-orbit-inventory /app/main.go`, and run it only as `/app/bin/crystal-orbit-inventory --input ABS_INPUT --output ABS_OUTPUT`. Both flags occur once in that order, paths are absolute, and every other invocation fails.
 
-Plaque field shapes also appear in /app/schemas/promotion_plaque.schema.json.
-Latch pin field shapes appear in /app/schemas/latch_pin.schema.json.
-Emit trust field shapes appear in /app/schemas/emit_trust.schema.json.
-Beta–latch seal shapes appear in /app/schemas/beta_latch_seal.schema.json.
-These output schemas are closed: objects must not contain extra keys.
+The UTF-8 JSON input has exactly `denominator`, `sites`, and `operations`. `denominator` is an integer in `[2,96]`. Each of 1 through 40 sites has exactly `id`, `species`, and `coordinate`; IDs are distinct `[A-Za-z][A-Za-z0-9_-]{0,15}`, species are nonempty printable ASCII strings of at most 12 bytes, and coordinate is exactly three integers in `[0,denominator-1]`. Each of 1 through 192 operations has exactly `id`, `matrix`, and `shift`; IDs are distinct under the same grammar, matrix is exactly three rows of three integers from `-1` through `1`, has determinant `1` or `-1`, and shift is three integers in `[0,denominator-1]`. Operations are distinct affine transformations modulo the denominator and must include the identity transformation with zero shift.
 
-After one full training/inference pass write /app/state/design_matrix.json,
-/app/state/design_vault.json, /app/state/latch_pin.json, /app/state/beta_hat.json,
-/app/state/fit_commit.json, /app/state/beta_latch_seal.json,
-/app/state/forecast_tape.json, /app/state/emit_trust.json,
-/app/state/run_log.jsonl, /app/state/pass_chain.jsonl, and
-/app/plaque/promotion_plaque.json.
+Apply an operation as `matrix*coordinate + shift`, reducing every component to its unique residue in `[0,denominator-1]`. For each input site, its orbit is the set of distinct transformed coordinates. Its stabilizer is the number of operations mapping its original coordinate to itself. A collision is a coordinate occupied by orbit points from two or more distinct input site IDs; repeated operations or repeated occupancy by one site's own orbit count only once. Coordinates compare lexicographically by integer `(x,y,z)`.
 
-Call /app/binx/hwml via /app/scripts/run-eval.sh (vault, forecast, or emit modes
-allowed). Keep /app/sidecut and /app/decoy off the hot inference path.
+Write one compact JSON line with exactly `sites`, `collisions`, and `operation_count`. `sites` is ordered by bytewise site ID; each row has exactly `id`, `species`, `multiplicity`, `stabilizer`, and `positions`, where positions are strings `x/denominator,y/denominator,z/denominator` in coordinate order without fraction reduction. `collisions` is ordered by coordinate and contains exactly `position` and `site_ids`, with bytewise-sorted IDs. `operation_count` is the input operation count. Compatible reruns may rename/reorder sites and operations, change denominator, symmetry operators, shifts, species, and coordinates.
 
-Implement the vault→forecast→emit split so operators can validate
-hash-pinned plaques under deterministic, byte-stable redrive.
+Create missing output parents and atomically replace via `ABS_OUTPUT.tmp`; identical inputs produce identical bytes. Invalid invocation, JSON, key set, identifier, determinant, range, duplicate transformation, missing identity, or write failure exits nonzero and removes stale final/temp outputs while preserving unrelated files and the exact input bytes.
