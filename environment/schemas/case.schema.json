@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["case_id", "nodes", "seed", "events"],
+  "properties": {
+    "case_id": {"type": "string"},
+    "nodes": {"type": "integer", "minimum": 1},
+    "seed": {"type": "integer"},
+    "events": {"type": "array", "items": {"$ref": "event.schema.json"}}
+  },
+  "additionalProperties": true
+}

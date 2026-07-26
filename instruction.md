@@ -1,33 +1,104 @@
-# Offline Bundler gemindex lock-journal recovery
+# Fencing-Token Authorization Ledger
 
-An offline Bundler-style dependency resolve under `/app/environment` must regenerate a reproducible gem lock-closure after mid-horizon crash recovery. A clean full resolve and a split_a then split_b pair with the same flags must agree. Primary activity is offline package dependency management covering gemindex walk, lock-overlay pins, optional-dep scheduling, journaled activation, restart absorb, and content-addressed sealing. Not a generic data transform. Repair the Ruby modules under `/app/environment` so library-level behavior matches the norms below. CLI wrappers alone are not enough. Static or hand-written `/app/output` files are insufficient. The verifier deletes outputs and reruns `/app/environment/tools/kw_run` (and related modes) through the normal pytest pipeline to regenerate artifacts.
+You are given fixed custody evidence for one protected resource guarded by
+fencing tokens. Derive the correct authorization state after every evidence
+row.
 
-Inputs live under `/app/environment/fixtures/`, `/app/environment/docs/mx_rows.yaml`, `/app/environment/data/extra_mtx.yaml`, and `/app/environment/data/walk_seed.txt`. Drive resolves with `/app/environment/tools/kw_run` using KW_ROOT set to `/app/environment` and KW_OUT set to `/app/output`. `/app/environment/docs/operator_cmds.txt` lists argv forms including split modes, sides-first, resume path, and the optional walk-base override env. Companion docs under `/app/environment/docs/` elaborate examples. The norms below are authoritative. Draft notes such as field_notes_draft.md are non-normative. Offline only with no rubygems.org. Toolchain stages under `/app/environment` must match these norms. Wrapping the driver alone is not enough.
+Implement the Go command in `/app/environment`. The verifier builds the Go
+package in that directory and runs the resulting executable with exactly one
+argument: the path to a UTF-8 JSON case file. The command writes its report to
+standard output; there is no output file to create.
 
-Default mode is full resolve. sides-first reverses gate/side ties (default is gate-first). The walk-base override, if present, stands in for training_walk_base during the walk and for dossier reloc/bind seals. Held-out slice bases stay unchanged. On split_b, that same override also rebases completed rows from the restart image. split_a cut N must satisfy N at least 1 and strictly below row_count. Success exit is 0. A restart image with a corrupted ledger digest must make split_b exit nonzero.
+The detailed contracts are in these files and are part of the task statement:
+`/app/environment/docs/input-contract.md`,
+`/app/environment/docs/event-contract.md`,
+`/app/environment/docs/state-contract.md`, and
+`/app/environment/docs/output-contract.md`. The JSON schemas and example input
+are in `/app/environment/schemas` and `/app/environment/examples`.
 
-Produced files include `/app/output/dossier.json` and `/app/output/replay.jsonl` on full and split_b, plus `/app/output/restart.bin` on split_a only. After a successful split_a, it is false that `/app/output/dossier.json` exists. Only `/app/output/restart.bin` is written until split_b. A second identical driver run must overwrite dossier and transcript byte-identically.
+Input cases contain `case_id`, `nodes`, `seed`, and `events`; unknown root
+fields such as `public` may be present and must be ignored. Evidence rows are
+processed in array order. Each row has `type` and `time`; supported types are
+`request_lease`, `write`, `crash`, `recover`, and `tick`. The ledger clock
+starts at zero. Before each row, if the row `time` is greater than the current
+clock, advance the clock to that `time`; a `tick` row then adds its `delta`.
+Malformed JSON must exit with nonzero status. Unknown row types inside valid
+JSON are unfamiliar evidence rows and must append an `"ignored"` result rather
+than crashing.
 
-Binary gemindex magic GIX1, little-endian. Header is 16 bytes with version, record count, reloc base (rbase), and a checksum of all bytes after the header. Each record is 32 bytes with absolute payload offset (poff) and length (plen). Payload bytes are name|version|platform.
+Security adjudication rules:
 
-Payload open always uses absolute poff (never poff minus rbase plus walk_base as a file seek). Dossier reloc_off equals poff minus rbase plus base_u where base_u is the active walk base. A walk-base increase by delta increases every reloc_off by that delta and refreshes every bind_token. closure_digest, gem identity fields, and act_ord stay unchanged. index_crc is the lowercase 8-digit hex of the header checksum field.
+- The approval threshold is `floor(nodes / 2) + 1`.
+- Every node has an availability flag, volatile `term`, `owner`, `token`, and
+  `expires_at`, durable `term`, `owner`, `token`, and `expires_at`, and a
+  durable set of committed write ids. Nodes begin available, with owner `-1`
+  and all other state fields zero.
+- For lease and write rows, missing or empty `targets` means all nodes. Target
+  lists are normalized by ignoring out-of-range node ids and deduplicating
+  repeated node ids by their first occurrence.
+- `request_lease` rows have `node`, `term`, `ttl`, and `targets`. The requested
+  term is the row `term` unless it is zero or missing, in which case it is the
+  caller's current volatile term plus one.
+- A lease request is rejected when the caller is invalid or unavailable, when
+  fewer than a majority of normalized targets are available, when an active
+  lease held by a different owner is visible and the requested term is not
+  greater than the caller node's volatile term, or when the requested term is
+  lower than the caller node's volatile term.
+- Fencing tokens are allocated as `max(durable token over all nodes) + 1`.
+- A granted lease computes expiry as `clock + ttl`, raised to `clock + 1` if
+  the ttl would not move it into the future. The grant writes term, owner,
+  token, and expiry into both durable and volatile state on every available
+  normalized target. The caller's volatile state is also set to the grant even
+  when the caller is not in `targets`.
+- `write` rows have `node`, `token`, `write_id`, `targets`, and `value`. A
+  write commits only when the caller is valid and available, the caller's
+  volatile owner equals the caller, the volatile token equals the row token,
+  the current clock is no greater than the volatile expiry, and a majority of
+  normalized targets are available with matching durable owner, token, and
+  durable expiry greater than or equal to the current clock.
+- A committed write id is recorded once globally and is also stored durably on
+  every available normalized target and on the caller.
+- `crash` marks a valid node unavailable without erasing durable state.
+  `recover` marks a valid node available and reloads volatile term, owner,
+  token, and `expires_at` from durable state.
+- `tick`, `crash`, and `recover` produce `"ok"` results.
+- Unknown row types produce `"ignored"` results with token from the row when
+  present or zero otherwise, current ledger clock, and `write_id` from the row
+  when present or the empty string otherwise.
+- Duplicate committed `write_id` values appear only once in `committed_writes`.
+- `unique_leases` is computed from active per-node volatile lease views at the
+  final clock, not from a single global authorization variable.
 
-Digests go through `/app/environment/tools/hex_dgst` (hex digest of stdin). edge_digest is the first 16 hex chars of hex_dgst over edge|name|ver. closure_digest is the full hex_dgst over seed|0| joined with lexicographically sorted edge digests (literal middle marker 0). Same seed and gem set keep the same closure under annex permutation, activation-order permutation, walk-base change, and mid-horizon resume. Do not fold overlays or reloc into the closure. bind_token is the first 12 hex chars of hex_dgst over edge_digest|overlay_ref|str(reloc_off) using the dossier logical reloc_off. Emit refreshes binds from the live reloc after any rebase.
+Output requirements:
 
-Matrix rows list gem_id, platform, priority, opt_class, and overlay_ref. opt_class is the optional-dependency class for that gem and must be either gate or side. Default activation order is ascending priority, then gate before side on ties, then ascending gem_id. sides-first flips only that gate/side key. act_ord is the zero-based index. Dossier opt_side equals the matrix opt_class for the same gem_id.
+- Emit one compact JSON object followed by exactly one final newline. Do not
+  pretty-print. Do not print diagnostic text to stdout or stderr on successful
+  runs.
+- Top-level fields must appear in this order: `case_id`, `case_seed`,
+  `results`, `committed_writes`, `invariants`, `final_state`.
+- `results` contains one entry for every input row in order. Each result uses
+  fields in this order: `index`, `type`, `status`, `token`, `expires_at`, and
+  conditionally `write_id`.
+- Status values are `granted`, `rejected`, `committed`, `ok`, and `ignored`.
+- Granted lease results use token equal to the granted fencing token and
+  `expires_at` equal to the granted expiry. Rejected lease results use token
+  zero and `expires_at` zero.
+- Committed write results preserve the row token, include `write_id`, and set
+  `expires_at` to the current ledger clock at commit time, not the lease
+  expiry. Rejected write results preserve the row token, include `write_id`,
+  and use `expires_at` zero.
+- `tick`, `crash`, and `recover` results omit `write_id`; ignored-row results
+  include `write_id`. Pre-dispatch invalid-node rejections include `write_id`
+  using the event value when present and the empty string otherwise.
+- `committed_writes` is sorted and contains each committed identifier once.
+- `invariants` fields appear as `unique_leases`, `recovery_durable_ok`, then
+  `fence_monotonic`.
+- `final_state` fields appear as `owner`, `token`, `term`, then `expires_at`.
+  It selects the first available node in ascending order whose volatile token
+  is positive and volatile expiry is greater than the final clock. If there is
+  no such node, owner is `-1` and the remaining values are zero.
 
-Lock overlays under `/app/environment/fixtures/overlays/` map name to pins (gem_id to version). Each dossier row must match its overlay_ref pin and the version decoded from the gemindex payload. Pin checks apply on first activation and again on resume. extra_mtx.yaml carries training_walk_base, training_annex_order, and slices (id, walk_base, annex_order). Every held-out slice must decode readable payloads under its walk_base and yield the same closure as training.
-
-Restart image little-endian layout uses a header of 12 bytes with magic GSJR, version 1, reserved 0, and a trailer hash of the body. Body fields include walk base, gate_first (1 for gate-first, 0 for sides-first), pad 0, act_done, n_completed, seed string, index_crc string, rbase, completed row records, pending gem_id strings, then ledger records and a trailing u32 digest. Each completed row encodes gem_id, ver, edge_digest, overlay_ref, platform, opt_side, bind_token, then act_ord, reloc_off (logical under the checkpoint walk base), and poff (absolute, retained for rebase). Ledger ops use numeric codes where act is 1, cut is 2, and fold is 3. Each record is op, seq, then gem_id (empty for cut/fold). The trailer digest is the 32-bit hash with offset basis 2166136261 and prime 16777619 over those canonical encodings. Absorb rejects digest mismatches. A positive act_done does not waive validation.
-
-On split_b, validate header and ledger, re-check overlay pins, rebase completed rows under a differing walk-base override, schedule pending gem ids with the CLI gate/side flag, keep completed act_ord values from 0 through act_done-1 and continue pending from act_done, fold closure over the full sorted edge set, and emit dossier and transcript for the merged rows. split_a then split_b with matching gate/side flag and walk base must byte-agree with a clean full run. Gate-first split_a followed by sides-first split_b keeps the completed prefix and reorders only the pending tail.
-
-Dossier schema field equals gem-shelf-dossier + / + v1. Also emit walk_seed from the seed file, closure_digest (64 hex), index_crc (8 hex, lowercase, non-zero here), rows (objects with gem_id, edge_digest, platform, overlay_ref, act_ord, opt_side, reloc_off, bind_token, ver), and held_out_violations. Every matrix gem appears exactly once. Hex fields are lowercase. Absolute poff is not a dossier field.
-
-Transcript `/app/output/replay.jsonl` has one object per dossier row in act_ord order with gem_id, edge_digest, act_ord, bind_token, overlay_ref, reloc_off, and phase.
-
-Symptoms of partial recovery include a clean full run that can look fine even as checkpoint/resume drifts on reloc seals, closure identity, activation order, or overlay authority. Restart bytes may carry live rows yet mis-seal the ledger trailer that absorb must enforce.
-
-On the closed fixture set held_out_violations reports zero failures.
-
-Transcript phase markers use the lowercase token row.
+Grading files under `/tests`, including reference cases and oracle code, are
+verifier-owned inputs. Your command must not read, import, execute, or modify
+`/tests` or `/logs`; derive the ledger only from the single JSON case path
+passed as the command argument.

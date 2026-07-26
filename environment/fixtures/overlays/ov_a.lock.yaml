@@ -1,7 +1,0 @@
-schema: lock-overlay/v1
-name: ov_a
-pins:
-  alpha-core: "1.2.0"
-  beta-util: "0.9.1"
-  gamma-net: "2.0.0"
-  zeta-async: "0.4.2"

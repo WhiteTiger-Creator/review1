@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["case_id", "case_seed", "results", "committed_writes", "invariants", "final_state"],
+  "properties": {
+    "case_id": {"type": "string"},
+    "case_seed": {"type": "integer"},
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "type", "status", "token", "expires_at"],
+        "properties": {
+          "index": {"type": "integer", "minimum": 0},
+          "type": {"type": "string"},
+          "status": {"enum": ["granted", "rejected", "committed", "ok", "ignored"]},
+          "token": {"type": "integer"},
+          "expires_at": {"type": "integer"},
+          "write_id": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "committed_writes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "invariants": {
+      "type": "object",
+      "required": ["unique_leases", "recovery_durable_ok", "fence_monotonic"],
+      "properties": {
+        "unique_leases": {"type": "boolean"},
+        "recovery_durable_ok": {"type": "boolean"},
+        "fence_monotonic": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "final_state": {
+      "type": "object",
+      "required": ["owner", "token", "term", "expires_at"],
+      "properties": {
+        "owner": {"type": "integer"},
+        "token": {"type": "integer"},
+        "term": {"type": "integer"},
+        "expires_at": {"type": "integer"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
