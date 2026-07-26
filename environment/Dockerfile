@@ -1,38 +1,25 @@
-FROM public.ecr.aws/docker/library/ubuntu:24.04@sha256:0d39fcc8335d6d74d5502f6df2d30119ff4790ebbb60b364818d5112d9e3e932
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        make \
-        openjdk-17-jdk-headless \
-        python3 \
-        python3-venv \
-        tmux \
+COPY apt-preferences /etc/apt/preferences.d/task-pins
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates r-base-core tmux asciinema python3 python3-venv util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock \
+RUN python3 -m venv /opt/verifier-venv \
+    && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock \
     && rm /tmp/requirements.lock
 
-ENV PATH="/opt/verifier/bin:${PATH}"
+RUN groupadd --gid 1000 taskagent \
+    && useradd --uid 1000 --gid taskagent --create-home --shell /bin/bash taskagent
+
 WORKDIR /app
+COPY --chown=taskagent:taskagent analysis.R /app/analysis.R
+COPY --chmod=0755 run.sh /app/run.sh
+COPY data/ /app/data/
+COPY docs/ /app/docs/
+RUN mkdir -p /app/outputs \
+    && chown taskagent:taskagent /app/outputs
 
-COPY app/Makefile /app/Makefile
-COPY app/bin/ /app/bin/
-COPY app/lib/ /app/lib/
-COPY app/tablebook/ /app/tablebook/
-COPY app/examples/ /app/examples/
-COPY app/src/ /app/src/
-
-RUN java -version \
-    && javac -version \
-    && make -C /app compile-check \
-    && make -C /app starter-check
-
-CMD ["/bin/bash"]
+ENV HOME=/home/taskagent USER=taskagent LOGNAME=taskagent
+ENTRYPOINT ["/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--init-groups", "--no-new-privs"]

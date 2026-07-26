@@ -1,349 +1,353 @@
-"""Verifier for the glideclash rollback contact engine."""
+"""Behaviorally evaluate exposure-corrected item-choice predictions."""
 
-from __future__ import annotations
-
+import csv
+import hashlib
+import math
 import os
-import re
+import random
+import shutil
 import subprocess
+import sys
 import tempfile
+from functools import cache
 from pathlib import Path
 
-from java_harness import run_probe
-
-
-def _lines(text: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for raw in text.splitlines():
-        if "=" not in raw:
-            continue
-        key, val = raw.split("=", 1)
-        out[key] = val
-    return out
-
-
-def test_pristine_engine_exposes_sorted_immutable_seed_state():
-    """Engine creation canonicalizes blueprint lists and protects its initial snapshot from mutation."""
-    data = _lines(run_probe("ScenarioProbe", "pristine"))
-    assert data["puck0"] == "a-puck"
-    assert data["puck1"] == "b-puck"
-    assert data["mutated"] == "false"
-    assert data["s0.head"] == "0"
-    assert data["s0.act.1"] == "NEUTRAL"
-
-
-def test_negative_velocity_uses_floor_division_remainders():
-    """Signed subframe integration follows Java floor division rather than truncation toward zero."""
-    data = _lines(run_probe("ScenarioProbe", "floor-div"))
-    # vx=-5, subframes=4 => x=95 with rem=0 (truncation toward zero would yield 96)
-    assert data["t1.puck.p"] == "95,100,-5,0,0,0"
-
-
-def test_missing_player_frame_repeats_prior_effective_action():
-    """Prediction carries the previous direction forward until another authoritative input appears."""
-    data = _lines(run_probe("ScenarioProbe", "predict"))
-    assert data["t3.pad.pad"].startswith("70,100,")
-    assert data["t3.act.1"] == "EAST"
-
-
-def test_future_authority_stops_prediction_at_its_tick():
-    """A stored later action becomes effective exactly at its declared simulation tick."""
-    data = _lines(run_probe("ScenarioProbe", "future-auth"))
-    assert data["frame.0.act"] == "EAST"
-    assert data["frame.1.act"] == "EAST"
-    assert data["frame.2.act"] == "WEST"
-    assert data["t3.act.1"] == "WEST"
-
-
-def test_late_input_resimulates_from_earliest_affected_tick():
-    """Accepted history revision rewinds its tick and rebuilds every dependent later frame."""
-    data = _lines(run_probe("RollbackProbe", "late-revise"))
-    assert data["status"] == "REVISED"
-    assert data["corrCount"] == "2"
-    assert data["changed"] == "true"
-    assert data["head"] == "3"
-
-
-def test_later_authoritative_frame_caps_prediction_correction():
-    """A revised action stops changing predictions when the next accepted action is reached."""
-    data = _lines(run_probe("RollbackProbe", "cap-predict"))
-    assert data["status"] == "REVISED"
-    assert data["corr.0.act"] == "WEST"
-    assert data["corr.1.act"] == "WEST"
-    assert data["corr.2.act"] == "NORTH"
-    assert data["corr.3.act"] == "NORTH"
-    assert data["match"] == "true"
-
-
-def test_sequence_idempotence_staleness_and_conflict_are_transactional():
-    """Equal, older, and conflicting sequence cases preserve the strongest accepted input and state."""
-    data = _lines(run_probe("RollbackProbe", "sequence"))
-    assert data["a"] == "STORED"
-    assert data["b"] == "IDEMPOTENT"
-    assert data["c"] == "STALE_SEQUENCE"
-    assert data["d"] == "CONFLICT"
-    assert data["act"] == "EAST"
-
-
-def test_higher_sequence_replaces_authority_without_losing_future_inputs():
-    """A stronger revision changes one ledger slot while retaining later player commands."""
-    data = _lines(run_probe("RollbackProbe", "higher-keep-future"))
-    assert data["status"] == "REVISED"
-    assert data["t0"] == "WEST"
-    assert data["t1"] == "WEST"
-    assert data["t2"] == "NORTH"
-
-
-def test_input_older_than_rollback_window_is_refused_unchanged():
-    """Pruned history cannot be revised and TOO_OLD leaves snapshots plus inputs intact."""
-    data = _lines(run_probe("RollbackProbe", "too-old"))
-    assert data["status"] == "TOO_OLD"
-    assert data["unchanged"] == "true"
-    assert data["corr"] == "0"
-
-
-def test_forked_timeline_advances_independently_from_parent():
-    """A deep fork owns separate history, predictions, scores, residuals, and pending serves."""
-    data = _lines(run_probe("RollbackProbe", "fork"))
-    assert data["independent"] == "true"
-    assert data["parent.act"] == "NORTH"
-    assert data["child.act"] == "WEST"
-    assert data["parent.padx"] != data["child.padx"]
-
-
-def test_wall_crossing_reflects_at_the_exact_subframe():
-    """WALL secondaryId is the side name; bounce purges that axis remainder."""
-    data = _lines(run_probe("ScenarioProbe", "wall"))
-    assert data["t0.ev"] == "0,1,WALL,p,left"
-    assert data["t1.puck.p"] == "25,20,40,0,0,0"
-
-
-def test_one_way_gate_blocks_only_declared_crossing_sign():
-    """Opposite approaches distinguish a reflecting gate passage from a transparent one."""
-    data = _lines(run_probe("ScenarioProbe", "gate"))
-    assert data["block.ev"] == "0,1,GATE,p,g1"
-    assert "pass.ev" not in data
-    assert data["block.puck.p"] == "75,100,-40,0,0,0"
-    assert data["pass.puck.p"].startswith("80,100,-40,")
-
-
-def test_goal_precedence_removes_puck_before_wall_response():
-    """GOAL primaryId is the puck and secondaryId is the goal; scoring suppresses WALL."""
-    data = _lines(run_probe("ScenarioProbe", "goal"))
-    assert data["g.ev"] == "0,0,GOAL,p,gl"
-    assert data["hasWall"] == "false"
-    assert data["t1.scores"] == "0,1"
-    assert data["t1.serve.p"] == "LEFT"
-
-
-def test_scored_puck_respawns_at_next_tick_with_directed_serve():
-    """Serve is directed away from the exited mouth at the following tick start."""
-    data = _lines(run_probe("ScenarioProbe", "respawn"))
-    assert data["afterGoal.serve.p"] == "LEFT"
-    assert "afterGoal.puck.p" not in data
-    # LEFT exit => vx = +serveSpeed
-    assert data["afterServe.puck.p"] == "110,100,10,0,0,0"
-
-
-def test_bumper_kick_reflects_axis_and_respects_speed_cap():
-    """First bumper response: reflect then add outwardSign * floorDiv(kick,1), then clamp."""
-    data = _lines(run_probe("ScenarioProbe", "bumper"))
-    assert data["b.ev"] == "0,3,BUMPER,p,bum"
-    # reflected -20 + (-1)*5 => -25
-    assert data["t1.puck.p"].startswith("85,100,-25,0,")
-
-
-def test_moving_paddle_transfers_its_selected_axis_velocity():
-    """Authoritative paddle contact uses 2*pad_v - puck_v on the contact axis."""
-    data = _lines(run_probe("ScenarioProbe", "paddle-hit"))
-    assert data["h.ev"] == "0,3,PADDLE,p,pad"
-    assert data["t1.puck.p"].startswith("73,100,40,0,")
-
-
-def test_predicted_paddle_uses_soft_impulse_formula():
-    """Predicted (non-authoritative) paddle actions use pad_v - puck_v instead of 2*pad_v - puck_v."""
-    data = _lines(run_probe("ScenarioProbe", "paddle-soft"))
-    assert data["s.ev"] == "1,2,PADDLE,p,pad"
-    # soft: 20 - 0 = 20 (authoritative would be 40)
-    assert data["t2.puck.p"].startswith("93,100,20,0,")
-
-
-def test_bumper_kick_decays_by_response_ordinal_within_tick():
-    """Second bumper velocity response in a tick uses floorDiv(kick, ordinal)."""
-    text = run_probe("ScenarioProbe", "bumper-decay")
-    assert "d.ev=0,1,BUMPER,p,br" in text
-    assert "d.ev=0,5,BUMPER,p,bl" in text
-    data = _lines(text)
-    # second hit: reflect then +floorDiv(8,2)=4 => 37 (full kick would clamp to 40)
-    assert data["t1.puck.p"].startswith("107,100,37,0,")
-
-
-def test_equal_mass_pucks_swap_only_contact_axis_components():
-    """A two-puck impact exchanges selected velocity components without rotating the other axis."""
-    data = _lines(run_probe("ScenarioProbe", "puck-swap"))
-    assert data["s.ev"] == "0,2,PUCK,a,b"
-    a = data["t1.puck.a"].split(",")
-    b = data["t1.puck.b"].split(",")
-    assert a[2] == "-10" and a[3] == "3"
-    assert b[2] == "20" and b[3] == "7"
-
-
-def test_coincident_centers_use_identifier_oriented_x_axis():
-    """Degenerate overlap remains deterministic through lexical orientation and separation splitting."""
-    data = _lines(run_probe("ScenarioProbe", "coincident"))
-    assert data["c.ev"] == "0,0,PUCK,a,b"
-    a = data["t1.puck.a"].split(",")
-    b = data["t1.puck.b"].split(",")
-    assert int(a[0]) < int(b[0])
-    assert a[2] == "-20" and b[2] == "20"
-
-
-def test_four_sweep_island_propagates_a_three_puck_chain():
-    """Rediscovered contacts carry one subframe's impulse across a connected puck sequence."""
-    text = run_probe("ScenarioProbe", "chain")
-    assert "ch.ev=0,0,PUCK,a,b" in text
-    assert "ch.ev=0,0,PUCK,b,c" in text
-    data = _lines(text)
-    assert data["t1.puck.c"].startswith("155,100,30,")
-
-
-def test_unresolved_fifth_contact_rolls_back_entire_advance_call():
-    """Impact-limit failure exposes its tick and subframe while preserving the pre-call engine."""
-    data = _lines(run_probe("ScenarioProbe", "impact-limit"))
-    assert data["threw"] == "true"
-    assert data["code"] == "impact-limit"
-    assert data["tick"] == "0"
-    assert data["subframe"] == "0"
-    assert data["head"] == "0"
-    assert data["unchanged"] == "true"
-
-
-def test_ricochet_cap_rolls_back_corner_double_wall():
-    """Exceeding floorDiv(subframes,2) WALL/GATE/BUMPER/PADDLE events throws ricochet-cap transactionally."""
-    data = _lines(run_probe("ScenarioProbe", "ricochet-cap"))
-    assert data["threw"] == "true"
-    assert data["code"] == "ricochet-cap"
-    assert data["tick"] == "0"
-    assert data["subframe"] == "0"
-    assert data["head"] == "0"
-    assert data["unchanged"] == "true"
-
-
-def test_home_clamp_zeroes_only_the_paddle_clamped_remainder():
-    """Paddle bounds discard blocked-axis residue without altering its free-axis integration."""
-    data = _lines(run_probe("ScenarioProbe", "home-clamp"))
-    parts = data["t1.pad.pad"].split(",")
-    assert parts[0] == "72"
-    assert parts[1] == "87"
-    assert parts[4] == "0"
-    assert parts[5] == "0"
-
-
-def test_tick_friction_moves_each_puck_component_toward_zero():
-    """End-of-tick drag never crosses zero and does not affect paddle control velocity."""
-    data = _lines(run_probe("ScenarioProbe", "friction"))
-    # started 10,-7 with friction 3 => 7,-4
-    assert data["t1.puck.p"] == "110,93,7,-4,0,0"
-    assert data["t1.pad.pad"].startswith("40,90,0,0,")
-
-
-def test_correction_receipt_contains_only_changed_frames():
-    """Late resimulation omits structurally equal publications and marks every returned correction."""
-    data = _lines(run_probe("RollbackProbe", "corrections-filter"))
-    assert data["same.status"] == "REVISED"
-    assert data["same.corr"] == "0"
-    assert data["chg.status"] == "REVISED"
-    assert data["chg.corr"] == "2"
-    assert data["chg.corr.tick"] in {"1", "2"} or True
-    text = run_probe("RollbackProbe", "corrections-filter")
-    assert "corrected=true" in text
-    assert "corrected=false" not in text.split("chg.status")[-1]
-
-
-def test_single_advance_and_chunked_advances_publish_equal_frames():
-    """Dividing the same tick interval across API calls cannot change physics or events."""
-    data = _lines(run_probe("ScenarioProbe", "chunked"))
-    assert data["equal"] == "true"
-    assert data["snapEqual"] == "true"
-
-
-def test_permuted_blueprint_members_produce_equal_timelines():
-    """Orderless seed and fixture lists canonicalize before validation and collision discovery."""
-    data = _lines(run_probe("ScenarioProbe", "permute"))
-    assert data["equal"] == "true"
-
-
-def test_blueprint_error_precedence_selects_code_then_identifier():
-    """Several malformed members yield the documented earliest validation code and lexical id."""
-    data = _lines(run_probe("ValidationProbe", "precedence"))
-    assert data["code"] == "rules"
-    assert data["id"] == "-"
-    assert data["dup.code"] == "duplicate-id"
-    assert data["dup.id"] == "a-pad"
-    assert data["ov.code"] == "overlap"
-    assert data["ov.id"] == "p"
-    assert data["nm.code"] == "null-member"
-    assert data["nm.id"] == "-"
-
-
-def test_returned_collections_and_caller_lists_cannot_mutate_engine():
-    """Defensive copies isolate blueprint inputs, frames, snapshots, events, and receipts."""
-    data = _lines(run_probe("ScenarioProbe", "mutate"))
-    assert data["snapMut"] == "false"
-    assert data["survived"] == "true"
-    assert data["receiptMut"] == "false"
-
-
-def test_two_harnesses_match_across_cwd_locale_and_clean_filesystem():
-    """Equivalent JVM runs yield equal record text without locale drift or filesystem side effects."""
-    first = run_probe("RollbackProbe", "locale-fs")
-    # Change cwd and locale for the second invocation via a nested runner
-    jar = Path("/app/lib/glideclash.jar")
-    probe_dir = Path(__file__).resolve().parent / "java"
-    with tempfile.TemporaryDirectory(prefix="glide_locale_") as tmp:
-        tmp_path = Path(tmp)
-        work = tmp_path / "work"
-        work.mkdir()
-        junk = work / "noise.txt"
-        junk.write_text("should-not-matter\n", encoding="utf-8")
-        classes = tmp_path / "classes"
-        classes.mkdir()
-        subprocess.run(
-            [
-                "javac",
-                "--release",
-                "17",
-                "-cp",
-                str(jar),
-                "-d",
-                str(classes),
-                *[str(p) for p in sorted(probe_dir.glob("*.java"))],
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
+import pytest
+
+FIELDS = ["event_id", "item_id", "probability"]
+LANDLOCK = Path("/tests/landlock_exec.py")
+PUBLIC_INPUT = Path("/app/data")
+RELATIONS = (
+    "training_choices.csv",
+    "training_candidates.csv",
+    "evaluation_choices.csv",
+    "evaluation_candidates.csv",
+)
+
+
+def read_rows(path):
+    with open(path, newline="", encoding="utf-8") as stream:
+        return list(csv.DictReader(stream))
+
+
+def write_rows(path, rows):
+    with open(path, "w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def sandbox_command(input_dir, output_dir, command):
+    return [
+        sys.executable,
+        str(LANDLOCK),
+        "--read",
+        str(input_dir),
+        "--write",
+        str(output_dir),
+        "--",
+        *command,
+    ]
+
+
+def run_candidate_artifact(input_dir):
+    output = Path(tempfile.mkdtemp(prefix="choice-output-", dir="/dev/shm"))
+    output.chmod(0o777)
+    prediction_path = output / "choice_predictions.csv"
+    prediction_path.write_text("stale,output\nmust,disappear\n", encoding="utf-8")
+    prediction_path.chmod(0o666)
+    environment = dict(os.environ, HOME=str(output), TMPDIR=str(output))
+    result = subprocess.run(
+        sandbox_command(
+            input_dir,
+            output,
+            ["/app/run.sh", str(input_dir), str(output)],
+        ),
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=False,
+        cwd="/app",
+        env=environment,
+    )
+    assert result.returncode == 0, result.stderr
+    assert prediction_path.is_file() and prediction_path.stat().st_size > 0
+    return read_rows(prediction_path), prediction_path.read_bytes()
+
+
+def run_candidate(input_dir):
+    return run_candidate_artifact(input_dir)[0]
+
+
+def validated_probabilities(input_dir, predictions=None):
+    if predictions is None:
+        predictions = run_candidate(input_dir)
+    candidates = read_rows(os.path.join(input_dir, "evaluation_candidates.csv"))
+    expected = {(row["event_id"], row["item_id"]) for row in candidates}
+    assert predictions
+    assert list(predictions[0]) == FIELDS
+    assert len(predictions) == len(expected)
+    actual = [(row["event_id"], row["item_id"]) for row in predictions]
+    assert len(actual) == len(set(actual))
+    assert set(actual) == expected
+    probabilities = {}
+    totals = {}
+    for row in predictions:
+        probability = float(row["probability"])
+        assert math.isfinite(probability)
+        assert 0.0 <= probability <= 1.0
+        key = (row["event_id"], row["item_id"])
+        probabilities[key] = probability
+        totals[row["event_id"]] = totals.get(row["event_id"], 0.0) + probability
+    assert all(abs(total - 1.0) < 1e-8 for total in totals.values())
+    return probabilities
+
+
+def hidden_rows():
+    hidden = read_rows("/tests/hidden_choices.csv")
+    assert len(hidden) >= 60
+    return {row["event_id"]: row for row in hidden}
+
+
+def metrics(probabilities, hidden, event_ids):
+    loss = reciprocal_rank = recall_at_three = total_weight = 0.0
+    candidates = {}
+    for (event_id, item_id), probability in probabilities.items():
+        candidates.setdefault(event_id, []).append((item_id, probability))
+    for event_id in event_ids:
+        target = hidden[event_id]["clicked_item"]
+        weight = float(hidden[event_id]["metric_weight"])
+        ranked = sorted(
+            candidates[event_id],
+            key=lambda pair: (-pair[1], pair[0]),
         )
-        env = os.environ.copy()
-        env["LANG"] = "C"
-        env["LC_ALL"] = "C"
-        second = subprocess.run(
-            [
-                "java",
-                "-Duser.language=fr",
-                "-Duser.country=FR",
-                "-cp",
-                f"{classes}{os.pathsep}{jar}",
-                "RollbackProbe",
-                "locale-fs",
-            ],
-            check=True,
+        target_probability = dict(ranked)[target]
+        rank = next(
+            index for index, (item_id, _) in enumerate(ranked, 1) if item_id == target
+        )
+        loss += weight * -math.log(max(target_probability, 1e-12))
+        reciprocal_rank += weight / rank
+        recall_at_three += weight * (rank <= 3)
+        total_weight += weight
+    return (
+        loss / total_weight,
+        reciprocal_rank / total_weight,
+        recall_at_three / total_weight,
+    )
+
+
+@cache
+def base_probabilities():
+    return validated_probabilities(PUBLIC_INPUT, base_artifact()[0])
+
+
+@cache
+def base_artifact():
+    return run_candidate_artifact(PUBLIC_INPUT)
+
+
+def keyed_digest(prefix, value):
+    digest = hashlib.sha256(f"{prefix}:{value}".encode()).hexdigest()[:16]
+    return f"{prefix}_{digest}"
+
+
+@cache
+def reordered_probabilities():
+    bundle = tempfile.mkdtemp(prefix="choice-reordered-")
+    shutil.copytree("/app/data", bundle, dirs_exist_ok=True)
+    os.chmod(bundle, 0o755)
+    event_map = {}
+    for relation in ("training_choices.csv", "evaluation_choices.csv"):
+        for row in read_rows(os.path.join(bundle, relation)):
+            event_map[row["event_id"]] = keyed_digest("event", row["event_id"])
+    rng = random.Random(20260726)
+    for relation in RELATIONS:
+        path = os.path.join(bundle, relation)
+        rows = read_rows(path)
+        for row in rows:
+            row["event_id"] = event_map[row["event_id"]]
+        rng.shuffle(rows)
+        write_rows(path, rows)
+    transformed = validated_probabilities(bundle)
+    inverse = {value: key for key, value in event_map.items()}
+    return {
+        (inverse[event_id], item_id): probability
+        for (event_id, item_id), probability in transformed.items()
+    }
+
+
+@cache
+def cold_start_surface():
+    bundle = tempfile.mkdtemp(prefix="choice-cold-start-")
+    shutil.copytree("/app/data", bundle, dirs_exist_ok=True)
+    os.chmod(bundle, 0o755)
+    path = os.path.join(bundle, "evaluation_candidates.csv")
+    candidates = read_rows(path)
+    item_ids = sorted({int(row["item_id"]) for row in candidates})
+    item_map = {str(item_id): str(900_000 + item_id) for item_id in item_ids}
+    rng = random.Random(41017)
+    for row in candidates:
+        row["item_id"] = item_map[row["item_id"]]
+    rng.shuffle(candidates)
+    write_rows(path, candidates)
+    choices_path = os.path.join(bundle, "evaluation_choices.csv")
+    choices = read_rows(choices_path)
+    rng.shuffle(choices)
+    write_rows(choices_path, choices)
+    probabilities = validated_probabilities(bundle)
+    transformed_hidden = {
+        event_id: {
+            **row,
+            "clicked_item": item_map[row["clicked_item"]],
+        }
+        for event_id, row in hidden_rows().items()
+    }
+    return probabilities, transformed_hidden
+
+
+EVALUATION_CANDIDATES = read_rows("/app/data/evaluation_candidates.csv")
+EVALUATION_ITEMS = {}
+for candidate in EVALUATION_CANDIDATES:
+    EVALUATION_ITEMS.setdefault(candidate["event_id"], set()).add(candidate["item_id"])
+EVALUATION_EVENT_IDS = sorted(EVALUATION_ITEMS)
+
+
+@pytest.mark.parametrize("event_id", EVALUATION_EVENT_IDS)
+def test_output_contract_on_each_later_choice(event_id):
+    """This later event receives its ten valid normalized item probabilities."""
+    probabilities = base_probabilities()
+    observed = {
+        item_id: probability
+        for (candidate_event, item_id), probability in probabilities.items()
+        if candidate_event == event_id
+    }
+    assert set(observed) == EVALUATION_ITEMS[event_id]
+    assert len(observed) == 10
+    assert all(
+        math.isfinite(value) and 0.0 <= value <= 1.0 for value in observed.values()
+    )
+    assert sum(observed.values()) == pytest.approx(1.0, abs=1e-8)
+
+
+def test_overall_exposure_corrected_choice_quality():
+    """Exposure-weighted hidden choices clear all three overall quality bars."""
+    hidden = hidden_rows()
+    score = metrics(base_probabilities(), hidden, sorted(hidden))
+    assert score[0] < 1.31
+    assert score[1] > 0.68
+    assert score[2] > 0.81
+
+
+def test_quality_holds_across_campaign_and_logger_groups():
+    """No campaign or logger group can hide behind a strong aggregate score."""
+    hidden = hidden_rows()
+    events = {
+        row["event_id"]: row for row in read_rows("/app/data/evaluation_choices.csv")
+    }
+    campaign_scores = []
+    for campaign in sorted({row["campaign"] for row in events.values()}):
+        event_ids = [
+            event_id for event_id in hidden if events[event_id]["campaign"] == campaign
+        ]
+        assert len(event_ids) >= 25
+        campaign_scores.append(metrics(base_probabilities(), hidden, event_ids))
+    assert max(score[0] for score in campaign_scores) < 1.85
+    assert min(score[1] for score in campaign_scores) > 0.55
+    assert min(score[2] for score in campaign_scores) > 0.61
+
+    logger_scores = []
+    for logger in sorted({row["logger"] for row in events.values()}):
+        event_ids = [
+            event_id for event_id in hidden if events[event_id]["logger"] == logger
+        ]
+        assert len(event_ids) >= 50
+        logger_scores.append(metrics(base_probabilities(), hidden, event_ids))
+    assert max(score[0] for score in logger_scores) < 1.45
+    assert min(score[1] for score in logger_scores) > 0.62
+    assert min(score[2] for score in logger_scores) > 0.78
+
+
+def test_quality_holds_across_capped_and_uncapped_exposure():
+    """Both exposure-weight regimes retain calibrated ranking quality."""
+    hidden = hidden_rows()
+    capped = [
+        event_id
+        for event_id, row in hidden.items()
+        if float(row["metric_weight"]) >= 10.0 - 1e-12
+    ]
+    uncapped = [
+        event_id
+        for event_id, row in hidden.items()
+        if float(row["metric_weight"]) < 10.0 - 1e-12
+    ]
+    assert len(capped) >= 30
+    assert len(uncapped) >= 30
+    scores = [
+        metrics(base_probabilities(), hidden, capped),
+        metrics(base_probabilities(), hidden, uncapped),
+    ]
+    assert max(score[0] for score in scores) < 1.41
+    assert min(score[1] for score in scores) > 0.64
+    assert min(score[2] for score in scores) > 0.80
+
+
+def test_item_features_transfer_to_cold_start_identifiers():
+    """Replacing evaluation item keys preserves transferable feature quality."""
+    probabilities, hidden = cold_start_surface()
+    score = metrics(probabilities, hidden, sorted(hidden))
+    assert score[0] < 1.45
+    assert score[1] > 0.64
+    assert score[2] > 0.78
+
+
+def test_relation_order_and_opaque_event_keys_are_equivariant():
+    """Relation permutations and renamed event keys preserve keyed predictions."""
+    original = base_probabilities()
+    transformed = reordered_probabilities()
+    assert original.keys() == transformed.keys()
+    assert max(abs(original[key] - transformed[key]) for key in original) < 1e-7
+
+
+def test_default_invocation_and_repeated_bytes_are_deterministic():
+    """Default paths and identical inputs reproduce the primary output bytes."""
+    output = Path("/app/outputs")
+    output.mkdir(exist_ok=True)
+    output.chmod(0o777)
+    prediction_path = output / "choice_predictions.csv"
+    prediction_path.unlink(missing_ok=True)
+    environment = dict(os.environ, HOME=str(output), TMPDIR=str(output))
+    result = subprocess.run(
+        sandbox_command(PUBLIC_INPUT, output, ["/app/run.sh"]),
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=False,
+        cwd="/app",
+        env=environment,
+    )
+    assert result.returncode == 0, result.stderr
+    assert prediction_path.read_bytes() == base_artifact()[1]
+    assert run_candidate_artifact(PUBLIC_INPUT)[1] == base_artifact()[1]
+
+
+def test_candidate_cannot_read_private_verifier_surfaces():
+    """Candidate execution cannot inspect labels, rewards, or reference code."""
+    output = Path(tempfile.mkdtemp(prefix="choice-sandbox-", dir="/dev/shm"))
+    output.chmod(0o777)
+    for protected_path in [
+        "/tests/hidden_choices.csv",
+        "/logs/verifier/reward.txt",
+        "/solution/reference_analysis.R",
+    ]:
+        result = subprocess.run(
+            sandbox_command(
+                PUBLIC_INPUT,
+                output,
+                ["/usr/bin/head", "-c", "1", protected_path],
+            ),
             capture_output=True,
             text=True,
-            cwd=str(work),
-            env=env,
-        ).stdout
-    d1 = _lines(first)
-    d2 = _lines(second)
-    assert d1["head"] == d2["head"] == "2"
-    assert d1["padx"] == d2["padx"]
-    assert d1["record"] == d2["record"]
-    assert not re.search(r"/tmp/|noise\.txt", d1["record"])
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode != 0
