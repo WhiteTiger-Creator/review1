@@ -1,0 +1,96 @@
+{
+  "sortie_id": "sortie_12",
+  "seed": 121,
+  "fuel_budget": 500,
+  "hold_capacity": 20,
+  "claw_durability": 100,
+  "comm_blackout_ticks": 5,
+  "max_ticks": 50,
+  "burn_scale": 10,
+  "wear_per_grapple": 15,
+  "debris_threshold": 70,
+  "orbits": [
+    {
+      "orbit_id": "LEO",
+      "radius": 100
+    },
+    {
+      "orbit_id": "MEO",
+      "radius": 400
+    },
+    {
+      "orbit_id": "GEO",
+      "radius": 900
+    },
+    {
+      "orbit_id": "HEO",
+      "radius": 1600
+    }
+  ],
+  "windows": [],
+  "wrecks": [
+    {
+      "wreck_id": "W12A",
+      "orbit_id": "LEO",
+      "mass": 12
+    },
+    {
+      "wreck_id": "W12B",
+      "orbit_id": "LEO",
+      "mass": 12
+    }
+  ],
+  "orders": [
+    {
+      "seq": 1,
+      "order_id": "l1",
+      "kind": "LAUNCH_CRAFT",
+      "craft_id": "SEAL",
+      "orbit_id": "LEO"
+    },
+    {
+      "seq": 2,
+      "order_id": "l2",
+      "kind": "GRAPPLE_WRECK",
+      "craft_id": "SEAL",
+      "wreck_id": "W12A"
+    },
+    {
+      "seq": 3,
+      "order_id": "l3",
+      "kind": "STOW_MASS",
+      "craft_id": "SEAL"
+    },
+    {
+      "seq": 4,
+      "order_id": "l4",
+      "kind": "JETTISON_BALLAST",
+      "craft_id": "SEAL",
+      "mass": 12
+    },
+    {
+      "seq": 5,
+      "order_id": "l5",
+      "kind": "GRAPPLE_WRECK",
+      "craft_id": "SEAL",
+      "wreck_id": "W12B"
+    },
+    {
+      "seq": 6,
+      "order_id": "l6",
+      "kind": "STOW_MASS",
+      "craft_id": "SEAL"
+    },
+    {
+      "seq": 7,
+      "order_id": "l7",
+      "kind": "RELAY_PING",
+      "craft_id": "SEAL"
+    },
+    {
+      "seq": 8,
+      "order_id": "l8",
+      "kind": "CLOSE_SORTIE"
+    }
+  ]
+}

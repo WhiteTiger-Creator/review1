@@ -1,0 +1,73 @@
+{
+  "sortie_id": "sortie_04",
+  "seed": 44,
+  "fuel_budget": 500,
+  "hold_capacity": 40,
+  "claw_durability": 100,
+  "comm_blackout_ticks": 5,
+  "max_ticks": 50,
+  "burn_scale": 10,
+  "wear_per_grapple": 15,
+  "debris_threshold": 70,
+  "orbits": [
+    {
+      "orbit_id": "LEO",
+      "radius": 100
+    },
+    {
+      "orbit_id": "MEO",
+      "radius": 400
+    },
+    {
+      "orbit_id": "GEO",
+      "radius": 900
+    },
+    {
+      "orbit_id": "HEO",
+      "radius": 1600
+    }
+  ],
+  "windows": [
+    {
+      "from_orbit": "LEO",
+      "to_orbit": "MEO",
+      "open_tick": 0,
+      "close_tick": 2
+    }
+  ],
+  "wrecks": [
+    {
+      "wreck_id": "W04",
+      "orbit_id": "MEO",
+      "mass": 8
+    }
+  ],
+  "orders": [
+    {
+      "seq": 1,
+      "order_id": "d1",
+      "kind": "LAUNCH_CRAFT",
+      "craft_id": "OWL",
+      "orbit_id": "LEO"
+    },
+    {
+      "seq": 2,
+      "order_id": "d2",
+      "kind": "COAST_WAIT",
+      "craft_id": "OWL",
+      "ticks": 5
+    },
+    {
+      "seq": 3,
+      "order_id": "d3",
+      "kind": "TRANSFER_BURN",
+      "craft_id": "OWL",
+      "to_orbit": "MEO"
+    },
+    {
+      "seq": 4,
+      "order_id": "d4",
+      "kind": "CLOSE_SORTIE"
+    }
+  ]
+}

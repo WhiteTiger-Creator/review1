@@ -1,0 +1,116 @@
+{
+  "sortie_id": "sortie_18",
+  "seed": 181,
+  "fuel_budget": 600,
+  "hold_capacity": 30,
+  "claw_durability": 100,
+  "comm_blackout_ticks": 5,
+  "max_ticks": 60,
+  "burn_scale": 10,
+  "wear_per_grapple": 15,
+  "debris_threshold": 70,
+  "orbits": [
+    {
+      "orbit_id": "LEO",
+      "radius": 100
+    },
+    {
+      "orbit_id": "MEO",
+      "radius": 400
+    },
+    {
+      "orbit_id": "GEO",
+      "radius": 900
+    },
+    {
+      "orbit_id": "HEO",
+      "radius": 1600
+    }
+  ],
+  "windows": [
+    {
+      "from_orbit": "LEO",
+      "to_orbit": "MEO",
+      "open_tick": 0,
+      "close_tick": 40
+    }
+  ],
+  "wrecks": [
+    {
+      "wreck_id": "W18A",
+      "orbit_id": "LEO",
+      "mass": 8
+    },
+    {
+      "wreck_id": "W18B",
+      "orbit_id": "MEO",
+      "mass": 8
+    }
+  ],
+  "orders": [
+    {
+      "seq": 1,
+      "order_id": "r1",
+      "kind": "LAUNCH_CRAFT",
+      "craft_id": "A1",
+      "orbit_id": "LEO"
+    },
+    {
+      "seq": 2,
+      "order_id": "r2",
+      "kind": "LAUNCH_CRAFT",
+      "craft_id": "A2",
+      "orbit_id": "LEO"
+    },
+    {
+      "seq": 3,
+      "order_id": "r3",
+      "kind": "GRAPPLE_WRECK",
+      "craft_id": "A1",
+      "wreck_id": "W18A"
+    },
+    {
+      "seq": 4,
+      "order_id": "r4",
+      "kind": "STOW_MASS",
+      "craft_id": "A1"
+    },
+    {
+      "seq": 5,
+      "order_id": "r5",
+      "kind": "TRANSFER_BURN",
+      "craft_id": "A2",
+      "to_orbit": "MEO"
+    },
+    {
+      "seq": 6,
+      "order_id": "r6",
+      "kind": "GRAPPLE_WRECK",
+      "craft_id": "A2",
+      "wreck_id": "W18B"
+    },
+    {
+      "seq": 7,
+      "order_id": "r7",
+      "kind": "STOW_MASS",
+      "craft_id": "A2"
+    },
+    {
+      "seq": 8,
+      "order_id": "r8",
+      "kind": "RELAY_PING",
+      "craft_id": "A1"
+    },
+    {
+      "seq": 9,
+      "order_id": "r9",
+      "kind": "RELAY_PING",
+      "craft_id": "A2"
+    },
+    {
+      "seq": 10,
+      "order_id": "r10",
+      "kind": "CLOSE_SORTIE"
+    }
+  ]
+}

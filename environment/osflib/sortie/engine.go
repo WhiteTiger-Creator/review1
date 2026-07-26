@@ -1,138 +1,3 @@
-#!/usr/bin/env bash
-set -euo pipefail
-cd /app
-
-cat > /app/osflib/burn/delta.go <<'EOF'
-package burn
-
-import "math"
-
-func Cost(radiusSrc, radiusDst, burnScale int) int {
-	return burnScale * abs(isqrt(radiusDst)-isqrt(radiusSrc))
-}
-
-func isqrt(n int) int {
-	if n <= 0 {
-		return 0
-	}
-	return int(math.Sqrt(float64(n)))
-}
-
-func abs(n int) int {
-	if n < 0 {
-		return -n
-	}
-	return n
-}
-
-func ApplyOverrides(burnScale int, overrides map[string]interface{}) int {
-	if overrides == nil {
-		return burnScale
-	}
-	if v, ok := overrides["burn_scale"]; ok {
-		if n, ok := toInt(v); ok && n > 0 {
-			return n
-		}
-	}
-	return burnScale
-}
-
-func toInt(v interface{}) (int, bool) {
-	switch x := v.(type) {
-	case float64:
-		return int(x), true
-	case int:
-		return x, true
-	default:
-		return 0, false
-	}
-}
-EOF
-
-cat > /app/osflib/hold/cargo.go <<'EOF'
-package hold
-
-func WouldOverflow(used, mass, capacity int) bool {
-	return used+mass > capacity
-}
-
-func ApplyWearOverrides(wear int, overrides map[string]interface{}) int {
-	if overrides == nil {
-		return wear
-	}
-	if v, ok := overrides["wear_per_grapple"]; ok {
-		if n, ok := toInt(v); ok && n >= 0 {
-			return n
-		}
-	}
-	return wear
-}
-
-func toInt(v interface{}) (int, bool) {
-	switch x := v.(type) {
-	case float64:
-		return int(x), true
-	case int:
-		return x, true
-	default:
-		return 0, false
-	}
-}
-EOF
-
-cat > /app/osflib/signal/relay.go <<'EOF'
-package signal
-
-func DebrisRoll(seed, tick int, craftID string) int {
-	h := 0
-	for _, c := range craftID {
-		h = h*31 + int(c)
-	}
-	x := seed*1103515245 + tick*12345 + h*17
-	if x < 0 {
-		x = -x
-	}
-	return x % 100
-}
-
-func Strike(roll, threshold int) bool {
-	return roll >= threshold
-}
-
-func RelayLost(tick, lastRelay, blackout int) bool {
-	return tick-lastRelay > blackout
-}
-
-func ApplySignalOverrides(debrisThreshold, blackout int, overrides map[string]interface{}) (int, int) {
-	if overrides == nil {
-		return debrisThreshold, blackout
-	}
-	if v, ok := overrides["debris_threshold"]; ok {
-		if n, ok := toInt(v); ok {
-			debrisThreshold = n
-		}
-	}
-	if v, ok := overrides["comm_blackout_ticks"]; ok {
-		if n, ok := toInt(v); ok && n >= 0 {
-			blackout = n
-		}
-	}
-	return debrisThreshold, blackout
-}
-
-func toInt(v interface{}) (int, bool) {
-	switch x := v.(type) {
-	case float64:
-		return int(x), true
-	case int:
-		return x, true
-	default:
-		return 0, false
-	}
-}
-EOF
-
-cat > /app/osflib/sortie/engine.go <<'EOF'
 package sortie
 
 import (
@@ -176,21 +41,21 @@ type Order struct {
 }
 
 type Mission struct {
-	SortieID          string                 `json:"sortie_id"`
-	Seed              int                    `json:"seed"`
-	FuelBudget        int                    `json:"fuel_budget"`
-	HoldCapacity      int                    `json:"hold_capacity"`
-	ClawDurability    int                    `json:"claw_durability"`
-	CommBlackoutTicks int                    `json:"comm_blackout_ticks"`
-	MaxTicks          int                    `json:"max_ticks"`
-	BurnScale         int                    `json:"burn_scale"`
-	WearPerGrapple    int                    `json:"wear_per_grapple"`
-	DebrisThreshold   int                    `json:"debris_threshold"`
-	PolicyOverrides   map[string]interface{} `json:"policy_overrides"`
-	Orbits            []Orbit                `json:"orbits"`
-	Windows           []Window               `json:"windows"`
-	Wrecks            []WreckIn              `json:"wrecks"`
-	Orders            []Order                `json:"orders"`
+	SortieID           string                 `json:"sortie_id"`
+	Seed               int                    `json:"seed"`
+	FuelBudget         int                    `json:"fuel_budget"`
+	HoldCapacity       int                    `json:"hold_capacity"`
+	ClawDurability     int                    `json:"claw_durability"`
+	CommBlackoutTicks  int                    `json:"comm_blackout_ticks"`
+	MaxTicks           int                    `json:"max_ticks"`
+	BurnScale          int                    `json:"burn_scale"`
+	WearPerGrapple     int                    `json:"wear_per_grapple"`
+	DebrisThreshold    int                    `json:"debris_threshold"`
+	PolicyOverrides    map[string]interface{} `json:"policy_overrides"`
+	Orbits             []Orbit                `json:"orbits"`
+	Windows            []Window               `json:"windows"`
+	Wrecks             []WreckIn              `json:"wrecks"`
+	Orders             []Order                `json:"orders"`
 }
 
 type CraftOut struct {
@@ -211,15 +76,15 @@ type Incident struct {
 }
 
 type SortieOut struct {
-	SortieID               string     `json:"sortie_id"`
-	Status                 string     `json:"status"`
-	TicksElapsed           int        `json:"ticks_elapsed"`
-	FuelRemaining          int        `json:"fuel_remaining"`
-	HoldUsed               int        `json:"hold_used"`
-	WrecksRecovered        int        `json:"wrecks_recovered"`
-	DuplicateOrdersSkipped int        `json:"duplicate_orders_skipped"`
-	Crafts                 []CraftOut `json:"crafts"`
-	Incidents              []Incident `json:"incidents"`
+	SortieID                string     `json:"sortie_id"`
+	Status                  string     `json:"status"`
+	TicksElapsed            int        `json:"ticks_elapsed"`
+	FuelRemaining           int        `json:"fuel_remaining"`
+	HoldUsed                int        `json:"hold_used"`
+	WrecksRecovered         int        `json:"wrecks_recovered"`
+	DuplicateOrdersSkipped  int        `json:"duplicate_orders_skipped"`
+	Crafts                  []CraftOut `json:"crafts"`
+	Incidents               []Incident `json:"incidents"`
 }
 
 type Report struct {
@@ -290,7 +155,7 @@ func isFatal(code string) bool {
 
 func windowOpen(windows []Window, from, to string, tick int) bool {
 	for _, w := range windows {
-		if w.FromOrbit == from && w.ToOrbit == to && w.OpenTick <= tick && tick <= w.CloseTick {
+		if w.FromOrbit == from && w.ToOrbit == to && w.OpenTick <= tick && tick < w.CloseTick {
 			return true
 		}
 	}
@@ -359,10 +224,6 @@ func Analyze(m Mission) SortieOut {
 		}
 		seq := order.Seq
 		if order.OrderID != "" {
-			if _, ok := seen[order.OrderID]; ok {
-				dupSkipped++
-				continue
-			}
 			seen[order.OrderID] = struct{}{}
 		}
 
@@ -454,7 +315,7 @@ func Analyze(m Mission) SortieOut {
 				continue
 			}
 			cr.claw -= wear
-			if cr.claw <= 0 {
+			if cr.claw < 0 {
 				note("CLAW_JAMMED", order.CraftID, itoa(cr.claw), seq)
 				cr.state = "dead"
 				continue
@@ -587,8 +448,3 @@ func itoa(n int) string {
 	}
 	return string(buf)
 }
-EOF
-
-make clean || true
-make build
-make run

@@ -1,0 +1,78 @@
+{
+  "sortie_id": "sortie_11",
+  "seed": 111,
+  "fuel_budget": 500,
+  "hold_capacity": 40,
+  "claw_durability": 100,
+  "comm_blackout_ticks": 5,
+  "max_ticks": 50,
+  "burn_scale": 10,
+  "wear_per_grapple": 15,
+  "debris_threshold": 70,
+  "orbits": [
+    {
+      "orbit_id": "LEO",
+      "radius": 100
+    },
+    {
+      "orbit_id": "MEO",
+      "radius": 400
+    },
+    {
+      "orbit_id": "GEO",
+      "radius": 900
+    },
+    {
+      "orbit_id": "HEO",
+      "radius": 1600
+    }
+  ],
+  "windows": [],
+  "wrecks": [
+    {
+      "wreck_id": "W11",
+      "orbit_id": "LEO",
+      "mass": 4
+    }
+  ],
+  "orders": [
+    {
+      "seq": 1,
+      "order_id": "k1",
+      "kind": "LAUNCH_CRAFT",
+      "craft_id": "PUMA",
+      "orbit_id": "LEO"
+    },
+    {
+      "seq": 2,
+      "order_id": "k1",
+      "kind": "LAUNCH_CRAFT",
+      "craft_id": "PUMA2",
+      "orbit_id": "MEO"
+    },
+    {
+      "seq": 3,
+      "order_id": "k3",
+      "kind": "GRAPPLE_WRECK",
+      "craft_id": "PUMA",
+      "wreck_id": "W11"
+    },
+    {
+      "seq": 4,
+      "order_id": "k4",
+      "kind": "STOW_MASS",
+      "craft_id": "PUMA"
+    },
+    {
+      "seq": 5,
+      "order_id": "k5",
+      "kind": "RELAY_PING",
+      "craft_id": "PUMA"
+    },
+    {
+      "seq": 6,
+      "order_id": "k6",
+      "kind": "CLOSE_SORTIE"
+    }
+  ]
+}

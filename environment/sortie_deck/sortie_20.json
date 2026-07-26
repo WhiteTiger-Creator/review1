@@ -1,0 +1,92 @@
+{
+  "sortie_id": "sortie_20",
+  "seed": 201,
+  "fuel_budget": 500,
+  "hold_capacity": 40,
+  "claw_durability": 20,
+  "comm_blackout_ticks": 5,
+  "max_ticks": 50,
+  "burn_scale": 10,
+  "wear_per_grapple": 15,
+  "debris_threshold": 70,
+  "orbits": [
+    {
+      "orbit_id": "LEO",
+      "radius": 100
+    },
+    {
+      "orbit_id": "MEO",
+      "radius": 400
+    },
+    {
+      "orbit_id": "GEO",
+      "radius": 900
+    },
+    {
+      "orbit_id": "HEO",
+      "radius": 1600
+    }
+  ],
+  "windows": [],
+  "wrecks": [
+    {
+      "wreck_id": "W20A",
+      "orbit_id": "LEO",
+      "mass": 5
+    },
+    {
+      "wreck_id": "W20B",
+      "orbit_id": "LEO",
+      "mass": 5
+    }
+  ],
+  "orders": [
+    {
+      "seq": 1,
+      "order_id": "t1",
+      "kind": "LAUNCH_CRAFT",
+      "craft_id": "SWAN",
+      "orbit_id": "LEO"
+    },
+    {
+      "seq": 2,
+      "order_id": "t2",
+      "kind": "GRAPPLE_WRECK",
+      "craft_id": "SWAN",
+      "wreck_id": "W20A"
+    },
+    {
+      "seq": 3,
+      "order_id": "t3",
+      "kind": "STOW_MASS",
+      "craft_id": "SWAN"
+    },
+    {
+      "seq": 4,
+      "order_id": "t4",
+      "kind": "GRAPPLE_WRECK",
+      "craft_id": "SWAN",
+      "wreck_id": "W20B"
+    },
+    {
+      "seq": 5,
+      "order_id": "t5",
+      "kind": "STOW_MASS",
+      "craft_id": "SWAN"
+    },
+    {
+      "seq": 6,
+      "order_id": "t6",
+      "kind": "RELAY_PING",
+      "craft_id": "SWAN"
+    },
+    {
+      "seq": 7,
+      "order_id": "t7",
+      "kind": "CLOSE_SORTIE"
+    }
+  ],
+  "policy_overrides": {
+    "wear_per_grapple": 5
+  }
+}

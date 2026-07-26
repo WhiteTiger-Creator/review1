@@ -1,0 +1,72 @@
+{
+  "sortie_id": "sortie_05",
+  "seed": 7,
+  "fuel_budget": 500,
+  "hold_capacity": 40,
+  "claw_durability": 100,
+  "comm_blackout_ticks": 5,
+  "max_ticks": 50,
+  "burn_scale": 10,
+  "wear_per_grapple": 15,
+  "debris_threshold": 70,
+  "orbits": [
+    {
+      "orbit_id": "LEO",
+      "radius": 100
+    },
+    {
+      "orbit_id": "MEO",
+      "radius": 400
+    },
+    {
+      "orbit_id": "GEO",
+      "radius": 900
+    },
+    {
+      "orbit_id": "HEO",
+      "radius": 1600
+    }
+  ],
+  "windows": [
+    {
+      "from_orbit": "LEO",
+      "to_orbit": "MEO",
+      "open_tick": 0,
+      "close_tick": 30
+    }
+  ],
+  "wrecks": [
+    {
+      "wreck_id": "W05",
+      "orbit_id": "MEO",
+      "mass": 8
+    }
+  ],
+  "orders": [
+    {
+      "seq": 1,
+      "order_id": "e1",
+      "kind": "LAUNCH_CRAFT",
+      "craft_id": "DRAKE",
+      "orbit_id": "LEO"
+    },
+    {
+      "seq": 2,
+      "order_id": "e2",
+      "kind": "TRANSFER_BURN",
+      "craft_id": "DRAKE",
+      "to_orbit": "MEO"
+    },
+    {
+      "seq": 3,
+      "order_id": "e3",
+      "kind": "DEBRIS_SWEEP",
+      "craft_id": "DRAKE"
+    },
+    {
+      "seq": 4,
+      "order_id": "e4",
+      "kind": "CLOSE_SORTIE"
+    }
+  ]
+}

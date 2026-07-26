@@ -1,0 +1,59 @@
+{
+  "sortie_id": "sortie_16",
+  "seed": 161,
+  "fuel_budget": 500,
+  "hold_capacity": 40,
+  "claw_durability": 100,
+  "comm_blackout_ticks": 5,
+  "max_ticks": 3,
+  "burn_scale": 10,
+  "wear_per_grapple": 15,
+  "debris_threshold": 70,
+  "orbits": [
+    {
+      "orbit_id": "LEO",
+      "radius": 100
+    },
+    {
+      "orbit_id": "MEO",
+      "radius": 400
+    },
+    {
+      "orbit_id": "GEO",
+      "radius": 900
+    },
+    {
+      "orbit_id": "HEO",
+      "radius": 1600
+    }
+  ],
+  "windows": [],
+  "wrecks": [
+    {
+      "wreck_id": "W16",
+      "orbit_id": "LEO",
+      "mass": 3
+    }
+  ],
+  "orders": [
+    {
+      "seq": 1,
+      "order_id": "p1",
+      "kind": "LAUNCH_CRAFT",
+      "craft_id": "GULL",
+      "orbit_id": "LEO"
+    },
+    {
+      "seq": 2,
+      "order_id": "p2",
+      "kind": "COAST_WAIT",
+      "craft_id": "GULL",
+      "ticks": 10
+    },
+    {
+      "seq": 3,
+      "order_id": "p3",
+      "kind": "CLOSE_SORTIE"
+    }
+  ]
+}
