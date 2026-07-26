@@ -1,0 +1,7 @@
+# Dashboard shortlist overlay — ops coverage paging
+clip_max = 50.0
+propensity_floor = 0.001
+ess_threshold = 20.0
+ci_threshold = 0.25
+value_floor = 0.05
+legacy_reconcile = true

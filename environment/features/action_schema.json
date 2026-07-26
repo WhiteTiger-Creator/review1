@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "action_field": "action",
+  "propensity_field": "propensity",
+  "reward_field": "reward",
+  "context_field": "context_id",
+  "actions": [
+    "a0",
+    "a1",
+    "a2",
+    "a3"
+  ]
+}
