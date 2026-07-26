@@ -1,447 +1,455 @@
+#!/usr/bin/env python3
+"""Verifier: chironym selective-risk evaluation artifacts."""
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-from helpers.wakeclock_reference import reconcile
 
-APP_DIR = Path(os.environ.get("APP_DIR", "/app"))
-TESTS_DIR = Path(__file__).resolve().parent
-PUBLIC_FIXTURE_ROOT = TESTS_DIR / "fixtures" / "public_case"
-CANONICAL_OCCURRENCE_ID = re.compile(
-    r"^[^|]+\|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\|-?\d+\|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
-)
-
-
-def iter_fixture_occurrence_ids(fixture_root: Path) -> list[str]:
-    occurrence_ids: list[str] = []
-    snapshot = json.loads((fixture_root / "state" / "snapshot.json").read_text())
-    for item in snapshot.get("pending", []):
-        occurrence_ids.append(str(item["occurrence_id"]))
-    for cursor in snapshot.get("cursors", {}).values():
-        if cursor:
-            occurrence_ids.append(str(cursor))
-    journal_path = fixture_root / "state" / "journal.jsonl"
-    if journal_path.exists():
-        for line in journal_path.read_text().splitlines():
-            if line.strip():
-                record = json.loads(line)
-                occurrence_ids.extend(str(value) for value in record.get("occurrence_ids", []))
-    spool_dir = fixture_root / "state" / "spool"
-    if spool_dir.is_dir():
-        for path in spool_dir.glob("*.json"):
-            record = json.loads(path.read_text())
-            occurrence_ids.extend(str(value) for value in record.get("occurrence_ids", []))
-    return occurrence_ids
+ENV = Path("/app/environment")
+OUT = Path("/app/output")
+VAR = Path("/app/var")
+BIN = Path("/tmp/chironym_vbin")
+CTL = BIN / "chironymctl"
+EMBED = BIN / "k7"
+ALIGN = BIN / "m3"
+STUDIO_A = ENV / "data/campaigns/studio_a"
+STUDIO_B = ENV / "fixtures/studio_b"
 
 
-def assert_fixture_occurrence_ids_are_canonical(fixture_root: Path) -> None:
-    for occurrence_id in iter_fixture_occurrence_ids(fixture_root):
-        assert occurrence_id.count("|") == 3, occurrence_id
-        assert CANONICAL_OCCURRENCE_ID.match(occurrence_id), occurrence_id
+def sha256_bytes(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+def fnv1a32(s: str) -> int:
+    h = 2166136261
+    for ch in s.encode():
+        h ^= ch
+        h = (h * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def l2_normalize(v: list[float]) -> list[float]:
+    n = math.sqrt(sum(x * x for x in v))
+    if n == 0:
+        return v
+    return [x / n for x in v]
+
+
+def cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + math.exp(-x))
+
+
+def match_rate(hyp: list[str], ref: list[str]) -> float:
+    n, m = len(hyp), len(ref)
+    lim = min(n, m)
+    eq = sum(1 for i in range(lim) if hyp[i] == ref[i])
+    return (eq / lim) * (lim / max(n, m))
+
+
+def softmin(gamma: float, x: float, y: float, z: float) -> float:
+    return -gamma * math.log(math.exp(-x / gamma) + math.exp(-y / gamma) + math.exp(-z / gamma))
+
+
+def fit_embeddings(pack: dict, pol: dict) -> dict[str, list[float]]:
+    vocab = sorted(
+        {
+            t
+            for u in pack["utterances"]
+            for t in list(u["hyp"]) + list(u["ref"])
+        }
+    )
+    dim = pol["embed_dim"]
+    emb: dict[str, list[float]] = {}
+    for t in vocab:
+        h = (fnv1a32(t) % 10007) + 1
+        v = [math.sin(h * (k + 1) * 1e-3) for k in range(dim)]
+        emb[t] = l2_normalize(v)
+    pairs = []
+    for u in pack["utterances"]:
+        if u["fold"] != "train":
+            continue
+        for i in range(min(len(u["hyp"]), len(u["ref"]))):
+            pairs.append((u["hyp"][i], u["ref"][i]))
+    lr = pol["infonce_lr"]
+    for _ in range(pol["infonce_steps"]):
+        for a_tok, p_tok in pairs:
+            a = emb[a_tok][:]
+            p = emb[p_tok][:]
+            mid = l2_normalize([a[k] + p[k] for k in range(dim)])
+            na = l2_normalize([(1 - lr) * a[k] + lr * mid[k] for k in range(dim)])
+            np = l2_normalize([(1 - lr) * p[k] + lr * mid[k] for k in range(dim)])
+            emb[a_tok] = na
+            emb[p_tok] = np
+    return emb
+
+
+def soft_dtw_score(hyp, ref, emb, gamma, gap) -> float:
+    n, m = len(hyp), len(ref)
+    c = [[1.0 - cosine(emb[hyp[i]], emb[ref[j]]) for j in range(m)] for i in range(n)]
+    r = [[0.0] * m for _ in range(n)]
+    r[0][0] = c[0][0]
+    for i in range(1, n):
+        r[i][0] = c[i][0] + r[i - 1][0] + gap
+    for j in range(1, m):
+        r[0][j] = c[0][j] + r[0][j - 1] + gap
+    for i in range(1, n):
+        for j in range(1, m):
+            r[i][j] = c[i][j] + softmin(gamma, r[i - 1][j], r[i][j - 1], r[i - 1][j - 1])
+    raw = r[n - 1][m - 1]
+    return 1.0 / (1.0 + raw / max(n, m))
+
+
+def embed_digest(emb: dict[str, list[float]]) -> str:
+    parts = []
+    for k in sorted(emb):
+        parts.append(k)
+        parts.append(",".join(f"{x:.6f}" for x in emb[k]))
+    blob = "\n".join(parts) + "\n"
+    return sha256_bytes(blob.encode())
+
+
+def expected_bundle(camp_dir: Path) -> dict:
+    pack_bytes = (camp_dir / "pack.json").read_bytes()
+    pol_bytes = (camp_dir / "policy.json").read_bytes()
+    pack = json.loads(pack_bytes)
+    pol = json.loads(pol_bytes)
+    emb = fit_embeddings(pack, pol)
+    ed = embed_digest(emb)
+    rows = []
+    for u in pack["utterances"]:
+        score = soft_dtw_score(u["hyp"], u["ref"], emb, pol["soft_dtw_gamma"], pol["gap_cost"])
+        mr = match_rate(u["hyp"], u["ref"])
+        y = 1 if mr >= 0.75 else 0
+        rows.append({"utt": u, "score": score, "y": y})
+    best_t = pol["temp_grid"][0]
+    best_nll = float("inf")
+    for T in pol["temp_grid"]:
+        nll = 0.0
+        n = 0
+        for r in rows:
+            if r["utt"]["fold"] != "calib":
+                continue
+            p = sigmoid(r["score"] / T)
+            y = r["y"]
+            nll += -(y * math.log(p + 1e-12) + (1 - y) * math.log(1 - p + 1e-12))
+            n += 1
+        nll /= max(n, 1)
+        if nll < best_nll or (nll == best_nll and T < best_t):
+            best_nll = nll
+            best_t = T
+    for r in rows:
+        r["conf"] = sigmoid(r["score"] / best_t)
+    calib = [r for r in rows if r["utt"]["fold"] == "calib"]
+    best_thr = pol["thr_grid"][-1]
+    best_cov = -1.0
+    found = False
+    for thr in pol["thr_grid"]:
+        accepted = [r for r in calib if r["conf"] >= thr]
+        if not accepted:
+            continue
+        cov = len(accepted) / len(calib)
+        risk = sum(1 - r["y"] for r in accepted) / len(accepted)
+        if risk <= pol["risk_target"]:
+            if not found or cov > best_cov or (cov == best_cov and thr < best_thr):
+                found = True
+                best_cov = cov
+                best_thr = thr
+    for r in rows:
+        r["accepted"] = r["conf"] >= best_thr
+
+    def cov_risk(fold: str):
+        xs = [r for r in rows if r["utt"]["fold"] == fold]
+        if not xs:
+            return 0.0, 0.0
+        acc = [r for r in xs if r["accepted"]]
+        cov = len(acc) / len(xs)
+        risk = (sum(1 - r["y"] for r in acc) / len(acc)) if acc else 0.0
+        return cov, risk
+
+    calib_cov, calib_risk = cov_risk("calib")
+    eval_cov, eval_risk = cov_risk("eval")
+    pd, pold = sha256_bytes(pack_bytes), sha256_bytes(pol_bytes)
+    bd = sha256_bytes(
+        f"{pd}:{pold}:{ed}:{best_thr:.4f}:{best_t:.4f}".encode()
+    )
+    utt_sorted = sorted(rows, key=lambda r: r["utt"]["utt_id"])
+    return {
+        "campaign_id": pack["campaign_id"],
+        "pack_digest": pd,
+        "policy_digest": pold,
+        "embed_digest": ed,
+        "bundle_digest": bd,
+        "temperature": best_t,
+        "threshold": best_thr,
+        "calib_coverage": calib_cov,
+        "calib_risk": calib_risk,
+        "eval_coverage": eval_cov,
+        "eval_risk": eval_risk,
+        "rows": utt_sorted,
+    }
+
+
+def rebuild():
+    if BIN.exists():
+        shutil.rmtree(BIN)
+    BIN.mkdir(parents=True)
+    env = os.environ.copy()
+    env["CARGO_TARGET_DIR"] = str(BIN / "target_k7")
+    subprocess.check_call(
+        ["cargo", "build", "--release", "--manifest-path", str(ENV / "k7/Cargo.toml")],
+        cwd=str(ENV),
+        env=env,
+    )
+    env["CARGO_TARGET_DIR"] = str(BIN / "target_m3")
+    subprocess.check_call(
+        ["cargo", "build", "--release", "--manifest-path", str(ENV / "m3/Cargo.toml")],
+        cwd=str(ENV),
+        env=env,
+    )
+    shutil.copy(BIN / "target_k7/release/k7", EMBED)
+    shutil.copy(BIN / "target_m3/release/m3", ALIGN)
+    EMBED.chmod(0o755)
+    ALIGN.chmod(0o755)
+    subprocess.check_call(["go", "build", "-o", str(CTL), "./cmd/chironymctl"], cwd=str(ENV))
+    # also refresh /app/bin for process defaults
+    shutil.copy(EMBED, "/app/bin/k7")
+    shutil.copy(ALIGN, "/app/bin/m3")
+    shutil.copy(CTL, "/app/bin/chironymctl")
+
+
+def reset_io():
+    if OUT.exists():
+        shutil.rmtree(OUT)
+    if VAR.exists():
+        shutil.rmtree(VAR)
+    OUT.mkdir(parents=True)
+    VAR.mkdir(parents=True)
+    memo = VAR / "chironym_align_memo.json"
+    if memo.exists():
+        memo.unlink()
+
+
+def run_eval(campaign: Path, out: Path = OUT):
+    env = os.environ.copy()
+    env["CHIRONYM_EMBED_BIN"] = str(EMBED)
+    env["CHIRONYM_ALIGN_BIN"] = str(ALIGN)
+    subprocess.check_call([str(CTL), "prepare", "--output", str(out)], env=env)
+    return subprocess.run(
+        [str(CTL), "evaluate", "--campaign", str(campaign), "--output", str(out)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _validate_public_fixture_occurrence_ids() -> None:
-    assert_fixture_occurrence_ids_are_canonical(PUBLIC_FIXTURE_ROOT)
+def _build_once():
+    rebuild()
 
 
-@pytest.fixture(scope="session")
-def binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    destination = tmp_path_factory.mktemp("bin") / "wakeclock"
-    subprocess.run(
-        ["go", "build", "-o", str(destination), "./cmd/wakeclock"],
-        cwd=APP_DIR,
-        check=True,
+def assert_matches_expected(camp: Path, out: Path, stdout: str):
+    exp = expected_bundle(camp)
+    report = json.loads((out / "align_report.json").read_text())
+    state = json.loads((out / "campaign_state.json").read_text())
+    log = (out / "eval_summary.log").read_text().splitlines()
+    csv_lines = (out / "utterance_scores.csv").read_text().splitlines()
+    assert report["campaign_id"] == exp["campaign_id"]
+    assert report["pack_digest"] == exp["pack_digest"]
+    assert report["policy_digest"] == exp["policy_digest"]
+    assert report["embed_digest"] == exp["embed_digest"]
+    assert report["bundle_digest"] == exp["bundle_digest"]
+    assert abs(report["temperature"] - exp["temperature"]) < 1e-9
+    assert abs(report["threshold"] - exp["threshold"]) < 1e-9
+    assert abs(report["eval_coverage"] - exp["eval_coverage"]) < 1e-6
+    assert abs(report["eval_risk"] - exp["eval_risk"]) < 1e-6
+    assert abs(report["calib_coverage"] - exp["calib_coverage"]) < 1e-6
+    assert abs(report["calib_risk"] - exp["calib_risk"]) < 1e-6
+    assert state["bundle_digest"] == exp["bundle_digest"]
+    assert state["epoch"] >= 1
+    assert f"BUNDLE_DIGEST={exp['bundle_digest']}" in stdout
+    assert f"TOP_ACCEPT_RATE={exp['eval_coverage']:.6f}" in stdout
+    assert f"EPOCH={state['epoch']}" in stdout
+    assert log[0] == f"CAMPAIGN={exp['campaign_id']}"
+    assert log[5] == f"BUNDLE_DIGEST={exp['bundle_digest']}"
+    assert csv_lines[0] == "utt_id,fold,score,conf,accepted,y"
+    by_id = {r["utt_id"]: r for r in report["utterances"]}
+    for er in exp["rows"]:
+        uid = er["utt"]["utt_id"]
+        got = by_id[uid]
+        assert abs(got["score"] - er["score"]) < 1e-5
+        assert abs(got["conf"] - er["conf"]) < 1e-5
+        assert got["accepted"] == er["accepted"]
+        assert got["y"] == er["y"]
+    # csv agreement
+    for line in csv_lines[1:]:
+        utt_id, fold, score, conf, accepted, y = line.split(",")
+        got = by_id[utt_id]
+        assert fold == got["fold"]
+        assert abs(float(score) - got["score"]) < 1e-6
+        assert abs(float(conf) - got["conf"]) < 1e-6
+        assert int(accepted) == (1 if got["accepted"] else 0)
+        assert int(y) == got["y"]
+    ledger = json.loads((VAR / "chironym_ledger.json").read_text())
+    assert ledger[-1]["bundle_digest"] == exp["bundle_digest"]
+    hist = (out / "risk_history.jsonl").read_text().strip().splitlines()
+    last = json.loads(hist[-1])
+    assert last["bundle_digest"] == exp["bundle_digest"]
+    mirror = json.loads((VAR / "chironym_state.json").read_text())
+    assert mirror["bundle_digest"] == state["bundle_digest"]
+    assert mirror["epoch"] == state["epoch"]
+
+
+def test_studio_a_contract_bundle():
+    reset_io()
+    proc = run_eval(STUDIO_A)
+    assert proc.returncode == 0, proc.stderr
+    assert_matches_expected(STUDIO_A, OUT, proc.stdout)
+
+
+def test_studio_b_fixture_bundle():
+    reset_io()
+    proc = run_eval(STUDIO_B)
+    assert proc.returncode == 0, proc.stderr
+    assert_matches_expected(STUDIO_B, OUT, proc.stdout)
+
+
+def test_unarmed_fails_closed():
+    reset_io()
+    env = os.environ.copy()
+    env["CHIRONYM_EMBED_BIN"] = str(EMBED)
+    env["CHIRONYM_ALIGN_BIN"] = str(ALIGN)
+    proc = subprocess.run(
+        [str(CTL), "evaluate", "--campaign", str(STUDIO_A), "--output", str(OUT)],
+        env=env,
         capture_output=True,
         text=True,
     )
-    return destination
+    assert proc.returncode != 0
+    assert proc.stderr.startswith("chironym output not armed:")
+    assert not (VAR / "chironym_ledger.json").exists()
 
 
-def copy_case(tmp_path: Path) -> tuple[Path, Path, Path]:
-    units = tmp_path / "units"
-    state = tmp_path / "state"
-    clock = tmp_path / "clock.jsonl"
-    shutil.copytree(PUBLIC_FIXTURE_ROOT / "units", units)
-    shutil.copytree(PUBLIC_FIXTURE_ROOT / "state", state)
-    (state / "spool").mkdir(exist_ok=True)
-    shutil.copy2(PUBLIC_FIXTURE_ROOT / "clock" / "trace.jsonl", clock)
-    return units, state, clock
-
-
-def run_candidate(
-    binary: Path,
-    units: Path,
-    state: Path,
-    clock: Path,
-    output: Path,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [
-            str(binary),
-            "reconcile",
-            "--units",
-            str(units),
-            "--state",
-            str(state),
-            "--clock",
-            str(clock),
-            "--output",
-            str(output),
-        ],
-        check=False,
+def test_invalid_campaign_fails_closed():
+    reset_io()
+    bad = OUT / "scratch_bad"
+    bad.mkdir(parents=True)
+    (bad / "pack.json").write_text("{}")
+    # missing policy
+    env = os.environ.copy()
+    env["CHIRONYM_EMBED_BIN"] = str(EMBED)
+    env["CHIRONYM_ALIGN_BIN"] = str(ALIGN)
+    subprocess.check_call([str(CTL), "prepare", "--output", str(OUT)], env=env)
+    proc = subprocess.run(
+        [str(CTL), "evaluate", "--campaign", str(bad), "--output", str(OUT)],
+        env=env,
         capture_output=True,
         text=True,
     )
+    assert proc.returncode != 0
+    assert proc.stderr.startswith("invalid chironym campaign:")
+    assert not (VAR / "chironym_ledger.json").exists()
 
 
-def assert_matches_reference(
-    binary: Path,
-    units: Path,
-    state: Path,
-    clock: Path,
-    output: Path,
-) -> dict[str, object]:
-    expected_report, expected_state, expected_journal, expected_spools = reconcile(
-        units, state, clock
+def test_repeat_stable_under_unchanged_inputs():
+    reset_io()
+    p1 = run_eval(STUDIO_A)
+    assert p1.returncode == 0
+    r1 = (OUT / "align_report.json").read_bytes()
+    c1 = (OUT / "utterance_scores.csv").read_bytes()
+    e1 = json.loads((OUT / "campaign_state.json").read_text())["epoch"]
+    p2 = run_eval(STUDIO_A)
+    assert p2.returncode == 0
+    r2 = (OUT / "align_report.json").read_bytes()
+    c2 = (OUT / "utterance_scores.csv").read_bytes()
+    e2 = json.loads((OUT / "campaign_state.json").read_text())["epoch"]
+    assert r1 == r2
+    assert c1 == c2
+    assert e2 == e1 + 1
+
+
+def test_policy_gamma_mutation_refreshes_bundle():
+    reset_io()
+    scratch = OUT / "scratch_mut"
+    shutil.copytree(STUDIO_A, scratch)
+    p1 = run_eval(scratch)
+    assert p1.returncode == 0
+    d1 = json.loads((OUT / "align_report.json").read_text())["bundle_digest"]
+    pol = json.loads((scratch / "policy.json").read_text())
+    pol["soft_dtw_gamma"] = round(pol["soft_dtw_gamma"] + 0.17, 4)
+    (scratch / "policy.json").write_text(json.dumps(pol, indent=2) + "\n")
+    # new output dir to avoid history confusion; still same process memo
+    out2 = OUT / "scratch_b"
+    out2.mkdir()
+    env = os.environ.copy()
+    env["CHIRONYM_EMBED_BIN"] = str(EMBED)
+    env["CHIRONYM_ALIGN_BIN"] = str(ALIGN)
+    subprocess.check_call([str(CTL), "prepare", "--output", str(out2)], env=env)
+    p2 = subprocess.run(
+        [str(CTL), "evaluate", "--campaign", str(scratch), "--output", str(out2)],
+        env=env,
+        capture_output=True,
+        text=True,
     )
-    result = run_candidate(binary, units, state, clock, output)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == ""
-    assert result.stderr == ""
-    assert json.loads(output.read_text()) == expected_report
-    assert json.loads((state / "snapshot.json").read_text()) == expected_state
-    actual_journal = [
-        json.loads(line)
-        for line in (state / "journal.jsonl").read_text().splitlines()
-        if line.strip()
-    ]
-    assert actual_journal == expected_journal
-    for activation_id, spool in expected_spools.items():
-        assert json.loads((state / "spool" / f"{activation_id}.json").read_text()) == spool
-    assert output.read_bytes().endswith(b"\n")
-    return expected_report
+    assert p2.returncode == 0, p2.stderr
+    d2 = json.loads((out2 / "align_report.json").read_text())["bundle_digest"]
+    assert d1 != d2
+    assert_matches_expected(scratch, out2, p2.stdout)
 
 
-def write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2) + "\n")
-
-
-def write_trace(path: Path, events: list[dict[str, object]]) -> None:
-    path.write_text("".join(json.dumps(item, separators=(",", ":")) + "\n" for item in events))
-
-
-def initial_state(utc: str) -> dict[str, object]:
-    return {
-        "schema_version": "wakeclock.state.v1",
-        "trace_seq": 0,
-        "clock_utc": utc,
-        "high_water_utc": utc,
-        "boot_id": "initial",
-        "pending": [],
-        "committed_ids": [],
-        "last_activation": {},
-        "cursors": {},
-    }
-
-
-def unit(
-    unit_id: str,
-    timezone: str,
-    hour: int,
-    minute: int,
-    *,
-    delay: int = 0,
-    accuracy: int = 0,
-    depends_on: list[str] | None = None,
-    priority: int = 0,
-    persistent: bool = True,
-    cap: int = 8,
-) -> dict[str, object]:
-    return {
-        "schema_version": "wakeclock.unit.v1",
-        "unit_id": unit_id,
-        "timezone": timezone,
-        "hour": hour,
-        "minute": minute,
-        "weekdays": [0, 1, 2, 3, 4, 5, 6],
-        "persistent": persistent,
-        "random_delay_sec": delay,
-        "accuracy_sec": accuracy,
-        "depends_on": depends_on or [],
-        "priority": priority,
-        "enabled": True,
-        "catch_up_cap": cap,
-        "salt": f"{unit_id}-salt",
-    }
-
-
-def test_public_fold_recovery_contract_matches_independent_model(
-    binary: Path, tmp_path: Path
-) -> None:
-    """The bundled fold, dependency, and recovery stream matches an independent model."""
-    units, state, clock = copy_case(tmp_path)
-    report = assert_matches_reference(binary, units, state, clock, tmp_path / "out/report.json")
-    fold_ids = [
-        occurrence_id
-        for activation in report["activations"]
-        for occurrence_id in activation["occurrence_ids"]
-        if occurrence_id.startswith("index|2026-11-01T01:30:00|")
-    ]
-    assert len(fold_ids) == 2
-    assert len(set(fold_ids)) == 2
-    paired = [
-        activation
-        for activation in report["activations"]
-        if set(activation["unit_ids"]) == {"index", "archive"}
-    ]
-    assert all(activation["unit_ids"] == ["index", "archive"] for activation in paired)
-
-
-def test_spring_gap_and_fall_fold_are_utc_first(binary: Path, tmp_path: Path) -> None:
-    """UTC-first enumeration must omit a spring gap and preserve both fall-fold instants."""
-    units = tmp_path / "units"
-    units.mkdir()
-    write_json(units / "fold.timer.json", unit("fold", "America/New_York", 1, 30))
-    write_json(units / "gap.timer.json", unit("gap", "America/New_York", 2, 30))
-    state = tmp_path / "state"
-    (state / "spool").mkdir(parents=True)
-    write_json(state / "snapshot.json", initial_state("2026-03-08T05:00:00Z"))
-    (state / "journal.jsonl").write_text("")
-    clock = tmp_path / "clock.jsonl"
-    write_trace(
-        clock,
-        [
-            {"seq": 1, "kind": "advance", "utc": "2026-03-08T08:00:00Z"},
-            {"seq": 2, "kind": "advance", "utc": "2026-11-01T07:00:00Z"},
-        ],
+def test_pack_token_mutation_refreshes_scores():
+    reset_io()
+    scratch = OUT / "scratch_a"
+    shutil.copytree(STUDIO_A, scratch)
+    p1 = run_eval(scratch)
+    assert p1.returncode == 0
+    s1 = json.loads((OUT / "align_report.json").read_text())["utterances"][0]["score"]
+    pack = json.loads((scratch / "pack.json").read_text())
+    # mutate an eval hyp token
+    for u in pack["utterances"]:
+        if u["fold"] == "eval":
+            u["hyp"][0] = u["hyp"][0] + "X"
+            break
+    (scratch / "pack.json").write_text(json.dumps(pack, indent=2) + "\n")
+    out2 = OUT / "scratch_b"
+    out2.mkdir()
+    env = os.environ.copy()
+    env["CHIRONYM_EMBED_BIN"] = str(EMBED)
+    env["CHIRONYM_ALIGN_BIN"] = str(ALIGN)
+    subprocess.check_call([str(CTL), "prepare", "--output", str(out2)], env=env)
+    p2 = subprocess.run(
+        [str(CTL), "evaluate", "--campaign", str(scratch), "--output", str(out2)],
+        env=env,
+        capture_output=True,
+        text=True,
     )
-    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
-    all_ids = [
-        occurrence_id
-        for activation in report["activations"]
-        for occurrence_id in activation["occurrence_ids"]
-    ]
-    assert not any(item.startswith("gap|2026-03-08T02:30:00|") for item in all_ids)
-    assert sum(item.startswith("fold|2026-11-01T01:30:00|") for item in all_ids) == 2
+    assert p2.returncode == 0, p2.stderr
+    assert_matches_expected(scratch, out2, p2.stdout)
+    s2 = json.loads((out2 / "align_report.json").read_text())["utterances"][0]["score"]
+    # not asserting s1!=s2 always, but digests must differ
+    d1 = json.loads((OUT / "align_report.json").read_text())["bundle_digest"]
+    d2 = json.loads((out2 / "align_report.json").read_text())["bundle_digest"]
+    assert d1 != d2
+    _ = s1, s2
 
 
-def test_delay_and_results_ignore_unit_filename_order(binary: Path, tmp_path: Path) -> None:
-    """Stable delay and relevant activations must ignore filenames and unrelated units."""
-    units_a, state_a, clock_a = copy_case(tmp_path / "a")
-    units_b, state_b, clock_b = copy_case(tmp_path / "b")
-    for index, path in enumerate(sorted(units_b.glob("*.timer.json"), reverse=True)):
-        path.rename(units_b / f"renamed-{index}.timer.json")
-    write_json(
-        units_b / "unrelated.timer.json",
-        unit("unrelated", "UTC", 23, 59, delay=999, accuracy=1),
-    )
-    out_a = tmp_path / "a.json"
-    out_b = tmp_path / "b.json"
-    report_a = assert_matches_reference(binary, units_a, state_a, clock_a, out_a)
-    report_b = assert_matches_reference(binary, units_b, state_b, clock_b, out_b)
-    relevant_a = [item for item in report_a["activations"] if "unrelated" not in item["unit_ids"]]
-    relevant_b = [item for item in report_b["activations"] if "unrelated" not in item["unit_ids"]]
-    assert relevant_a == relevant_b
-
-
-def test_coalescing_uses_delayed_windows_and_dependency_topology(
-    binary: Path, tmp_path: Path
-) -> None:
-    """Delayed-window intersection and dependency topology determine one dispatch order."""
-    units = tmp_path / "units"
-    units.mkdir()
-    write_json(units / "base.timer.json", unit("base", "UTC", 0, 1, accuracy=30, priority=1))
-    write_json(
-        units / "child.timer.json",
-        unit("child", "UTC", 0, 2, accuracy=30, depends_on=["base"], priority=99),
-    )
-    state = tmp_path / "state"
-    (state / "spool").mkdir(parents=True)
-    snapshot = initial_state("2026-01-01T00:04:00Z")
-    snapshot["pending"] = [
-        {
-            "unit_id": "base",
-            "occurrence_id": "base|2026-01-01T00:01:00|0|2026-01-01T00:01:00Z",
-            "scheduled_local": "2026-01-01T00:01:00",
-            "scheduled_utc": "2026-01-01T00:01:00Z",
-            "offset_sec": 0,
-            "delayed_utc": "2026-01-01T00:02:10Z",
-            "accuracy_sec": 30,
-            "priority": 1,
-            "depends_on": [],
-        },
-        {
-            "unit_id": "child",
-            "occurrence_id": "child|2026-01-01T00:02:00|0|2026-01-01T00:02:00Z",
-            "scheduled_local": "2026-01-01T00:02:00",
-            "scheduled_utc": "2026-01-01T00:02:00Z",
-            "offset_sec": 0,
-            "delayed_utc": "2026-01-01T00:02:20Z",
-            "accuracy_sec": 30,
-            "priority": 99,
-            "depends_on": ["base"],
-        },
-    ]
-    write_json(state / "snapshot.json", snapshot)
-    (state / "journal.jsonl").write_text("")
-    clock = tmp_path / "clock.jsonl"
-    write_trace(clock, [{"seq": 1, "kind": "set", "utc": "2026-01-01T00:04:00Z"}])
-    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
-    assert report["activations"][0]["unit_ids"] == ["base", "child"]
-
-
-def test_prepare_only_is_discarded_and_retried(binary: Path, tmp_path: Path) -> None:
-    """A lone prepare is removed while its occurrence remains available for one retry."""
-    units = tmp_path / "units"
-    units.mkdir()
-    write_json(units / "job.timer.json", unit("job", "UTC", 0, 0))
-    state = tmp_path / "state"
-    (state / "spool").mkdir(parents=True)
-    pending = {
-        "unit_id": "job",
-        "occurrence_id": "job|2026-01-01T00:00:00|0|2026-01-01T00:00:00Z",
-        "scheduled_local": "2026-01-01T00:00:00",
-        "scheduled_utc": "2026-01-01T00:00:00Z",
-        "offset_sec": 0,
-        "delayed_utc": "2026-01-01T00:00:00Z",
-        "accuracy_sec": 0,
-        "priority": 0,
-        "depends_on": [],
-    }
-    snapshot = initial_state("2026-01-01T00:00:00Z")
-    snapshot["pending"] = [pending]
-    write_json(state / "snapshot.json", snapshot)
-    prepare = {
-        "activation_id": "orphan-prepare",
-        "phase": "prepare",
-        "group_id": "orphan-group",
-        "occurrence_ids": [pending["occurrence_id"]],
-    }
-    (state / "journal.jsonl").write_text(json.dumps(prepare, separators=(",", ":")) + "\n")
-    clock = tmp_path / "clock.jsonl"
-    write_trace(clock, [{"seq": 1, "kind": "advance", "utc": "2026-01-01T00:00:01Z"}])
-    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
-    assert report["recovered"] == [
-        {"activation_id": "orphan-prepare", "decision": "discarded_prepare"}
-    ]
-    assert len(report["activations"]) == 1
-
-
-@pytest.mark.parametrize("phase_count", [2, 3])
-def test_spooled_and_committed_partial_state_recovers_once(
-    binary: Path, tmp_path: Path, phase_count: int
-) -> None:
-    """Spooled and committed partial dispatches recover exactly once from durable evidence."""
-    units = tmp_path / "units"
-    units.mkdir()
-    write_json(units / "job.timer.json", unit("job", "UTC", 0, 0))
-    state = tmp_path / "state"
-    (state / "spool").mkdir(parents=True)
-    pending = {
-        "unit_id": "job",
-        "occurrence_id": "job|2026-01-01T00:00:00|0|2026-01-01T00:00:00Z",
-        "scheduled_local": "2026-01-01T00:00:00",
-        "scheduled_utc": "2026-01-01T00:00:00Z",
-        "offset_sec": 0,
-        "delayed_utc": "2026-01-01T00:00:00Z",
-        "accuracy_sec": 0,
-        "priority": 0,
-        "depends_on": [],
-    }
-    snapshot = initial_state("2026-01-01T00:00:00Z")
-    snapshot["pending"] = [pending]
-    write_json(state / "snapshot.json", snapshot)
-    activation_id = "partial-activation"
-    group_id = "partial-group"
-    records = [
-        {
-            "activation_id": activation_id,
-            "phase": phase,
-            "group_id": group_id,
-            "occurrence_ids": [pending["occurrence_id"]],
-        }
-        for phase in ("prepare", "spool", "commit")[:phase_count]
-    ]
-    (state / "journal.jsonl").write_text(
-        "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records)
-    )
-    write_json(
-        state / "spool" / f"{activation_id}.json",
-        {
-            "activation_id": activation_id,
-            "group_id": group_id,
-            "effective_utc": "2026-01-01T00:00:00Z",
-            "unit_ids": ["job"],
-            "occurrence_ids": [pending["occurrence_id"]],
-        },
-    )
-    clock = tmp_path / "clock.jsonl"
-    clock.write_text("")
-    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
-    expected = "completed_spool" if phase_count == 2 else "replayed_commit"
-    assert report["recovered"] == [{"activation_id": activation_id, "decision": expected}]
-    first_state = (state / "snapshot.json").read_bytes()
-    first_journal = (state / "journal.jsonl").read_bytes()
-    second = run_candidate(binary, units, state, clock, tmp_path / "second.json")
-    assert second.returncode == 0
-    assert (state / "snapshot.json").read_bytes() == first_state
-    assert (state / "journal.jsonl").read_bytes() == first_journal
-    assert json.loads((tmp_path / "second.json").read_text())["recovered"] == []
-
-
-def test_backward_clock_rerun_is_idempotent(binary: Path, tmp_path: Path) -> None:
-    """Backward clock history and a completed rerun must not recreate durable work."""
-    units, state, clock = copy_case(tmp_path)
-    output = tmp_path / "first.json"
-    assert_matches_reference(binary, units, state, clock, output)
-    snapshot = (state / "snapshot.json").read_bytes()
-    journal = (state / "journal.jsonl").read_bytes()
-    spool_bytes = {path.name: path.read_bytes() for path in (state / "spool").glob("*.json")}
-    second = run_candidate(binary, units, state, clock, tmp_path / "second.json")
-    assert second.returncode == 0
-    assert (state / "snapshot.json").read_bytes() == snapshot
-    assert (state / "journal.jsonl").read_bytes() == journal
-    assert {path.name: path.read_bytes() for path in (state / "spool").glob("*.json")} == spool_bytes
-    second_report = json.loads((tmp_path / "second.json").read_text())
-    assert second_report["activations"] == []
-    assert second_report["recovered"] == []
-
-
-@pytest.mark.parametrize("invalid_kind", ["cycle", "trace"])
-def test_invalid_inputs_preserve_state_and_output(
-    binary: Path, tmp_path: Path, invalid_kind: str
-) -> None:
-    """Invalid dependencies and traces must preserve every durable byte and report sentinel."""
-    units, state, clock = copy_case(tmp_path)
-    if invalid_kind == "cycle":
-        index_path = units / "10-index.timer.json"
-        index = json.loads(index_path.read_text())
-        index["depends_on"] = ["archive"]
-        write_json(index_path, index)
-    else:
-        write_trace(
-            clock,
-            [
-                {"seq": 2, "kind": "advance", "utc": "2026-11-01T05:00:00Z"},
-                {"seq": 1, "kind": "advance", "utc": "2026-11-01T06:00:00Z"},
-            ],
-        )
-    before = {path.relative_to(state): path.read_bytes() for path in state.rglob("*") if path.is_file()}
-    output = tmp_path / "report.json"
-    output.write_bytes(b"sentinel\n")
-    result = run_candidate(binary, units, state, clock, output)
-    assert result.returncode != 0
-    assert result.stdout == ""
-    assert result.stderr.startswith("wakeclock: ")
-    assert result.stderr.count("\n") == 1
-    after = {path.relative_to(state): path.read_bytes() for path in state.rglob("*") if path.is_file()}
-    assert after == before
-    assert output.read_bytes() == b"sentinel\n"
+def test_cross_artifact_cli_agreement():
+    reset_io()
+    proc = run_eval(STUDIO_A)
+    assert proc.returncode == 0
+    assert_matches_expected(STUDIO_A, OUT, proc.stdout)
