@@ -1,172 +1,201 @@
+"""Verifier for federation consumer-trust cutover authorization."""
+
+from __future__ import annotations
+
+import hashlib
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-ROOT = Path("/app")
-SRC = ROOT / "main.go"
-BIN = ROOT / "bin" / "crystal-orbit-inventory"
-BASE = ROOT / "task_file" / "case.json"
+APP = Path("/app")
+OUT = APP / "output" / "trust_report.json"
+BUILD = APP / "scripts" / "build.sh"
+BIN = APP / "bin" / "trust_desk"
+PACK = APP / "data" / "scenario_pack.json"
+PROBE = APP / "scripts" / "local_probe.sh"
+PAIR_INDEX = APP / "data" / "corpus" / "pair_index.json"
+WINDOW_TABLE = APP / "data" / "anchors" / "window_table.json"
+REVOKE_LEDGER = APP / "data" / "anchors" / "revoke_ledger.json"
+GRACE_TABLE = APP / "data" / "cache" / "grace_table.json"
+
+EXPECTED_OUTCOME = {
+    "m_alpha": "allow",
+    "m_beta": "deny",
+    "m_gamma": "deny",
+    "m_delta": "allow",
+    "m_epsilon": "deny",
+    "m_zeta": "allow",
+}
 
 
-@pytest.fixture(scope="session", autouse=True)
-def compile_agent():
-    """The submitted Go source builds with the exact public reproducible command."""
-    BIN.parent.mkdir(parents=True, exist_ok=True)
-    p = subprocess.run(
-        ["go", "build", "-trimpath", "-ldflags=-buildid=", "-o", str(BIN), str(SRC)],
-        capture_output=True,
-        text=True,
-    check=False,
+def digest_for(scenario_id: str, outcome: str) -> str:
+    payload = f"{scenario_id}|{outcome}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def run_checked(cmd: list[str], *, timeout: int = 180) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=False)
+    if result.returncode != 0:
+        raise AssertionError(
+            f"command failed: {' '.join(cmd)}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    return result
+
+
+def rebuild_and_run() -> dict:
+    run_checked(["bash", str(BUILD)], timeout=180)
+    out_dir = APP / "output"
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run_checked(
+        [str(BIN), "--pack", str(PACK), "--out", str(out_dir), "--root", str(APP)],
+        timeout=120,
     )
-    assert p.returncode == 0, p.stderr
+    return json.loads(OUT.read_text(encoding="utf-8"))
 
 
-def invoke(case, root):
-    root.mkdir(parents=True, exist_ok=True)
-    ip = root / "case.json"
-    op = root / "nested" / "result.json"
-    ip.write_text(json.dumps(case, separators=(",", ":")) + "\n")
-    p = subprocess.run(
-        [str(BIN), "--input", str(ip.resolve()), "--output", str(op.resolve())],
-        capture_output=True,
-        text=True,
-    check=False,
-    )
-    return p, op, ip
+def assert_row(doc: dict, sid: str) -> None:
+    row = doc["scenarios"][sid]
+    want_outcome = EXPECTED_OUTCOME[sid]
+    want_digest = digest_for(sid, want_outcome)
+    assert row["outcome"] == want_outcome, sid
+    assert row["matrix_digest"] == want_digest, sid
 
 
-def determinant(m):
-    return (
-        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
-    )
+def assert_full_matrix(doc: dict) -> None:
+    for sid in EXPECTED_OUTCOME:
+        assert_row(doc, sid)
 
 
-def reference(c):
-    d = c["denominator"]
-    occupancy = {}
-    rows = []
-    for site in sorted(c["sites"], key=lambda x: x["id"]):
-        points = []
-        stabilizer = 0
-        for op in c["operations"]:
-            point = tuple(
-                (
-                    sum(op["matrix"][i][j] * site["coordinate"][j] for j in range(3))
-                    + op["shift"][i]
-                )
-                % d
-                for i in range(3)
+@pytest.fixture(scope="session")
+def matrix() -> dict:
+    return rebuild_and_run()
+
+
+def test_m_alpha_fields(matrix: dict) -> None:
+    """m_alpha mid-rollover pairing is authorized allow with matching digest."""
+    assert_row(matrix, "m_alpha")
+
+
+def test_m_beta_fields(matrix: dict) -> None:
+    """m_beta digest-without-parent bait stays refused with matching digest."""
+    assert_row(matrix, "m_beta")
+
+
+def test_m_gamma_fields(matrix: dict) -> None:
+    """m_gamma post-cutover revoke stays refused with matching digest."""
+    assert_row(matrix, "m_gamma")
+
+
+def test_m_delta_fields(matrix: dict) -> None:
+    """m_delta dual-generation mid-window stays authorized allow with matching digest."""
+    assert_row(matrix, "m_delta")
+
+
+def test_m_epsilon_fields(matrix: dict) -> None:
+    """m_epsilon clock-grace stickiness keeps refuse with matching digest."""
+    assert_row(matrix, "m_epsilon")
+
+
+def test_m_zeta_fields(matrix: dict) -> None:
+    """m_zeta past-grace freshness yields authorized allow with matching digest."""
+    assert_row(matrix, "m_zeta")
+
+
+def test_shape_contract(matrix: dict) -> None:
+    """schema_version and required keys hold; signer-view probe stays clean."""
+    assert matrix["schema_version"] == "2"
+    assert set(matrix["scenarios"]) == set(EXPECTED_OUTCOME)
+    for sid, row in matrix["scenarios"].items():
+        assert set(row) == {"outcome", "matrix_digest"}
+        assert row["outcome"] in ("allow", "deny")
+        assert len(row["matrix_digest"]) == 16
+        assert_row(matrix, sid)
+    probe = run_checked(["bash", str(PROBE)], timeout=30)
+    assert "PROBE ok" in probe.stdout
+
+
+def test_ablation_pairing_surface(matrix: dict) -> None:
+    """Corrupting pair bindings regresses pairing rows; other surfaces stay authorized."""
+    assert_full_matrix(matrix)
+    backup = PAIR_INDEX.read_bytes()
+    try:
+        PAIR_INDEX.write_text(
+            json.dumps(
+                {
+                    "pairs": {
+                        "r_old": "p_old",
+                        "r_new": "WRONG",
+                        "r_bait": "",
+                        "p_g": "p_g",
+                        "p_d": "p_d",
+                        "p_e": "p_e",
+                        "p_z": "p_z",
+                    }
+                }
             )
-            points.append(point)
-            stabilizer += point == tuple(site["coordinate"])
-        unique = sorted(set(points))
-        positions = [f"{x}/{d},{y}/{d},{z}/{d}" for x, y, z in unique]
-        for point in unique:
-            occupancy.setdefault(point, set()).add(site["id"])
-        rows.append(
-            {
-                "id": site["id"],
-                "species": site["species"],
-                "multiplicity": len(unique),
-                "stabilizer": stabilizer,
-                "positions": positions,
-            },
+            + "\n",
+            encoding="utf-8",
         )
-    collisions = [
-        {
-            "position": f"{x}/{d},{y}/{d},{z}/{d}",
-            "site_ids": sorted(occupancy[(x, y, z)]),
-        }
-        for x, y, z in sorted(k for k, v in occupancy.items() if len(v) > 1)
-    ]
-    return {
-        "sites": rows,
-        "collisions": collisions,
-        "operation_count": len(c["operations"]),
-    }
+        doc = rebuild_and_run()
+        assert doc["scenarios"]["m_alpha"]["outcome"] != EXPECTED_OUTCOME["m_alpha"]
+        assert_row(doc, "m_beta")
+        assert_row(doc, "m_gamma")
+        assert_row(doc, "m_delta")
+        assert_row(doc, "m_epsilon")
+        assert_row(doc, "m_zeta")
+    finally:
+        PAIR_INDEX.write_bytes(backup)
+        rebuild_and_run()
 
 
-def test_exact_orbits_stabilizers_multiplicities_and_cross_site_collisions(tmp_path):
-    """Bundled rational symmetries produce exact independently expanded orbits, stabilizers, and collision membership."""
-    c = json.loads(BASE.read_text())
-    p, o, _ = invoke(c, tmp_path)
-    assert p.returncode == 0, p.stderr
-    assert json.loads(o.read_text()) == reference(c)
+def test_ablation_generation_surface(matrix: dict) -> None:
+    """Corrupting window/revoke tables regresses generation rows; other surfaces stay authorized."""
+    assert_full_matrix(matrix)
+    win_backup = WINDOW_TABLE.read_bytes()
+    rev_backup = REVOKE_LEDGER.read_bytes()
+    try:
+        wins = json.loads(win_backup)
+        wins["slots"]["p_d"] = {"legacy": 1, "tip": 3, "dual": True, "a": 9, "b": 9}
+        wins["slots"]["p_g"] = {"legacy": 3, "tip": 3, "dual": False, "a": 0, "b": 0}
+        WINDOW_TABLE.write_text(json.dumps(wins) + "\n", encoding="utf-8")
+        rev = json.loads(rev_backup)
+        rev["gone"]["p_g"] = {}
+        REVOKE_LEDGER.write_text(json.dumps(rev) + "\n", encoding="utf-8")
+        doc = rebuild_and_run()
+        assert doc["scenarios"]["m_gamma"]["outcome"] != EXPECTED_OUTCOME["m_gamma"]
+        assert doc["scenarios"]["m_delta"]["outcome"] != EXPECTED_OUTCOME["m_delta"]
+        assert_row(doc, "m_alpha")
+        assert_row(doc, "m_beta")
+        assert_row(doc, "m_epsilon")
+        assert_row(doc, "m_zeta")
+    finally:
+        WINDOW_TABLE.write_bytes(win_backup)
+        REVOKE_LEDGER.write_bytes(rev_backup)
+        rebuild_and_run()
 
 
-def test_changed_denominator_shifted_operations_and_reordered_sites(tmp_path):
-    """A renamed fifth-coordinate structure with shifts and axis rotation is recomputed without positional assumptions."""
-    c = {
-        "denominator": 5,
-        "sites": [
-            {"id": "beta", "species": "B", "coordinate": [4, 1, 0]},
-            {"id": "alpha", "species": "A", "coordinate": [1, 2, 3]},
-        ],
-        "operations": [
-            {
-                "id": "rot",
-                "matrix": [[0, -1, 0], [1, 0, 0], [0, 0, 1]],
-                "shift": [1, 0, 2],
-            },
-            {
-                "id": "identity",
-                "matrix": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-                "shift": [0, 0, 0],
-            },
-            {
-                "id": "mirror",
-                "matrix": [[-1, 0, 0], [0, 1, 0], [0, 0, 1]],
-                "shift": [2, 0, 0],
-            },
-        ],
-    }
-    p, o, _ = invoke(c, tmp_path)
-    assert p.returncode == 0, p.stderr
-    assert json.loads(o.read_text()) == reference(c)
-
-
-def test_singular_duplicate_missing_identity_and_argv_cleanup(tmp_path):
-    """Invalid determinant, duplicate affine operation, missing identity, and reversed flags remove stale outputs."""
-    variants = []
-    c = json.loads(BASE.read_text())
-    c["operations"][1]["matrix"] = [[1, 0, 0], [0, 0, 0], [0, 0, 1]]
-    variants.append(c)
-    c = json.loads(BASE.read_text())
-    c["operations"].append(dict(c["operations"][0], id="duplicate"))
-    variants.append(c)
-    c = json.loads(BASE.read_text())
-    c["operations"] = c["operations"][1:]
-    variants.append(c)
-    for n, c in enumerate(variants):
-        p, o, _ = invoke(c, tmp_path / str(n))
-        assert (
-            p.returncode != 0 and not o.exists() and not Path(str(o) + ".tmp").exists()
-        )
-    c = json.loads(BASE.read_text())
-    p, o, i = invoke(c, tmp_path / "argv")
-    o.parent.mkdir(parents=True, exist_ok=True)
-    o.write_text("x")
-    p = subprocess.run(
-        [str(BIN), "--output", str(o.resolve()), "--input", str(i.resolve())],
-    check=False,
-    )
-    assert p.returncode != 0 and not o.exists()
-
-
-def test_deterministic_atomic_replacement_and_input_immutability(tmp_path):
-    """Repeated orbit inventories replace stale output byte-identically and preserve the coordinate source."""
-    c = json.loads(BASE.read_text())
-    p, o, i = invoke(c, tmp_path)
-    assert p.returncode == 0
-    want = o.read_bytes()
-    before = i.read_bytes()
-    o.write_text("old")
-    p = subprocess.run(
-        [str(BIN), "--input", str(i.resolve()), "--output", str(o.resolve())],
-    check=False,
-    )
-    assert p.returncode == 0 and o.read_bytes() == want and i.read_bytes() == before
+def test_ablation_polarity_surface(matrix: dict) -> None:
+    """Corrupting grace polarity regresses grace rows; other surfaces stay authorized."""
+    assert_full_matrix(matrix)
+    backup = GRACE_TABLE.read_bytes()
+    try:
+        grace = json.loads(backup)
+        for sid in ("m_epsilon", "m_zeta"):
+            row = grace["rows"][sid]
+            row["held"], row["next"] = row["next"], row["held"]
+        GRACE_TABLE.write_text(json.dumps(grace) + "\n", encoding="utf-8")
+        doc = rebuild_and_run()
+        assert doc["scenarios"]["m_epsilon"]["outcome"] != EXPECTED_OUTCOME["m_epsilon"]
+        assert doc["scenarios"]["m_zeta"]["outcome"] != EXPECTED_OUTCOME["m_zeta"]
+        assert_row(doc, "m_alpha")
+        assert_row(doc, "m_beta")
+        assert_row(doc, "m_gamma")
+        assert_row(doc, "m_delta")
+    finally:
+        GRACE_TABLE.write_bytes(backup)
+        rebuild_and_run()

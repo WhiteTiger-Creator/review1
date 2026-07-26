@@ -1,0 +1,13 @@
+{
+  "scenario_id": "m_epsilon",
+  "rows": [
+    {"id": "p_e", "seq": 1, "mark": true}
+  ],
+  "peers": [
+    {"id": "p_e", "key": "p_e"}
+  ],
+  "gen": 1,
+  "stamp": 100,
+  "epoch": 50,
+  "probe_ok": true
+}

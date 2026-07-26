@@ -1,0 +1,12 @@
+{
+  "scenario_id": "m_beta",
+  "rows": [
+    {"id": "r_bait", "seq": 99, "mark": true}
+  ],
+  "peers": [
+  ],
+  "gen": 5,
+  "stamp": 50,
+  "epoch": 10,
+  "probe_ok": true
+}

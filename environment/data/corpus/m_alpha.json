@@ -1,0 +1,15 @@
+{
+  "scenario_id": "m_alpha",
+  "rows": [
+    {"id": "r_old", "seq": 10, "mark": true},
+    {"id": "r_new", "seq": 20, "mark": true}
+  ],
+  "peers": [
+    {"id": "p_old", "key": "r_old"},
+    {"id": "p_new", "key": "r_new"}
+  ],
+  "gen": 2,
+  "stamp": 500,
+  "epoch": 40,
+  "probe_ok": true
+}

@@ -1,0 +1,12 @@
+{
+  "slots": {
+    "p_new": {"legacy": 2, "tip": 2, "dual": false, "a": 0, "b": 0},
+    "p_old": {"legacy": 1, "tip": 1, "dual": false, "a": 0, "b": 0},
+    "r_old": {"legacy": 1, "tip": 1, "dual": false, "a": 0, "b": 0},
+    "r_bait": {"legacy": 5, "tip": 5, "dual": false, "a": 0, "b": 0},
+    "p_g": {"legacy": 3, "tip": 4, "dual": false, "a": 0, "b": 0},
+    "p_d": {"legacy": 1, "tip": 3, "dual": true, "a": 2, "b": 3},
+    "p_e": {"legacy": 1, "tip": 1, "dual": false, "a": 0, "b": 0},
+    "p_z": {"legacy": 1, "tip": 1, "dual": false, "a": 0, "b": 0}
+  }
+}

@@ -1,1 +1,0 @@
-{"denominator":4,"sites":[{"id":"Na","species":"Na","coordinate":[0,0,0]},{"id":"Cl","species":"Cl","coordinate":[1,1,1]}],"operations":[{"id":"identity","matrix":[[1,0,0],[0,1,0],[0,0,1]],"shift":[0,0,0]},{"id":"invert","matrix":[[-1,0,0],[0,-1,0],[0,0,-1]],"shift":[0,0,0]},{"id":"swapxy","matrix":[[0,1,0],[1,0,0],[0,0,1]],"shift":[0,0,0]}]}

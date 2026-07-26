@@ -1,0 +1,13 @@
+{
+  "scenario_id": "m_delta",
+  "rows": [
+    {"id": "p_d", "seq": 1, "mark": true}
+  ],
+  "peers": [
+    {"id": "p_d", "key": "p_d"}
+  ],
+  "gen": 2,
+  "stamp": 400,
+  "epoch": 30,
+  "probe_ok": true
+}

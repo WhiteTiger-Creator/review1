@@ -1,13 +1,142 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cat > /app/main.go <<'GO'
-package main
-import("encoding/json";"errors";"fmt";"os";"path/filepath";"sort";"strings")
-type Site struct{ID string `json:"id"`;Species string `json:"species"`;C []int `json:"coordinate"`};type Op struct{ID string `json:"id"`;M [][]int `json:"matrix"`;S []int `json:"shift"`};type In struct{D int `json:"denominator"`;Sites []Site `json:"sites"`;Ops []Op `json:"operations"`}
-func clean(p string){if p!=""{os.Remove(p);os.Remove(p+".tmp")}};func die(p string,e error){clean(p);fmt.Fprintln(os.Stderr,e);os.Exit(2)};func det(m [][]int)int{return m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])-m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])+m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0])};func mod(x,d int)int{x%=d;if x<0{x+=d};return x};func apply(c []int,o Op,d int)[3]int{var z [3]int;for i:=0;i<3;i++{z[i]=mod(o.S[i]+o.M[i][0]*c[0]+o.M[i][1]*c[1]+o.M[i][2]*c[2],d)};return z};func ck(a [3]int)string{return fmt.Sprintf("%03d,%03d,%03d",a[0],a[1],a[2])};func ps(a [3]int,d int)string{return fmt.Sprintf("%d/%d,%d/%d,%d/%d",a[0],d,a[1],d,a[2],d)}
-func main(){out:="";for i:=1;i+1<len(os.Args);i++{if os.Args[i]=="--output"&&filepath.IsAbs(os.Args[i+1]){out=os.Args[i+1]}};if len(os.Args)!=5||os.Args[1]!="--input"||os.Args[3]!="--output"||!filepath.IsAbs(os.Args[2])||!filepath.IsAbs(os.Args[4]){die(out,errors.New("arguments"))};out=os.Args[4];b,e:=os.ReadFile(os.Args[2]);if e!=nil{die(out,e)};var x In;d:=json.NewDecoder(strings.NewReader(string(b)));d.DisallowUnknownFields();if d.Decode(&x)!=nil||func()bool{e:=d.Decode(&struct{}{});return e==nil||e.Error()!="EOF"}()||x.D<2||x.D>96||len(x.Sites)<1||len(x.Sites)>40||len(x.Ops)<1||len(x.Ops)>192{die(out,errors.New("input"))};sid:=map[string]bool{};for _,s:=range x.Sites{if s.ID==""||sid[s.ID]||len(s.Species)<1||len(s.Species)>12||len(s.C)!=3{die(out,errors.New("site"))};sid[s.ID]=true;for _,v:=range s.C{if v<0||v>=x.D{die(out,errors.New("coord"))}}};oid:=map[string]bool{};forms:=map[string]bool{};identity:=false;for _,o:=range x.Ops{if o.ID==""||oid[o.ID]||len(o.M)!=3||len(o.S)!=3{die(out,errors.New("operation"))};oid[o.ID]=true;flat:="";id:=true;for i:=0;i<3;i++{if len(o.M[i])!=3{die(out,errors.New("matrix"))};for j:=0;j<3;j++{v:=o.M[i][j];if v < -1||v>1{die(out,errors.New("matrix"))};flat+=fmt.Sprintf("%d,",v);if v!=map[bool]int{true:1,false:0}[i==j]{id=false}};if o.S[i]<0||o.S[i]>=x.D{die(out,errors.New("shift"))};flat+=fmt.Sprintf("s%d,",o.S[i]);if o.S[i]!=0{id=false}};if q:=det(o.M);q!=1&&q!=-1{die(out,errors.New("determinant"))};if forms[flat]{die(out,errors.New("duplicate transform"))};forms[flat]=true;if id{identity=true}};if !identity{die(out,errors.New("identity"))}
- type SR struct{ID string `json:"id"`;Species string `json:"species"`;Mult int `json:"multiplicity"`;Stab int `json:"stabilizer"`;Pos []string `json:"positions"`};rows:=[]SR{};occ:=map[string]map[string]bool{};coords:=map[string][3]int{};sort.Slice(x.Sites,func(i,j int)bool{return x.Sites[i].ID<x.Sites[j].ID});for _,s:=range x.Sites{set:=map[string][3]int{};stab:=0;orig:=[3]int{s.C[0],s.C[1],s.C[2]};for _,o:=range x.Ops{z:=apply(s.C,o,x.D);set[ck(z)]=z;if z==orig{stab++}};keys:=make([]string,0,len(set));for k,z:=range set{keys=append(keys,k);coords[k]=z;if occ[k]==nil{occ[k]=map[string]bool{}};occ[k][s.ID]=true};sort.Strings(keys);pp:=make([]string,len(keys));for i,k:=range keys{pp[i]=ps(set[k],x.D)};rows=append(rows,SR{s.ID,s.Species,len(keys),stab,pp})};type CR struct{Position string `json:"position"`;IDs []string `json:"site_ids"`};cols:=[]CR{};keys:=[]string{};for k,v:=range occ{if len(v)>1{keys=append(keys,k)}};sort.Strings(keys);for _,k:=range keys{ids:=[]string{};for id:=range occ[k]{ids=append(ids,id)};sort.Strings(ids);cols=append(cols,CR{ps(coords[k],x.D),ids})};res:=struct{Sites []SR `json:"sites"`;Collisions []CR `json:"collisions"`;Count int `json:"operation_count"`}{rows,cols,len(x.Ops)};data,_:=json.Marshal(res);data=append(data,'\n');if e=os.MkdirAll(filepath.Dir(out),0755);e==nil{e=os.WriteFile(out+".tmp",data,0644)};if e==nil{e=os.Rename(out+".tmp",out)};if e!=nil{die(out,e)}}
-GO
-mkdir -p /app/bin
-go build -trimpath -ldflags=-buildid= -o /app/bin/crystal-orbit-inventory /app/main.go
-/app/bin/crystal-orbit-inventory --input /app/task_file/case.json --output /app/task_file/output/result.json
+
+cd /app
+
+cat >/app/x1/k.go <<'EOF'
+package x1
+
+import "core.net/fx/internal/state"
+
+// Apply runs the row↔peer selector for one pack entry.
+func Apply(s *state.Bundle, rows []state.Row, peers []state.Peer) string {
+	return op_a(s, rows, peers)
+}
+
+func op_a(s *state.Bundle, rows []state.Row, peers []state.Peer) string {
+	present := map[string]state.Peer{}
+	for _, p := range peers {
+		present[p.Key] = p
+	}
+	bestSeq := -1
+	bestTok := ""
+	for _, r := range rows {
+		if r.Seq <= 0 {
+			continue
+		}
+		want, ok := s.Pairs[r.ID]
+		if !ok || want == "" {
+			continue
+		}
+		p, ok := present[r.ID]
+		if !ok {
+			continue
+		}
+		if p.ID != want {
+			continue
+		}
+		if p.Key != r.ID {
+			continue
+		}
+		better := false
+		if r.Seq > bestSeq {
+			better = true
+		} else if r.Seq == bestSeq && bestTok != "" && p.ID < bestTok {
+			better = true
+		} else if r.Seq == bestSeq && bestTok == "" {
+			better = true
+		}
+		if better {
+			bestSeq = r.Seq
+			bestTok = p.ID
+		}
+	}
+	return bestTok
+}
+EOF
+
+cat >/app/x2/k.go <<'EOF'
+package x2
+
+import "core.net/fx/internal/state"
+
+// Apply runs the generation gate for one slot.
+func Apply(s *state.Bundle, slot string, gen int) string {
+	return reconcile_b(s, slot, gen)
+}
+
+func reconcile_b(s *state.Bundle, slot string, gen int) string {
+	if slot == "" {
+		return "x0"
+	}
+	if gen <= 0 {
+		return "x0"
+	}
+	if s.IsGone(slot, gen) {
+		return "x0"
+	}
+	w, ok := s.WinFor(slot)
+	if !ok {
+		return "x0"
+	}
+	if w.Dual {
+		lo, hi := w.A, w.B
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		if lo <= 0 || hi <= 0 {
+			return "x0"
+		}
+		if gen == w.A || gen == w.B {
+			if gen >= lo && gen <= hi {
+				return "x2"
+			}
+		}
+		return "x0"
+	}
+	if w.Tip <= 0 {
+		return "x0"
+	}
+	if gen == w.Tip {
+		return "x1"
+	}
+	return "x0"
+}
+EOF
+
+cat >/app/x3/k.go <<'EOF'
+package x3
+
+import "core.net/fx/internal/state"
+
+// Apply runs retained-polarity selection for one stamp/epoch pair.
+func Apply(s *state.Bundle, stamp int64, epoch int) string {
+	return phase_c(s, stamp, epoch)
+}
+
+func phase_c(s *state.Bundle, stamp int64, epoch int) string {
+	g := s.GraceFor(s.ScenarioID)
+	if g.Held == "" || g.Next == "" {
+		return "neg"
+	}
+	thresh := g.Deadline
+	skewed := int64(epoch) + int64(g.Skew)
+	if g.Skew < 0 {
+		skewed = int64(epoch)
+	}
+	if skewed > thresh {
+		thresh = skewed
+	}
+	if stamp < 0 {
+		return g.Held
+	}
+	if stamp <= thresh {
+		return g.Held
+	}
+	return g.Next
+}
+EOF
+
+bash /app/scripts/build.sh
+mkdir -p /app/output
+/app/bin/trust_desk --pack /app/data/scenario_pack.json --out /app/output --root /app

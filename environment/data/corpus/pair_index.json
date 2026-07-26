@@ -1,0 +1,11 @@
+{
+  "pairs": {
+    "r_old": "p_old",
+    "r_new": "p_new",
+    "r_bait": "",
+    "p_g": "p_g",
+    "p_d": "p_d",
+    "p_e": "p_e",
+    "p_z": "p_z"
+  }
+}
