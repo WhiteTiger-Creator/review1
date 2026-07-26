@@ -1,0 +1,2 @@
+# Keep vendored crate bytes bit-identical (no VCS line-ending rewrites).
+environment/spanforge/vendor/** -text

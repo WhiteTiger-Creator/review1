@@ -1,0 +1,1223 @@
+diff -ruN a/src/cli/dispatch.rs b/src/cli/dispatch.rs
+--- a/src/cli/dispatch.rs	2026-07-24 11:58:17
++++ b/src/cli/dispatch.rs	2026-07-24 11:58:17
+@@ -2,12 +2,15 @@
+ 
+ use crate::cli::arguments::{print_help, Command};
+ use crate::decoy::spectrum::run_spectrum;
+-use crate::diagnostic::failure::{emit_and_exit, fail, AppResult, FailureCode};
++use crate::diagnostic::failure::{emit_and_exit, AppResult, FailureCode};
+ use crate::input::model_schema::load_model;
+ use crate::input::plan_schema::load_plan;
+ use crate::input::survey_schema::load_survey;
+ use crate::model::physicality::{validate_mass, validate_stiffness_box};
+ use crate::optimize::trust_region::calibrate_parameters;
++use crate::report::calibration_record::build_record;
++use crate::report::publication::publish_record;
++use crate::sensitivity::jacobian::sensitivity_matrix;
+ use std::path::Path;
+ 
+ pub fn dispatch(cmd: Command) -> AppResult<()> {
+@@ -21,28 +24,53 @@
+             model,
+             survey,
+             plan,
+-            report: _,
+-        } => run_calibrate_starter(&model, &survey, &plan),
++            report,
++        } => run_calibrate(&model, &survey, &plan, &report),
+     }
+ }
+ 
+-fn run_calibrate_starter(
++fn run_calibrate(
+     model_path: &Path,
+     survey_path: &Path,
+     plan_path: &Path,
++    report_path: &Path,
+ ) -> AppResult<()> {
+     let model = load_model(model_path)?;
+     let m_chol = validate_mass(&model)?;
+     validate_stiffness_box(&model)?;
+     let survey = load_survey(survey_path, &model.dofs)?;
+     let plan = load_plan(plan_path, survey.modes.len(), model.dofs.len())?;
+-    // Enter explicit unavailable optimization state without touching reports.
+-    let _ = (&m_chol, &plan);
+-    calibrate_parameters(&model, &survey, &plan, &m_chol)?;
+-    fail(
+-        FailureCode::EOptimization,
+-        "calibration did not produce a durable record",
+-    )
++    let result = calibrate_parameters(&model, &survey, &plan, &m_chol)?;
++    let sens = sensitivity_matrix(
++        &model,
++        &survey,
++        &plan,
++        &result.theta,
++        &result.objective.assignment,
++        &m_chol,
++    )?;
++    let rec = build_record(
++        &model,
++        &survey,
++        &plan,
++        &result.theta,
++        &result.objective.assignment,
++        result.objective.modal,
++        result.objective.regularization,
++        &result.termination,
++        &sens,
++    );
++    publish_record(report_path, &rec)?;
++    let abs = std::fs::canonicalize(report_path)
++        .unwrap_or_else(|_| report_path.to_path_buf());
++    println!(
++        "CALIBRATED {} {} {} {}",
++        abs.display(),
++        model.model_sha256,
++        survey.survey_sha256,
++        rec.confidence.as_str()
++    );
++    Ok(())
+ }
+ 
+ pub fn run_or_exit(cmd: Command) {
+diff -ruN a/src/modal/pairing.rs b/src/modal/pairing.rs
+--- a/src/modal/pairing.rs	2026-07-24 11:58:17
++++ b/src/modal/pairing.rs	2026-07-24 11:58:17
+@@ -1,9 +1,13 @@
+-//! Global cluster assignment (starter incomplete).
++//! Global minimum-cost cluster assignment.
+ 
+ use crate::diagnostic::failure::{fail, AppResult, FailureCode};
+ use crate::input::plan_schema::CalibrationPlan;
+-use crate::input::survey_schema::ModalSurvey;
++use crate::input::survey_schema::{MeasuredMode, ModalSurvey};
+ use crate::modal::cluster::Cluster;
++use crate::modal::sensor_projection::{
++    common_observed_channels, extract_measured_columns, project_predicted,
++};
++use crate::modal::subspace_mac::subspace_mac;
+ use std::collections::HashMap;
+ 
+ #[derive(Clone, Debug)]
+@@ -27,16 +31,178 @@
+ }
+ 
+ pub fn global_assign(
+-    _survey: &ModalSurvey,
+-    _measured_clusters: &[Cluster],
+-    _predicted_clusters: &[Cluster],
+-    _predicted_modes: &[Vec<f64>],
+-    _predicted_freqs: &[f64],
+-    _dof_index: &HashMap<String, usize>,
+-    _plan: &CalibrationPlan,
++    survey: &ModalSurvey,
++    measured_clusters: &[Cluster],
++    predicted_clusters: &[Cluster],
++    predicted_modes: &[Vec<f64>],
++    predicted_freqs: &[f64],
++    dof_index: &HashMap<String, usize>,
++    plan: &CalibrationPlan,
+ ) -> AppResult<Assignment> {
+-    fail(
+-        FailureCode::EModalPairing,
+-        "global cluster assignment unavailable",
+-    )
++    let m = measured_clusters.len();
++    let p = predicted_clusters.len();
++    if m > p {
++        return fail(FailureCode::EModalPairing, "more measured clusters than predicted");
++    }
++    let mut cost = vec![vec![f64::INFINITY; p]; m];
++    let mut meta: Vec<Vec<Option<Pairing>>> = vec![vec![None; p]; m];
++
++    for (mi, mc) in measured_clusters.iter().enumerate() {
++        let m_modes: Vec<&MeasuredMode> = mc
++            .member_indices
++            .iter()
++            .map(|&i| &survey.modes[i])
++            .collect();
++        let channels = match common_observed_channels(&m_modes) {
++            Some(c) => c,
++            None => return fail(FailureCode::EModalPairing, "insufficient common channels"),
++        };
++        let measured_cols = extract_measured_columns(&m_modes, &channels);
++        let weight = m_modes.iter().map(|mm| mm.weight).sum::<f64>() / m_modes.len() as f64;
++        let ids = m_modes
++            .iter()
++            .map(|mm| mm.mode_id.as_str())
++            .collect::<Vec<_>>()
++            .join(",");
++
++        for (pi, pc) in predicted_clusters.iter().enumerate() {
++            if pc.member_indices.len() != mc.member_indices.len() {
++                continue;
++            }
++            let freq_res = (pc.centroid_hz / mc.centroid_hz).ln();
++            if freq_res.abs() > plan.pairing_frequency_gate {
++                continue;
++            }
++            let pred_cols: Vec<Vec<f64>> = pc
++                .member_indices
++                .iter()
++                .map(|&oi| {
++                    project_predicted(
++                        &predicted_modes[oi],
++                        dof_index,
++                        &survey.sensors,
++                        &channels,
++                    )
++                })
++                .collect();
++            let mac = match subspace_mac(&measured_cols, &pred_cols) {
++                Some(v) => v,
++                None => continue,
++            };
++            let pair_cost = weight
++                * (plan.frequency_weight * freq_res * freq_res
++                    + plan.shape_weight * (1.0 - mac) * (1.0 - mac));
++            let ordinals = pc
++                .member_indices
++                .iter()
++                .map(|i| i.to_string())
++                .collect::<Vec<_>>()
++                .join(",");
++            cost[mi][pi] = pair_cost;
++            meta[mi][pi] = Some(Pairing {
++                measured_cluster_index: mi,
++                predicted_cluster_index: pi,
++                measured_ids_csv: ids.clone(),
++                predicted_ordinals_csv: ordinals,
++                measured_centroid_hz: mc.centroid_hz,
++                predicted_centroid_hz: pc.centroid_hz,
++                frequency_residual: freq_res,
++                subspace_mac: mac,
++                pair_cost,
++                measured_weight: weight,
++            });
++        }
++    }
++
++    // Enumerate assignments: permutations of choosing m distinct predicted clusters
++    let mut best: Option<(f64, Vec<usize>)> = None;
++    let mut chosen = vec![0usize; m];
++    let mut used = vec![false; p];
++    fn dfs(
++        depth: usize,
++        m: usize,
++        p: usize,
++        cost: &[Vec<f64>],
++        chosen: &mut [usize],
++        used: &mut [bool],
++        acc: f64,
++        best: &mut Option<(f64, Vec<usize>)>,
++        predicted_clusters: &[Cluster],
++    ) {
++        if depth == m {
++            let assign = chosen.to_vec();
++            match best {
++                None => *best = Some((acc, assign)),
++                Some((bc, ba)) => {
++                    let better = if (acc - *bc).abs() < 1e-30 {
++                        let mut va: Vec<usize> = assign
++                            .iter()
++                            .map(|&pi| predicted_clusters[pi].start)
++                            .collect();
++                        let mut vb: Vec<usize> = ba
++                            .iter()
++                            .map(|&pi| predicted_clusters[pi].start)
++                            .collect();
++                        // compare lex of predicted starting ordinals in measured order
++                        va < vb
++                    } else {
++                        acc < *bc
++                    };
++                    if better {
++                        *best = Some((acc, assign));
++                    }
++                }
++            }
++            return;
++        }
++        for pi in 0..p {
++            if used[pi] || !cost[depth][pi].is_finite() {
++                continue;
++            }
++            used[pi] = true;
++            chosen[depth] = pi;
++            dfs(
++                depth + 1,
++                m,
++                p,
++                cost,
++                chosen,
++                used,
++                acc + cost[depth][pi],
++                best,
++                predicted_clusters,
++            );
++            used[pi] = false;
++        }
++    }
++    dfs(
++        0,
++        m,
++        p,
++        &cost,
++        &mut chosen,
++        &mut used,
++        0.0,
++        &mut best,
++        predicted_clusters,
++    );
++    let (total, assign) = best.ok_or_else(|| {
++        (
++            FailureCode::EModalPairing,
++            "no feasible global cluster assignment".into(),
++        )
++    })?;
++    let mut pairs = Vec::new();
++    for (mi, &pi) in assign.iter().enumerate() {
++        pairs.push(
++            meta[mi][pi]
++                .clone()
++                .ok_or_else(|| (FailureCode::EModalPairing, "missing pair meta".into()))?,
++        );
++    }
++    let _ = predicted_freqs;
++    Ok(Assignment {
++        pairs,
++        modal_cost: total,
++    })
+ }
+diff -ruN a/src/modal/sensor_projection.rs b/src/modal/sensor_projection.rs
+--- a/src/modal/sensor_projection.rs	2026-07-24 11:58:17
++++ b/src/modal/sensor_projection.rs	2026-07-24 11:58:17
+@@ -1,17 +1,30 @@
+-//! Sensor projection and observed-channel intersection (starter incomplete).
++//! Project predicted modes onto observed survey sensor channels.
+ 
+ use crate::input::survey_schema::MeasuredMode;
+ use std::collections::HashMap;
+ 
+-pub fn common_observed_channels(_modes: &[&MeasuredMode]) -> Option<Vec<usize>> {
+-    // Starter does not compute the intersection of finite channels.
+-    None
++pub fn common_observed_channels(modes: &[&MeasuredMode]) -> Option<Vec<usize>> {
++    if modes.is_empty() {
++        return None;
++    }
++    let n = modes[0].shape.len();
++    let mut idxs = Vec::new();
++    for i in 0..n {
++        if modes.iter().all(|m| m.shape[i].is_some()) {
++            idxs.push(i);
++        }
++    }
++    if idxs.len() < 2 {
++        None
++    } else {
++        Some(idxs)
++    }
+ }
+ 
+ pub fn extract_measured_columns(modes: &[&MeasuredMode], channels: &[usize]) -> Vec<Vec<f64>> {
+     modes
+         .iter()
+-        .map(|m| channels.iter().map(|&i| m.shape[i].unwrap_or(0.0)).collect())
++        .map(|m| channels.iter().map(|&i| m.shape[i].unwrap()).collect())
+         .collect()
+ }
+ 
+@@ -25,8 +38,8 @@
+         .iter()
+         .map(|&ci| {
+             let sensor = &sensors[ci];
+-            let di = *dof_index.get(sensor).unwrap_or(&0);
+-            mode.get(di).copied().unwrap_or(0.0)
++            let di = dof_index[sensor];
++            mode[di]
+         })
+         .collect()
+ }
+diff -ruN a/src/modal/subspace_mac.rs b/src/modal/subspace_mac.rs
+--- a/src/modal/subspace_mac.rs	2026-07-24 11:58:17
++++ b/src/modal/subspace_mac.rs	2026-07-24 11:58:17
+@@ -1,5 +1,23 @@
+-//! Subspace MAC (starter incomplete).
++//! Subspace Modal Assurance Criterion for equal-size clusters.
+ 
+-pub fn subspace_mac(_measured_cols: &[Vec<f64>], _predicted_cols: &[Vec<f64>]) -> Option<f64> {
+-    None
++use crate::linalg::orthogonalize::{frobenius_inner_sq, modified_gram_schmidt};
++
++pub fn subspace_mac(measured_cols: &[Vec<f64>], predicted_cols: &[Vec<f64>]) -> Option<f64> {
++    let k = measured_cols.len();
++    if k == 0 || predicted_cols.len() != k {
++        return None;
++    }
++    let u = modified_gram_schmidt(measured_cols);
++    let v = modified_gram_schmidt(predicted_cols);
++    if u.len() != k || v.len() != k {
++        return None;
++    }
++    let mut mac = frobenius_inner_sq(&u, &v) / k as f64;
++    if mac < 0.0 {
++        mac = 0.0;
++    }
++    if mac > 1.0 {
++        mac = 1.0;
++    }
++    Some(mac)
+ }
+diff -ruN a/src/objective/evaluate.rs b/src/objective/evaluate.rs
+--- a/src/objective/evaluate.rs	2026-07-24 11:58:17
++++ b/src/objective/evaluate.rs	2026-07-24 11:58:17
+@@ -1,11 +1,18 @@
+-//! Objective evaluation (starter incomplete).
++//! Total objective evaluation at a parameter vector.
+ 
+-use crate::diagnostic::failure::{fail, AppResult, FailureCode};
++use crate::diagnostic::failure::AppResult;
+ use crate::input::model_schema::BridgeModel;
+ use crate::input::plan_schema::CalibrationPlan;
+ use crate::input::survey_schema::ModalSurvey;
+ use crate::linalg::cholesky;
+-use crate::modal::pairing::Assignment;
++use crate::linalg::generalized;
++use crate::modal::cluster::{cluster_by_values, cluster_ranges, measured_cluster_keys};
++use crate::modal::mass_normalize::{apply_isolated_signs, mass_normalize};
++use crate::modal::pairing::{global_assign, Assignment};
++use crate::model::assembly::assemble_stiffness;
++use crate::objective::regularization::regularization_term;
++use crate::objective::residuals::modal_term;
++use std::collections::HashMap;
+ 
+ #[derive(Clone, Debug)]
+ pub struct ObjectiveValue {
+@@ -20,14 +27,59 @@
+ }
+ 
+ pub fn evaluate(
+-    _model: &BridgeModel,
+-    _survey: &ModalSurvey,
+-    _plan: &CalibrationPlan,
+-    _theta: &[f64],
+-    _m_chol: &cholesky::Cholesky,
++    model: &BridgeModel,
++    survey: &ModalSurvey,
++    plan: &CalibrationPlan,
++    theta: &[f64],
++    m_chol: &cholesky::Cholesky,
+ ) -> AppResult<ObjectiveValue> {
+-    fail(
+-        FailureCode::EOptimization,
+-        "modal objective evaluation unavailable",
+-    )
++    let k = assemble_stiffness(model, theta);
++    let mut gm = generalized::solve_generalized(&k, m_chol)
++        .map_err(|e| (crate::diagnostic::failure::FailureCode::EEigensystem, e))?;
++    // Keep only first mode_count modes if more exist
++    let keep = plan.mode_count.min(gm.eigenvalues.len());
++    gm.eigenvalues.truncate(keep);
++    gm.frequencies_hz.truncate(keep);
++    gm.modes.truncate(keep);
++
++    mass_normalize(&mut gm.modes, &model.mass);
++    let pred_clusters = cluster_by_values(
++        &gm.eigenvalues,
++        &gm.frequencies_hz,
++        plan.cluster_relative_tolerance,
++    );
++    apply_isolated_signs(&mut gm.modes, &cluster_ranges(&pred_clusters));
++
++    let m_freqs: Vec<f64> = survey.modes.iter().map(|m| m.frequency_hz).collect();
++    let m_keys = measured_cluster_keys(&m_freqs);
++    let measured_clusters = cluster_by_values(&m_keys, &m_freqs, plan.cluster_relative_tolerance);
++
++    let dof_index: HashMap<String, usize> = model
++        .dofs
++        .iter()
++        .enumerate()
++        .map(|(i, d)| (d.clone(), i))
++        .collect();
++
++    let assignment = global_assign(
++        survey,
++        &measured_clusters,
++        &pred_clusters,
++        &gm.modes,
++        &gm.frequencies_hz,
++        &dof_index,
++        plan,
++    )?;
++    let modal = modal_term(&assignment);
++    let reg = regularization_term(model, theta, plan);
++    Ok(ObjectiveValue {
++        total: modal + reg,
++        modal,
++        regularization: reg,
++        assignment,
++        predicted_clusters_len: pred_clusters.len(),
++        eigenvalues: gm.eigenvalues,
++        frequencies: gm.frequencies_hz,
++        modes: gm.modes,
++    })
+ }
+diff -ruN a/src/objective/regularization.rs b/src/objective/regularization.rs
+--- a/src/objective/regularization.rs	2026-07-24 11:58:17
++++ b/src/objective/regularization.rs	2026-07-24 11:58:17
+@@ -1,8 +1,14 @@
+-//! Regularization term (starter incomplete).
++//! Parameter regularization toward reference values.
+ 
+ use crate::input::model_schema::BridgeModel;
+ use crate::input::plan_schema::CalibrationPlan;
+ 
+-pub fn regularization_term(_model: &BridgeModel, _theta: &[f64], _plan: &CalibrationPlan) -> f64 {
+-    0.0
++pub fn regularization_term(model: &BridgeModel, theta: &[f64], plan: &CalibrationPlan) -> f64 {
++    let mut s = 0.0;
++    for (g, &t) in model.groups.iter().zip(theta.iter()) {
++        let width = g.upper - g.lower;
++        let scaled = (t - g.reference) / width;
++        s += scaled * scaled;
++    }
++    plan.regularization_weight * s
+ }
+diff -ruN a/src/objective/residuals.rs b/src/objective/residuals.rs
+--- a/src/objective/residuals.rs	2026-07-24 11:58:17
++++ b/src/objective/residuals.rs	2026-07-24 11:58:17
+@@ -1,7 +1,7 @@
+-//! Modal residual accounting (starter incomplete).
++//! Modal pair residual accounting.
+ 
+ use crate::modal::pairing::Assignment;
+ 
+-pub fn modal_term(_assignment: &Assignment) -> f64 {
+-    0.0
++pub fn modal_term(assignment: &Assignment) -> f64 {
++    assignment.modal_cost
+ }
+diff -ruN a/src/optimize/bounds.rs b/src/optimize/bounds.rs
+--- a/src/optimize/bounds.rs	2026-07-24 11:58:17
++++ b/src/optimize/bounds.rs	2026-07-24 11:58:17
+@@ -1,4 +1,4 @@
+-//! Parameter bounds helpers (partial starter).
++//! Closed parameter-box projection and bound classification.
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum BoundState {
+@@ -38,8 +38,19 @@
+     }
+ }
+ 
+-pub fn project_gradient(grad: &[f64], _theta: &[f64], _lower: &[f64], _upper: &[f64]) -> Vec<f64> {
+-    grad.to_vec()
++pub fn project_gradient(grad: &[f64], theta: &[f64], lower: &[f64], upper: &[f64]) -> Vec<f64> {
++    let mut pg = grad.to_vec();
++    for i in 0..theta.len() {
++        let at_lower = (theta[i] - lower[i]).abs() <= 1e-8 * lower[i].abs().max(1.0);
++        let at_upper = (theta[i] - upper[i]).abs() <= 1e-8 * upper[i].abs().max(1.0);
++        if at_lower && pg[i] > 0.0 {
++            // descent direction is -grad; if grad>0, descent points below lower
++            pg[i] = 0.0;
++        } else if at_upper && pg[i] < 0.0 {
++            pg[i] = 0.0;
++        }
++    }
++    pg
+ }
+ 
+ pub fn inf_norm(v: &[f64]) -> f64 {
+diff -ruN a/src/optimize/finite_difference.rs b/src/optimize/finite_difference.rs
+--- a/src/optimize/finite_difference.rs	2026-07-24 11:58:17
++++ b/src/optimize/finite_difference.rs	2026-07-24 11:58:17
+@@ -1,25 +1,62 @@
+-//! Finite-difference gradients (starter incomplete).
++//! Deterministic finite-difference gradients with bound-aware steps.
+ 
+-use crate::diagnostic::failure::{fail, AppResult, FailureCode};
++use crate::diagnostic::failure::AppResult;
+ use crate::input::model_schema::BridgeModel;
+ use crate::input::plan_schema::CalibrationPlan;
+ use crate::input::survey_schema::ModalSurvey;
+ use crate::linalg::cholesky;
+-use crate::objective::evaluate::ObjectiveValue;
++use crate::objective::evaluate::{evaluate, ObjectiveValue};
+ 
+ pub fn step_size(theta_g: f64, fd: f64) -> f64 {
+     fd * theta_g.abs().max(1.0)
+ }
+ 
+ pub fn objective_gradient(
+-    _model: &BridgeModel,
+-    _survey: &ModalSurvey,
+-    _plan: &CalibrationPlan,
+-    _theta: &[f64],
+-    _m_chol: &cholesky::Cholesky,
++    model: &BridgeModel,
++    survey: &ModalSurvey,
++    plan: &CalibrationPlan,
++    theta: &[f64],
++    m_chol: &cholesky::Cholesky,
+ ) -> AppResult<(Vec<f64>, ObjectiveValue)> {
+-    fail(
+-        FailureCode::EOptimization,
+-        "finite-difference gradient unavailable",
+-    )
++    let base = evaluate(model, survey, plan, theta, m_chol)?;
++    let mut grad = vec![0.0; theta.len()];
++    for g in 0..theta.len() {
++        let h = step_size(theta[g], plan.finite_difference_step);
++        let lower = model.groups[g].lower;
++        let upper = model.groups[g].upper;
++        let can_plus = theta[g] + h <= upper + 1e-15;
++        let can_minus = theta[g] - h >= lower - 1e-15;
++        if can_plus && can_minus {
++            let mut tp = theta.to_vec();
++            let mut tm = theta.to_vec();
++            tp[g] += h;
++            tm[g] -= h;
++            let op = evaluate(model, survey, plan, &tp, m_chol)?;
++            let om = evaluate(model, survey, plan, &tm, m_chol)?;
++            grad[g] = (op.total - om.total) / (2.0 * h);
++        } else if can_plus {
++            let mut tp = theta.to_vec();
++            let hh = h.min(upper - theta[g]).max(0.0);
++            if hh == 0.0 {
++                grad[g] = 0.0;
++            } else {
++                tp[g] += hh;
++                let op = evaluate(model, survey, plan, &tp, m_chol)?;
++                grad[g] = (op.total - base.total) / hh;
++            }
++        } else if can_minus {
++            let mut tm = theta.to_vec();
++            let hh = h.min(theta[g] - lower).max(0.0);
++            if hh == 0.0 {
++                grad[g] = 0.0;
++            } else {
++                tm[g] -= hh;
++                let om = evaluate(model, survey, plan, &tm, m_chol)?;
++                grad[g] = (base.total - om.total) / hh;
++            }
++        } else {
++            grad[g] = 0.0;
++        }
++    }
++    Ok((grad, base))
+ }
+diff -ruN a/src/optimize/termination.rs b/src/optimize/termination.rs
+--- a/src/optimize/termination.rs	2026-07-24 11:58:17
++++ b/src/optimize/termination.rs	2026-07-24 11:58:17
+@@ -1,6 +1,7 @@
+-//! Convergence certification (starter incomplete).
++//! Convergence certification for bounded optima.
+ 
+ use crate::input::plan_schema::CalibrationPlan;
++use crate::optimize::bounds::inf_norm;
+ 
+ #[derive(Clone, Debug)]
+ pub struct TerminationState {
+@@ -11,16 +12,21 @@
+ }
+ 
+ pub fn check(
+-    _plan: &CalibrationPlan,
++    plan: &CalibrationPlan,
+     iterations: usize,
+-    _projected_grad: &[f64],
+-    _step: &[f64],
+-    _obj_decrease: f64,
++    projected_grad: &[f64],
++    step: &[f64],
++    obj_decrease: f64,
+ ) -> TerminationState {
++    let pg = inf_norm(projected_grad);
++    let st = inf_norm(step);
++    let grad_ok = pg <= plan.gradient_tolerance;
++    let step_ok = st <= plan.step_tolerance || obj_decrease <= plan.objective_tolerance;
++    let within = iterations <= plan.max_iterations;
+     TerminationState {
+         iterations,
+-        projected_gradient_inf: f64::INFINITY,
+-        final_step_inf: f64::INFINITY,
+-        converged: false,
++        projected_gradient_inf: pg,
++        final_step_inf: st,
++        converged: grad_ok && step_ok && within,
+     }
+ }
+diff -ruN a/src/optimize/trust_region.rs b/src/optimize/trust_region.rs
+--- a/src/optimize/trust_region.rs	2026-07-24 11:58:17
++++ b/src/optimize/trust_region.rs	2026-07-24 11:58:17
+@@ -1,12 +1,15 @@
+-//! Bounded trust-region search (starter incomplete).
++//! Projected trust-region / backtracking search inside the parameter box.
+ 
+ use crate::diagnostic::failure::{fail, AppResult, FailureCode};
+ use crate::input::model_schema::BridgeModel;
+ use crate::input::plan_schema::CalibrationPlan;
+ use crate::input::survey_schema::ModalSurvey;
+ use crate::linalg::cholesky;
++use crate::model::assembly::{initial_theta, lower_bounds, upper_bounds};
+ use crate::objective::evaluate::ObjectiveValue;
+-use crate::optimize::termination::TerminationState;
++use crate::optimize::bounds::{inf_norm, project, project_gradient};
++use crate::optimize::finite_difference::objective_gradient;
++use crate::optimize::termination::{check, TerminationState};
+ 
+ pub struct OptimizeResult {
+     pub theta: Vec<f64>,
+@@ -15,13 +18,138 @@
+ }
+ 
+ pub fn calibrate_parameters(
+-    _model: &BridgeModel,
+-    _survey: &ModalSurvey,
+-    _plan: &CalibrationPlan,
+-    _m_chol: &cholesky::Cholesky,
++    model: &BridgeModel,
++    survey: &ModalSurvey,
++    plan: &CalibrationPlan,
++    m_chol: &cholesky::Cholesky,
+ ) -> AppResult<OptimizeResult> {
+-    fail(
+-        FailureCode::EOptimization,
+-        "projected bounded optimization unavailable",
+-    )
++    let lower = lower_bounds(model);
++    let upper = upper_bounds(model);
++    let mut theta = initial_theta(model);
++    project(&mut theta, &lower, &upper);
++
++    let (mut grad, mut obj) = objective_gradient(model, survey, plan, &theta, m_chol)?;
++    let mut last_step = vec![0.0; theta.len()];
++    let mut iterations = 0usize;
++    let mut radius = 0.1_f64;
++
++    loop {
++        let pg = project_gradient(&grad, &theta, &lower, &upper);
++        let term = check(plan, iterations, &pg, &last_step, 0.0);
++        if term.projected_gradient_inf <= plan.gradient_tolerance
++            && (iterations == 0
++                || term.final_step_inf <= plan.step_tolerance
++                || true && iterations > 0)
++        {
++            // continue to proper stop below
++        }
++        if iterations > 0 {
++            let decrease_proxy = 0.0;
++            let term2 = check(plan, iterations, &pg, &last_step, decrease_proxy);
++            if term2.projected_gradient_inf <= plan.gradient_tolerance
++                && (term2.final_step_inf <= plan.step_tolerance
++                    || decrease_proxy <= plan.objective_tolerance)
++            {
++                return Ok(OptimizeResult {
++                    theta,
++                    objective: obj,
++                    termination: term2,
++                });
++            }
++        } else if term.projected_gradient_inf <= plan.gradient_tolerance {
++            return Ok(OptimizeResult {
++                theta,
++                objective: obj,
++                termination: TerminationState {
++                    iterations: 0,
++                    projected_gradient_inf: term.projected_gradient_inf,
++                    final_step_inf: 0.0,
++                    converged: true,
++                },
++            });
++        }
++
++        if iterations >= plan.max_iterations {
++            let term_f = check(plan, iterations, &pg, &last_step, 0.0);
++            if term_f.projected_gradient_inf <= plan.gradient_tolerance
++                && (term_f.final_step_inf <= plan.step_tolerance
++                    || 0.0 <= plan.objective_tolerance)
++            {
++                return Ok(OptimizeResult {
++                    theta,
++                    objective: obj,
++                    termination: term_f,
++                });
++            }
++            return fail(FailureCode::EOptimization, "failed to converge within budget");
++        }
++
++        // Descent direction: -projected gradient, trust-scaled
++        let gnorm = inf_norm(&pg).max(1e-16);
++        let mut step = vec![0.0; theta.len()];
++        for i in 0..theta.len() {
++            step[i] = -pg[i] / gnorm * radius.min(1.0);
++        }
++        let mut accepted = false;
++        let mut trial_theta = theta.clone();
++        let mut trial_obj = obj.clone();
++        let mut trial_grad = grad.clone();
++        let mut alpha = 1.0;
++        for _ in 0..20 {
++            trial_theta = theta.clone();
++            for i in 0..theta.len() {
++                trial_theta[i] += alpha * step[i];
++            }
++            project(&mut trial_theta, &lower, &upper);
++            match objective_gradient(model, survey, plan, &trial_theta, m_chol) {
++                Ok((g2, o2)) => {
++                    if o2.total <= obj.total + 1e-15 {
++                        let decrease = obj.total - o2.total;
++                        last_step = trial_theta
++                            .iter()
++                            .zip(theta.iter())
++                            .map(|(a, b)| a - b)
++                            .collect();
++                        theta = trial_theta;
++                        obj = o2;
++                        grad = g2;
++                        accepted = true;
++                        if decrease > 0.1 * radius * gnorm {
++                            radius = (radius * 1.5).min(1.0);
++                        }
++                        let term_acc = check(plan, iterations + 1, &project_gradient(&grad, &theta, &lower, &upper), &last_step, decrease);
++                        iterations += 1;
++                        if term_acc.projected_gradient_inf <= plan.gradient_tolerance
++                            && (term_acc.final_step_inf <= plan.step_tolerance
++                                || decrease <= plan.objective_tolerance)
++                        {
++                            return Ok(OptimizeResult {
++                                theta,
++                                objective: obj,
++                                termination: term_acc,
++                            });
++                        }
++                        break;
++                    } else {
++                        trial_grad = g2;
++                        let _ = trial_obj;
++                        trial_obj = o2;
++                        alpha *= 0.5;
++                    }
++                }
++                Err(_) => {
++                    alpha *= 0.5;
++                }
++            }
++        }
++        if !accepted {
++            radius *= 0.5;
++            if radius < 1e-16 {
++                return fail(FailureCode::EOptimization, "trust region collapsed");
++            }
++            // still count an iteration attempt
++            iterations += 1;
++            let _ = trial_grad;
++        }
++    }
+ }
+diff -ruN a/src/report/calibration_record.rs b/src/report/calibration_record.rs
+--- a/src/report/calibration_record.rs	2026-07-24 11:58:17
++++ b/src/report/calibration_record.rs	2026-07-24 11:58:17
+@@ -1,12 +1,13 @@
+-//! Calibration record assembly (starter incomplete).
++//! In-memory MCR calibration record.
+ 
+ use crate::input::model_schema::BridgeModel;
+ use crate::input::plan_schema::CalibrationPlan;
+ use crate::input::survey_schema::ModalSurvey;
+ use crate::modal::pairing::Assignment;
+-use crate::optimize::bounds::BoundState;
++use crate::optimize::bounds::{classify, BoundState};
+ use crate::optimize::termination::TerminationState;
+-use crate::sensitivity::confidence::OverallConfidence;
++use crate::sensitivity::confidence::{group_confidence, overall, OverallConfidence};
++use crate::sensitivity::rank::{numerical_rank, sensitivity_ranks, sensitivity_scores};
+ 
+ pub struct GroupRow {
+     pub group_id: String,
+@@ -41,13 +42,38 @@
+     model: &BridgeModel,
+     survey: &ModalSurvey,
+     plan: &CalibrationPlan,
+-    _theta: &[f64],
++    theta: &[f64],
+     assignment: &Assignment,
+     modal: f64,
+     regularization: f64,
+     termination: &TerminationState,
+-    _sensitivity: &[Vec<f64>],
++    sensitivity: &[Vec<f64>],
+ ) -> CalibrationRecord {
++    let scores = sensitivity_scores(sensitivity, assignment);
++    let ids: Vec<String> = model.groups.iter().map(|g| g.group_id.clone()).collect();
++    let ranks = sensitivity_ranks(&scores, &ids);
++    let nrank = numerical_rank(sensitivity, assignment, plan.rank_tolerance);
++    let bounds: Vec<BoundState> = theta
++        .iter()
++        .zip(model.groups.iter())
++        .map(|(&t, g)| classify(t, g.lower, g.upper))
++        .collect();
++    let conf = overall(&bounds, nrank, model.groups.len());
++    let mut groups = Vec::new();
++    for (i, g) in model.groups.iter().enumerate() {
++        let bs = bounds[i];
++        groups.push(GroupRow {
++            group_id: g.group_id.clone(),
++            theta: theta[i],
++            lower: g.lower,
++            upper: g.upper,
++            reference: g.reference,
++            bound_state: bs,
++            group_confidence: group_confidence(bs, scores[i], plan.rank_tolerance),
++            sensitivity_score: scores[i],
++            sensitivity_rank: ranks[i],
++        });
++    }
+     CalibrationRecord {
+         model_sha256: model.model_sha256.clone(),
+         survey_sha256: survey.survey_sha256.clone(),
+@@ -58,10 +84,10 @@
+         iterations: termination.iterations,
+         projected_gradient_inf: termination.projected_gradient_inf,
+         final_step_inf: termination.final_step_inf,
+-        numerical_rank: 0,
++        numerical_rank: nrank,
+         group_count: model.groups.len(),
+-        confidence: OverallConfidence::Weak,
+-        groups: Vec::new(),
++        confidence: conf,
++        groups,
+         assignment: assignment.clone(),
+     }
+ }
+diff -ruN a/src/report/publication.rs b/src/report/publication.rs
+--- a/src/report/publication.rs	2026-07-24 11:58:17
++++ b/src/report/publication.rs	2026-07-24 11:58:17
+@@ -1,21 +1,68 @@
+-//! Report publication (starter incomplete for durable replacement).
++//! Atomic report publication with failure-preserving semantics.
+ 
+ use crate::diagnostic::failure::{fail, AppResult, FailureCode};
+ use crate::report::calibration_record::CalibrationRecord;
+-use std::path::Path;
++use crate::report::canonical_writer::render_mcr;
++use std::fs::{self, File, OpenOptions};
++use std::io::Write;
++use std::path::{Path, PathBuf};
+ 
+-pub fn publish_record(_report_path: &Path, _rec: &CalibrationRecord) -> AppResult<()> {
+-    fail(
+-        FailureCode::EReport,
+-        "atomic report publication unavailable",
+-    )
++pub fn publish_record(report_path: &Path, rec: &CalibrationRecord) -> AppResult<()> {
++    let bytes = render_mcr(rec);
++    publish_bytes(report_path, bytes.as_bytes())
+ }
+ 
+-pub fn publish_bytes(_report_path: &Path, _bytes: &[u8]) -> AppResult<()> {
+-    fail(
+-        FailureCode::EReport,
+-        "atomic report publication unavailable",
+-    )
++pub fn publish_bytes(report_path: &Path, bytes: &[u8]) -> AppResult<()> {
++    let parent = report_path
++        .parent()
++        .filter(|p| !p.as_os_str().is_empty())
++        .unwrap_or_else(|| Path::new("."));
++    fs::create_dir_all(parent).map_err(|e| (FailureCode::EReport, e.to_string()))?;
++    let mut tmp: PathBuf = parent.join(format!(
++        ".{}.mcr.tmp.{}",
++        report_path
++            .file_name()
++            .and_then(|s| s.to_str())
++            .unwrap_or("report"),
++        std::process::id()
++    ));
++    for n in 0..1000 {
++        if !tmp.exists() {
++            break;
++        }
++        tmp = parent.join(format!(
++            ".{}.mcr.tmp.{}.{}",
++            report_path
++                .file_name()
++                .and_then(|s| s.to_str())
++                .unwrap_or("report"),
++            std::process::id(),
++            n
++        ));
++    }
++    let write_result = (|| -> AppResult<()> {
++        let mut f = OpenOptions::new()
++            .write(true)
++            .create_new(true)
++            .open(&tmp)
++            .map_err(|e| (FailureCode::EReport, e.to_string()))?;
++        f.write_all(bytes)
++            .map_err(|e| (FailureCode::EReport, e.to_string()))?;
++        f.flush()
++            .map_err(|e| (FailureCode::EReport, e.to_string()))?;
++        f.sync_all()
++            .map_err(|e| (FailureCode::EReport, e.to_string()))?;
++        drop(f);
++        fs::rename(&tmp, report_path).map_err(|e| (FailureCode::EReport, e.to_string()))?;
++        if let Ok(dir) = File::open(parent) {
++            let _ = dir.sync_all();
++        }
++        Ok(())
++    })();
++    if write_result.is_err() {
++        let _ = fs::remove_file(&tmp);
++    }
++    write_result
+ }
+ 
+ pub fn preserve_on_failure(_report_path: &Path) {}
+diff -ruN a/src/sensitivity/confidence.rs b/src/sensitivity/confidence.rs
+--- a/src/sensitivity/confidence.rs	2026-07-24 11:58:17
++++ b/src/sensitivity/confidence.rs	2026-07-24 11:58:17
+@@ -1,4 +1,4 @@
+-//! Confidence classification (starter incomplete).
++//! Overall and per-group confidence classification.
+ 
+ use crate::optimize::bounds::BoundState;
+ 
+@@ -19,10 +19,26 @@
+     }
+ }
+ 
+-pub fn overall(_bounds: &[BoundState], _numerical_rank: usize, _group_count: usize) -> OverallConfidence {
+-    OverallConfidence::Weak
++pub fn overall(bounds: &[BoundState], numerical_rank: usize, group_count: usize) -> OverallConfidence {
++    if bounds.iter().any(|b| *b != BoundState::Free) {
++        OverallConfidence::BoundActive
++    } else if numerical_rank < group_count {
++        OverallConfidence::Weak
++    } else {
++        OverallConfidence::Identifiable
++    }
+ }
+ 
+-pub fn group_confidence(_bound: BoundState, _score: f64, _rank_tol: f64) -> String {
+-    "FREE_WEAK".into()
++pub fn group_confidence(bound: BoundState, score: f64, rank_tol: f64) -> String {
++    match bound {
++        BoundState::Lower => "LOWER".into(),
++        BoundState::Upper => "UPPER".into(),
++        BoundState::Free => {
++            if score <= rank_tol {
++                "FREE_WEAK".into()
++            } else {
++                "FREE_IDENTIFIED".into()
++            }
++        }
++    }
+ }
+diff -ruN a/src/sensitivity/jacobian.rs b/src/sensitivity/jacobian.rs
+--- a/src/sensitivity/jacobian.rs	2026-07-24 11:58:17
++++ b/src/sensitivity/jacobian.rs	2026-07-24 11:58:17
+@@ -1,22 +1,112 @@
+-//! Sensitivity Jacobian (starter incomplete).
++//! Held-pairing modal sensitivity Jacobian.
+ 
+ use crate::diagnostic::failure::{fail, AppResult, FailureCode};
+ use crate::input::model_schema::BridgeModel;
+ use crate::input::plan_schema::CalibrationPlan;
+ use crate::input::survey_schema::ModalSurvey;
+ use crate::linalg::cholesky;
++use crate::linalg::generalized;
++use crate::modal::cluster::{cluster_by_values, measured_cluster_keys};
++use crate::modal::mass_normalize::mass_normalize;
+ use crate::modal::pairing::Assignment;
++use crate::model::assembly::assemble_stiffness;
++use crate::optimize::finite_difference::step_size;
+ 
+ pub fn sensitivity_matrix(
+-    _model: &BridgeModel,
+-    _survey: &ModalSurvey,
+-    _plan: &CalibrationPlan,
+-    _theta: &[f64],
+-    _assignment: &Assignment,
+-    _m_chol: &cholesky::Cholesky,
++    model: &BridgeModel,
++    survey: &ModalSurvey,
++    plan: &CalibrationPlan,
++    theta: &[f64],
++    assignment: &Assignment,
++    m_chol: &cholesky::Cholesky,
+ ) -> AppResult<Vec<Vec<f64>>> {
+-    fail(
+-        FailureCode::ESensitivity,
+-        "held-pairing sensitivity unavailable",
+-    )
++    let m = assignment.pairs.len();
++    let g = theta.len();
++    let mut s = vec![vec![0.0; g]; m];
++
++    let base_centroids = cluster_centroids_for_held(model, survey, plan, theta, assignment, m_chol)?;
++
++    for gi in 0..g {
++        let h = step_size(theta[gi], plan.finite_difference_step);
++        let lower = model.groups[gi].lower;
++        let upper = model.groups[gi].upper;
++        let can_plus = theta[gi] + h <= upper + 1e-15;
++        let can_minus = theta[gi] - h >= lower - 1e-15;
++        let (plus, minus, denom) = if can_plus && can_minus {
++            let mut tp = theta.to_vec();
++            let mut tm = theta.to_vec();
++            tp[gi] += h;
++            tm[gi] -= h;
++            let cp = cluster_centroids_for_held(model, survey, plan, &tp, assignment, m_chol)?;
++            let cm = cluster_centroids_for_held(model, survey, plan, &tm, assignment, m_chol)?;
++            (cp, cm, 2.0 * h)
++        } else if can_plus {
++            let hh = h.min(upper - theta[gi]).max(0.0);
++            if hh == 0.0 {
++                continue;
++            }
++            let mut tp = theta.to_vec();
++            tp[gi] += hh;
++            let cp = cluster_centroids_for_held(model, survey, plan, &tp, assignment, m_chol)?;
++            (cp, base_centroids.clone(), hh)
++        } else if can_minus {
++            let hh = h.min(theta[gi] - lower).max(0.0);
++            if hh == 0.0 {
++                continue;
++            }
++            let mut tm = theta.to_vec();
++            tm[gi] -= hh;
++            let cm = cluster_centroids_for_held(model, survey, plan, &tm, assignment, m_chol)?;
++            (base_centroids.clone(), cm, hh)
++        } else {
++            continue;
++        };
++        for j in 0..m {
++            let lp = plus[j].ln();
++            let lm = minus[j].ln();
++            s[j][gi] = (lp - lm) / denom;
++        }
++    }
++    Ok(s)
++}
++
++fn cluster_centroids_for_held(
++    model: &BridgeModel,
++    survey: &ModalSurvey,
++    plan: &CalibrationPlan,
++    theta: &[f64],
++    assignment: &Assignment,
++    m_chol: &cholesky::Cholesky,
++) -> AppResult<Vec<f64>> {
++    let k = assemble_stiffness(model, theta);
++    let mut gm = generalized::solve_generalized(&k, m_chol)
++        .map_err(|e| (FailureCode::EEigensystem, e))?;
++    let keep = plan.mode_count.min(gm.eigenvalues.len());
++    gm.eigenvalues.truncate(keep);
++    gm.frequencies_hz.truncate(keep);
++    gm.modes.truncate(keep);
++    mass_normalize(&mut gm.modes, &model.mass);
++    let pred_clusters = cluster_by_values(
++        &gm.eigenvalues,
++        &gm.frequencies_hz,
++        plan.cluster_relative_tolerance,
++    );
++    // Verify held predicted cluster indices still exist with same cardinality
++    let mut centroids = Vec::new();
++    for pair in &assignment.pairs {
++        let pi = pair.predicted_cluster_index;
++        if pi >= pred_clusters.len() {
++            return fail(FailureCode::ESensitivity, "held pairing invalidated");
++        }
++        let pc = &pred_clusters[pi];
++        // Check measured cluster size still matches via stored ordinals count
++        let expected = pair.predicted_ordinals_csv.split(',').filter(|s| !s.is_empty()).count();
++        if pc.member_indices.len() != expected {
++            return fail(FailureCode::ESensitivity, "cluster cardinality changed");
++        }
++        centroids.push(pc.centroid_hz);
++    }
++    let _ = survey;
++    let _ = measured_cluster_keys;
++    Ok(centroids)
+ }
+diff -ruN a/src/sensitivity/rank.rs b/src/sensitivity/rank.rs
+--- a/src/sensitivity/rank.rs	2026-07-24 11:58:17
++++ b/src/sensitivity/rank.rs	2026-07-24 11:58:17
+@@ -1,19 +1,63 @@
+-//! Sensitivity rank (starter incomplete).
++//! Numerical identifiability rank from sensitivity Gram matrix.
+ 
++use crate::linalg::dense::Matrix;
++use crate::linalg::jacobi::jacobi_symmetric;
+ use crate::modal::pairing::Assignment;
+ 
+-pub fn sensitivity_scores(s: &[Vec<f64>], _assignment: &Assignment) -> Vec<f64> {
+-    if s.is_empty() {
+-        Vec::new()
+-    } else {
+-        vec![0.0; s[0].len()]
++pub fn sensitivity_scores(s: &[Vec<f64>], assignment: &Assignment) -> Vec<f64> {
++    let g = if s.is_empty() { 0 } else { s[0].len() };
++    let mut scores = vec![0.0; g];
++    for gi in 0..g {
++        let mut acc = 0.0;
++        for (j, pair) in assignment.pairs.iter().enumerate() {
++            let v = s[j][gi];
++            acc += pair.measured_weight * v * v;
++        }
++        scores[gi] = acc.sqrt();
+     }
++    scores
+ }
+ 
+-pub fn sensitivity_ranks(scores: &[f64], _group_ids: &[String]) -> Vec<usize> {
+-    (0..scores.len()).map(|i| i + 1).collect()
++pub fn sensitivity_ranks(scores: &[f64], group_ids: &[String]) -> Vec<usize> {
++    let mut order: Vec<usize> = (0..scores.len()).collect();
++    order.sort_by(|&a, &b| {
++        scores[b]
++            .partial_cmp(&scores[a])
++            .unwrap_or(std::cmp::Ordering::Equal)
++            .then_with(|| group_ids[a].cmp(&group_ids[b]))
++    });
++    let mut ranks = vec![0usize; scores.len()];
++    for (r, &gi) in order.iter().enumerate() {
++        ranks[gi] = r + 1;
++    }
++    ranks
+ }
+ 
+-pub fn numerical_rank(_s: &[Vec<f64>], _assignment: &Assignment, _rank_tol: f64) -> usize {
+-    0
++pub fn numerical_rank(s: &[Vec<f64>], assignment: &Assignment, rank_tol: f64) -> usize {
++    let m = s.len();
++    let g = if m == 0 { 0 } else { s[0].len() };
++    if g == 0 {
++        return 0;
++    }
++    // G = S^T W S
++    let mut gram = Matrix::zeros(g);
++    for j in 0..m {
++        let w = assignment.pairs[j].measured_weight;
++        for a in 0..g {
++            for b in 0..g {
++                let add = w * s[j][a] * s[j][b];
++                gram.set(a, b, gram.get(a, b) + add);
++            }
++        }
++    }
++    let _ = gram.symmetrize_checked();
++    let eig = match jacobi_symmetric(&gram) {
++        Ok(e) => e,
++        Err(_) => return 0,
++    };
++    let mut vals = eig.eigenvalues;
++    vals.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
++    let largest = vals.iter().cloned().fold(0.0_f64, f64::max);
++    let thresh = rank_tol * largest.max(1.0);
++    vals.iter().filter(|&&v| v > thresh).count()
+ }

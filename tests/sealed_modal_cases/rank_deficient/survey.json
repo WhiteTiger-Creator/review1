@@ -1,0 +1,27 @@
+{
+  "format": "bridge-modal-survey-v1",
+  "sensors": [
+    "D1",
+    "D2"
+  ],
+  "modes": [
+    {
+      "mode_id": "R1",
+      "frequency_hz": 0.2516460605224352,
+      "weight": 1.0,
+      "shape": [
+        0.7,
+        0.3
+      ]
+    },
+    {
+      "mode_id": "R2",
+      "frequency_hz": 0.29775163423068823,
+      "weight": 1.0,
+      "shape": [
+        -0.3,
+        0.8
+      ]
+    }
+  ]
+}

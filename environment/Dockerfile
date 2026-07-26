@@ -1,32 +1,43 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+FROM public.ecr.aws/docker/library/rust:1.85-slim-bookworm@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
+ENV PATH="/usr/local/cargo/bin:/usr/local/rustup/bin:${PATH}"
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+
+# Layer 1: operating packages
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        tmux \
         asciinema \
+        ca-certificates \
+        patch \
         python3 \
         python3-pip \
-        python-is-python3 \
+        python3-venv \
+        tmux \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m pip install --no-cache-dir --break-system-packages \
-    pytest==8.4.1 \
-    pytest-json-ctrf==0.3.5
+WORKDIR /opt
 
-ENV GOTOOLCHAIN=local
-ENV GOFLAGS=-mod=mod
+# Layer 2: verifier wheelhouse and lock (installed only by tests/test.sh)
+COPY requirements.lock /opt/verifier-requirements.lock
+COPY verifier-wheels /verifier-wheels
 
-RUN printf '%s\n' 'export GOPATH=/go' 'export PATH=/go/bin:/usr/local/go/bin:$PATH' \
-        > /etc/profile.d/10-golang.sh \
-    && chmod 0644 /etc/profile.d/10-golang.sh \
-    && ln -sf /usr/local/go/bin/go /usr/local/bin/go \
-    && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
-    && bash -lc 'command -v go && command -v gofmt' \
-    && sh -lc 'command -v go'
+# Layer 3: Rust manifest, lockfile, Cargo source replacement, and vendored dependencies
+COPY spanforge/Cargo.toml spanforge/Cargo.lock /opt/spanforge/
+COPY spanforge/.cargo /opt/spanforge/.cargo
+COPY spanforge/vendor /opt/spanforge/vendor
 
-WORKDIR /app
+# Layer 4: Rust source, modal-code documents, wrapper, build script, and examples
+COPY spanforge/src /opt/spanforge/src
+COPY spanforge/modal-code /opt/spanforge/modal-code
+COPY spanforge/examples /opt/spanforge/examples
+COPY spanforge/build-modal-reconciler.sh /opt/spanforge/build-modal-reconciler.sh
+COPY spanforge/bin /opt/spanforge/bin
+RUN chmod +x /opt/spanforge/build-modal-reconciler.sh /opt/spanforge/bin/modal-reconciler \
+    && mkdir -p /opt/spanforge/libexec
 
-COPY data /app/data
-COPY rank /app/rank
+# Layer 5: application build
+RUN /opt/spanforge/build-modal-reconciler.sh
 
-RUN cd /app/rank && go build -o /tmp/prewarm . && rm -f /tmp/prewarm
+WORKDIR /workspace
