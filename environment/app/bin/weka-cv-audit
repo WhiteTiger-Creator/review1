@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+
+BUILD_DIR=/app/build
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+
+mapfile -t sources < <(find /app/src -name '*.java' -type f -print | sort)
+if [ "${#sources[@]}" -eq 0 ]; then
+    echo "error: no Java sources found" >&2
+    exit 1
+fi
+
+javac -encoding UTF-8 -cp "/app/lib/*" -d "$BUILD_DIR" "${sources[@]}"
+exec java -Dweka.packageManager.loadPackages=false \
+    -cp "$BUILD_DIR:/app/lib/*" audit.Main "$@"

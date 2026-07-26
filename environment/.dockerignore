@@ -1,5 +1,7 @@
 .git
 .gitignore
+.env
+**/.DS_Store
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
@@ -7,15 +9,8 @@
 **/.ruff_cache/
 **/node_modules/
 **/target/
-**/dist/
 **/build/
 **/.venv/
-**/venv/
-.env
 *.log
 solution/
 tests/
-CLAUDE.md
-AGENTS.md
-skills.md
-.cursor/

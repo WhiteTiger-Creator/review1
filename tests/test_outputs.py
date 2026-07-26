@@ -1,597 +1,880 @@
-"""Behavioral verifier for denman-beavers-matrix-square-root.
+"""Behavioral tests for the grouped Weka evaluation command."""
 
-Pure Python only (no numpy or any numerical library).  The task pins a concrete
-computation: the determinantally scaled coupled (Denman-Beavers) iteration for
-the principal square root of a symmetric positive-definite A,
-
-    Y_0 = A,  W_0 = I,
-    mu_k = |det(Y_k) det(W_k)|^(-1/(2n)),
-    Y_{k+1} = 0.5 (mu_k Y_k + mu_k^{-1} W_k^{-1}),
-    W_{k+1} = 0.5 (mu_k W_k + mu_k^{-1} Y_k^{-1}),
-
-run for K = 24 steps.  The graded answer is X = Y_K, Z = W_K and the scale trace
-mu_0 .. mu_{K-1}.
-
-The verifier builds the candidate binary from a frozen, root-owned copy of the
-fixed sources (/opt/fixed) plus the agent's src/matsqrt_impl.cpp, with a
-hardcoded g++ command, so only src/matsqrt_impl.cpp can influence behavior.  For
-each case it fixes a real positive spectrum, builds A = Q D Q^T with an integer
-orthogonal Q (so A is exactly symmetric positive definite and its square root is
-known by construction), and grades:
-
-  (a) well-formedness: finite numbers and correct shapes;
-  (b) symmetry and positive definiteness of X and Z;
-  (c) ||X X - A||_F / ||A||_F within tolerance;
-  (d) max entry magnitude of X Z - I within tolerance;
-  (e) mu_0 against the certified anchor (prod|lambda|)^{-1/(2n)} computed in the
-      log domain from the exact spectrum;
-  (f) the full scale trace against an independent LU-based recomputation whose
-      inverse and log-determinant use a different elimination than the oracle.
-
-The graded matrices span a wide range of eigenvalue magnitudes: |det A| routinely
-lies far outside the range of a double, so the scale factors must be formed
-without ever materializing that determinant.  A handful of small example case
-files are shipped under environment/data/ for development; none of them is used
-for grading, and no reference X, Z, or trace is shipped.
-"""
-
-from __future__ import annotations
-
+import json
 import math
-import pathlib
 import random
+import re
 import subprocess
-from fractions import Fraction as F
+from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 
-import pytest
-
-ENV = pathlib.Path("/app/environment")
-AGENT_IMPL = ENV / "src" / "matsqrt_impl.cpp"
-FIXED = pathlib.Path("/opt/fixed")
-BIN = pathlib.Path("/tmp/verify_matsqrt")
-CASE_FILE = pathlib.Path("/tmp/verify_case.txt")
-OUT_FILE = pathlib.Path("/tmp/verify_out.txt")
-
-K = 24  # pinned iteration count (MATSQRT_ITERS)
-TOL_X2A = 1e-7
-TOL_XZ = 1e-7
-TOL_SYM = 1e-7
-SCALE_TOL = 1e-6
-
-# --------------------------------------------------------------------------
-# pure-python dense linear algebra (row-major list-of-lists)
-# --------------------------------------------------------------------------
+APP = Path("/app")
+COMMAND = APP / "bin" / "weka-cv-audit"
 
 
-def zeros(n):
-    return [[0.0] * n for _ in range(n)]
+def _quoted(value: str) -> str:
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def ident(n):
-    m = zeros(n)
-    for i in range(n):
-        m[i][i] = 1.0
-    return m
-
-
-def matmul(A, B, n):
-    C = zeros(n)
-    for i in range(n):
-        Ai, Ci = A[i], C[i]
-        for k in range(n):
-            a = Ai[k]
-            if a == 0.0:
-                continue
-            Bk = B[k]
-            for j in range(n):
-                Ci[j] += a * Bk[j]
-    return C
-
-
-def fro(A, n):
-    s = 0.0
-    for i in range(n):
-        for j in range(n):
-            v = A[i][j]
-            s += v * v
-    return math.inf if not math.isfinite(s) else math.sqrt(s)
-
-
-def rel_resid(XX, A, n):
-    num = 0.0
-    den = 0.0
-    for i in range(n):
-        for j in range(n):
-            d = XX[i][j] - A[i][j]
-            num += d * d
-            den += A[i][j] * A[i][j]
-    if not math.isfinite(num) or not math.isfinite(den):
-        return math.inf
-    return math.sqrt(num) / max(math.sqrt(den), 1e-300)
-
-
-def max_off_identity(M, n):
-    return max(
-        abs(M[i][j] - (1.0 if i == j else 0.0)) for i in range(n) for j in range(n)
-    )
-
-
-def max_asym(M, n):
-    return max(
-        (abs(M[i][j] - M[j][i]) for i in range(n) for j in range(n)), default=0.0
-    )
-
-
-def is_pd(M, n):
-    L = zeros(n)
-    for i in range(n):
-        for j in range(i + 1):
-            s = M[i][j] - sum(L[i][k] * L[j][k] for k in range(j))
-            if i == j:
-                if not (s > 0.0):
-                    return False
-                L[i][j] = math.sqrt(s)
-            else:
-                if L[j][j] == 0.0:
-                    return False
-                L[i][j] = s / L[j][j]
-    return True
-
-
-# ----- independent LU-based inverse and log|det| (verifier reference) ------
-
-
-def lu_decompose(A, n):
-    M = [row[:] for row in A]
-    for c in range(n):
-        p = max(range(c, n), key=lambda r: abs(M[r][c]))
-        if M[p][c] == 0.0:
-            return None
-        if p != c:
-            M[c], M[p] = M[p], M[c]
-        for r in range(c + 1, n):
-            M[r][c] /= M[c][c]
-            f = M[r][c]
-            if f != 0.0:
-                for j in range(c + 1, n):
-                    M[r][j] -= f * M[c][j]
-    return M
-
-
-def gj_inverse(A, n):
-    """Gauss-Jordan inverse with partial pivoting (distinct code path)."""
-    M = [row[:] + [1.0 if i == j else 0.0 for j in range(n)] for i, row in enumerate(A)]
-    for c in range(n):
-        p = max(range(c, n), key=lambda r: abs(M[r][c]))
-        if M[p][c] == 0.0:
-            return None
-        M[c], M[p] = M[p], M[c]
-        piv = M[c][c]
-        inv = 1.0 / piv
-        M[c] = [v * inv for v in M[c]]
-        for r in range(n):
-            if r == c:
-                continue
-            f = M[r][c]
-            if f != 0.0:
-                M[r] = [a - f * b for a, b in zip(M[r], M[c])]
-    return [row[n:] for row in M]
-
-
-def lu_logabsdet(A, n):
-    M = lu_decompose(A, n)
-    if M is None:
-        return None
-    return sum(math.log(abs(M[i][i])) for i in range(n))
-
-
-def ref_trace(A, n):
-    """Independent recomputation of the pinned iteration's scale trace and
-    final iterates, using LU log-determinants and Gauss-Jordan inverses."""
-    Y = [row[:] for row in A]
-    W = ident(n)
-    gs = []
-    for _k in range(K):
-        ldy = lu_logabsdet(Y, n)
-        ldw = lu_logabsdet(W, n)
-        if ldy is None or ldw is None:
-            return None
-        g = math.exp(-(ldy + ldw) / (2 * n))
-        Yi = gj_inverse(Y, n)
-        Wi = gj_inverse(W, n)
-        if Yi is None or Wi is None:
-            return None
-        gs.append(g)
-        ig = 1.0 / g
-        Yn = [[0.5 * (g * Y[i][j] + ig * Wi[i][j]) for j in range(n)] for i in range(n)]
-        Wn = [[0.5 * (g * W[i][j] + ig * Yi[i][j]) for j in range(n)] for i in range(n)]
-        if not all(math.isfinite(v) for row in Yn for v in row):
-            return None
-        Y, W = Yn, Wn
-    return gs, Y, W
-
-
-# --------------------------------------------------------------------------
-# construction of known SPD triples: A = Q D Q^T, D positive
-# --------------------------------------------------------------------------
-
-
-def eident(n):
-    return [[F(i == j) for j in range(n)] for i in range(n)]
-
-
-def emm(A, B, n):
-    C = [[F(0)] * n for _ in range(n)]
-    for i in range(n):
-        for k in range(n):
-            a = A[i][k]
-            if a:
-                for j in range(n):
-                    C[i][j] += a * B[k][j]
-    return C
-
-
-def householder_int(rng, n):
-    """Exact rational Householder reflector R = I - 2 v v^T / (v.v), orthogonal."""
-    while True:
-        v = [rng.randint(-2, 2) for _ in range(n)]
-        if any(x != 0 for x in v):
-            break
-    vv = sum(x * x for x in v)
-    return [[F(i == j) - F(2 * v[i] * v[j], vv) for j in range(n)] for i in range(n)]
-
-
-def dyadic(rng, e):
-    """Odd 5-bit mantissa times 2**(e-5): exactly representable when in range."""
-    return F(rng.randrange(16, 32)) * F(2) ** (e - 5)
-
-
-def representable(A, n):
-    for i in range(n):
-        for j in range(n):
-            x = float(A[i][j])
-            if not math.isfinite(x) or F(x) != A[i][j]:
-                return False
-    return True
-
-
-def logabs_frac(fr):
-    return math.log(abs(fr.numerator)) - math.log(fr.denominator)
-
-
-def build_spd(rng, n, base_e, spread):
-    """Return (A_float, spectrum_logmods) for a symmetric positive-definite A."""
-    for _ in range(400):
-        eigs = [
-            dyadic(rng, base_e + (rng.randrange(-spread, spread + 1) if spread else 0))
-            for _ in range(n)
-        ]
-        Q = eident(n)
-        for _ in range(rng.choice([1, 2])):
-            Q = emm(Q, householder_int(rng, n), n)
-        D = [[F(0)] * n for _ in range(n)]
-        for i in range(n):
-            D[i][i] = eigs[i]
-        QT = [[Q[j][i] for j in range(n)] for i in range(n)]
-        A = emm(emm(Q, D, n), QT, n)
-        if representable(A, n):
-            Af = [[float(A[i][j]) for j in range(n)] for i in range(n)]
-            return Af, [logabs_frac(e) for e in eigs]
-    raise RuntimeError(f"SPD not representable for n={n}, base_e={base_e}")
-
-
-def build_battery():
-    rng = random.Random(20260725)
-    cases = []
-    idx = 0
-
-    def add(tag, n, base_e, spread):
-        nonlocal idx
-        A, logmods = build_spd(rng, n, base_e, spread)
-        cases.append((idx, tag, n, A, logmods))
-        idx += 1
-
-    # Wide-magnitude families: |det A| ~ 2^(+-1100), far outside double range, so
-    # forming the determinant as a product of pivots overflows or underflows.
-    # These start at n = 3: at n = 2 the Frobenius norm of A would itself
-    # overflow when |det A| does (they share the same scale).
-    for n in range(3, 11):
-        e = max(6, math.ceil(1100 / n))
-        add("big", n, e, 3)
-        add("small", n, -e, 3)
-    # Modest-magnitude families with increasing condition number (the product
-    # determinant survives here, so these force the correct determinant SCALING
-    # rather than only the overflow handling).
-    for n in range(2, 11):
-        add("unit", n, 0, 4)
-        add("s8", n, 0, 8)
-        add("cond", n, 0, 12)
-        add("s16", n, 0, 16)
-        add("illcond", n, 0, 20)
-    # A few larger wide cases.
-    for n in (7, 9, 10):
-        e = max(6, math.ceil(1400 / n))
-        add("bigger", n, e, 4)
-    return cases
-
-
-BATTERY = build_battery()
-
-# --------------------------------------------------------------------------
-# build / run / io helpers
-# --------------------------------------------------------------------------
-
-
-def _build():
-    """Compile from the frozen fixed sources plus the agent's matsqrt_impl.cpp
-    with a hardcoded command; never trust the agent's CMake or other files."""
-    assert FIXED.is_dir(), f"{FIXED} missing; image not built as expected"
-    assert AGENT_IMPL.is_file(), f"{AGENT_IMPL} missing"
-    cmd = [
-        "g++",
-        "-O2",
-        "-std=c++17",
-        "-Wall",
-        f"-I{FIXED}",
-        str(FIXED / "main.cpp"),
-        str(AGENT_IMPL),
-        "-o",
-        str(BIN),
+def _write_arff(
+    path: Path,
+    classes: list[str],
+    rows: list[dict],
+    *,
+    class_name: str = "outcome",
+    id_name: str = "sample_id",
+    group_name: str = "site",
+    feature_names: list[str] | None = None,
+) -> None:
+    feature_names = feature_names or [
+        f"feature_{index + 1}" for index in range(len(rows[0]["features"]))
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    assert r.returncode == 0, f"compile failed:\n{r.stderr}"
-
-
-def _write_case(A, n):
-    parts = [str(n)]
-    for i in range(n):
-        parts.append(" ".join(format(A[i][j], ".17g") for j in range(i + 1)))
-    CASE_FILE.write_text("\n".join(parts) + "\n")
-
-
-def _run():
-    if OUT_FILE.exists():
-        OUT_FILE.unlink()
-    r = subprocess.run(
-        [str(BIN), str(CASE_FILE), str(OUT_FILE)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+    lines = [
+        "@relation 'grouped audit'",
+        "",
+        f"@attribute {_quoted(id_name)} string",
+        f"@attribute {_quoted(group_name)} string",
+    ]
+    lines.extend(f"@attribute {_quoted(name)} numeric" for name in feature_names)
+    class_values = ",".join(_quoted(value) for value in classes)
+    lines.extend(
+        [
+            f"@attribute {_quoted(class_name)} {{{class_values}}}",
+            "",
+            "@data",
+        ]
     )
-    assert r.returncode == 0, f"matsqrt exited {r.returncode}\nstderr:\n{r.stderr}"
-    assert OUT_FILE.exists(), "no output file was written"
+    for row in rows:
+        values = [
+            "?" if row["id"] is None else _quoted(row["id"]),
+            "?" if row["group"] is None else _quoted(row["group"]),
+        ]
+        values.extend(
+            "?" if value is None else repr(float(value)) for value in row["features"]
+        )
+        values.append("?" if row["class"] is None else _quoted(row["class"]))
+        lines.append(",".join(values))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _parse_output(n):
-    lines = OUT_FILE.read_text().splitlines()
-    pos = 0
-
-    def nxt():
-        nonlocal pos
-        assert pos < len(lines), "output ended unexpectedly"
-        s = lines[pos]
-        pos += 1
-        return s
-
-    assert nxt().startswith("n="), "expected n= line"
-    assert nxt().startswith("status=OK"), "expected status=OK"
-    assert nxt().startswith("message="), "expected message= line"
-
-    def read_matrix(label):
-        assert nxt() == label, f"expected {label} section"
-        return [[float(v) for v in nxt().split()] for _ in range(n)]
-
-    X = read_matrix("X")
-    Z = read_matrix("Z")
-    assert nxt() == "SCALE", "expected SCALE section"
-    mu = [float(nxt()) for _ in range(K)]
-    return X, Z, mu
+def _six(value: float) -> float:
+    rounded = Decimal(str(value)).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+    return float(rounded)
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _built():
-    _build()
+def _transform(
+    row: dict, means: list[float], scales: list[float]
+) -> list[float]:
+    vector = []
+    for feature, (mean, scale) in enumerate(zip(means, scales, strict=True)):
+        value = row["features"][feature]
+        if value is None:
+            value = mean
+        vector.append((value - mean) / scale)
+    return vector
 
 
-# --------------------------------------------------------------------------
-# tests
-# --------------------------------------------------------------------------
+def _fisher_scores(
+    training_vectors: list[list[float]],
+    class_indices: list[int],
+    feature_count: int,
+    class_count: int,
+) -> list[float]:
+    scores = []
+    for feature in range(feature_count):
+        values = [vector[feature] for vector in training_vectors]
+        global_mean = sum(values) / len(values)
+        class_sums = [0.0] * class_count
+        class_counts = [0] * class_count
+        for value, class_index in zip(values, class_indices, strict=True):
+            class_sums[class_index] += value
+            class_counts[class_index] += 1
+        class_means = [
+            class_sums[class_index] / class_counts[class_index]
+            if class_counts[class_index]
+            else 0.0
+            for class_index in range(class_count)
+        ]
+        between = sum(
+            class_counts[class_index]
+            * (class_means[class_index] - global_mean) ** 2
+            for class_index in range(class_count)
+        )
+        within = sum(
+            (value - class_means[class_index]) ** 2
+            for value, class_index in zip(values, class_indices, strict=True)
+        )
+        if within == 0.0:
+            scores.append(float("inf") if between > 0.0 else 0.0)
+        else:
+            scores.append(between / within)
+    return scores
 
 
-def test_binary_builds_successfully():
-    assert BIN.exists() and BIN.is_file()
-
-
-@pytest.mark.parametrize(
-    "case", BATTERY, ids=[f"{c[0]:02d}-{c[1]}-n{c[2]}" for c in BATTERY]
-)
-def test_case(case):
-    """Recover X, Z and the pinned scale trace, satisfying every condition."""
-    _idx, _tag, n, A, logmods = case
-    _write_case(A, n)
-    _run()
-    X, Z, mu = _parse_output(n)
-
-    assert len(X) == n and all(len(r) == n for r in X), "X wrong shape"
-    assert len(Z) == n and all(len(r) == n for r in Z), "Z wrong shape"
-    assert all(math.isfinite(v) for r in X for v in r), "X has non-finite values"
-    assert all(math.isfinite(v) for r in Z for v in r), "Z has non-finite values"
-    assert all(math.isfinite(x) and x > 0.0 for x in mu), (
-        "scale factors must be finite positive"
-    )
-
-    assert max_asym(X, n) <= TOL_SYM, f"X not symmetric ({max_asym(X, n):.2e})"
-    assert max_asym(Z, n) <= TOL_SYM, f"Z not symmetric ({max_asym(Z, n):.2e})"
-    assert is_pd(X, n), "X is not positive definite"
-    assert is_pd(Z, n), "Z is not positive definite"
-
-    rx = rel_resid(matmul(X, X, n), A, n)
-    assert rx <= TOL_X2A, f"||X X - A||/||A|| = {rx:.3e} exceeds {TOL_X2A:.1e}"
-
-    rxz = max_off_identity(matmul(X, Z, n), n)
-    assert rxz <= TOL_XZ, f"max|X Z - I| = {rxz:.3e} exceeds {TOL_XZ:.1e}"
-
-    # (e) mu_0 against the certified anchor from the exact spectrum (log domain)
-    g0_true = math.exp(-sum(logmods) / (2 * n))
-    assert abs(mu[0] - g0_true) <= SCALE_TOL * g0_true, (
-        f"mu_0={mu[0]:.6e} differs from certified {g0_true:.6e}"
+def _rank_features(scores: list[float]) -> list[int]:
+    return sorted(
+        range(len(scores)),
+        key=lambda index: (
+            0 if math.isinf(scores[index]) and scores[index] > 0 else 1,
+            -scores[index] if not math.isinf(scores[index]) else 0.0,
+            index,
+        ),
     )
 
-    # (f) full scale trace against the independent LU-based recomputation
-    ref = ref_trace(A, n)
-    assert ref is not None, "reference iteration failed"
-    gref, _Yr, _Wr = ref
-    for k in range(K):
-        assert abs(mu[k] - gref[k]) <= SCALE_TOL * abs(gref[k]) + 1e-300, (
-            f"mu_{k}={mu[k]:.6e} differs from reference {gref[k]:.6e}"
+
+def _expected(
+    data_path: Path,
+    classes: list[str],
+    rows: list[dict],
+    *,
+    class_name: str = "outcome",
+    top: int | None = None,
+    feature_names: list[str] | None = None,
+) -> dict:
+    labeled = [row for row in rows if row["class"] is not None]
+    groups = sorted({row["group"] for row in labeled})
+    class_index = {label: index for index, label in enumerate(classes)}
+    feature_count = len(labeled[0]["features"])
+    if feature_names is None:
+        feature_names = [f"feature_{index + 1}" for index in range(feature_count)]
+    if top is None:
+        top = feature_count
+    predictions = []
+    folds = []
+
+    for held_out in groups:
+        training = [row for row in labeled if row["group"] != held_out]
+        test = [row for row in labeled if row["group"] == held_out]
+
+        means = []
+        for feature in range(feature_count):
+            present = [
+                row["features"][feature]
+                for row in training
+                if row["features"][feature] is not None
+            ]
+            means.append(sum(present) / len(present) if present else 0.0)
+
+        scales = []
+        for feature in range(feature_count):
+            values = [
+                means[feature]
+                if row["features"][feature] is None
+                else row["features"][feature]
+                for row in training
+            ]
+            variance = sum((value - means[feature]) ** 2 for value in values) / len(
+                values
+            )
+            scale = math.sqrt(variance)
+            scales.append(1.0 if scale == 0.0 else scale)
+
+        training_vectors = [_transform(row, means, scales) for row in training]
+        training_classes = [class_index[row["class"]] for row in training]
+        scores = _fisher_scores(
+            training_vectors,
+            training_classes,
+            feature_count,
+            len(classes),
+        )
+        selected = _rank_features(scores)[:top]
+
+        centroids = [[0.0] * len(selected) for _ in classes]
+        class_sizes = [0] * len(classes)
+        for row, vector in zip(training, training_vectors, strict=True):
+            index = class_index[row["class"]]
+            class_sizes[index] += 1
+            for position, feature in enumerate(selected):
+                centroids[index][position] += vector[feature]
+        for index in range(len(classes)):
+            if class_sizes[index]:
+                centroids[index] = [
+                    value / class_sizes[index] for value in centroids[index]
+                ]
+
+        fold_correct = 0
+        for row in test:
+            vector = _transform(row, means, scales)
+            distances = [
+                sum(
+                    (vector[feature] - centroid[position]) ** 2
+                    for position, feature in enumerate(selected)
+                )
+                for centroid in centroids
+            ]
+            minimum = min(distances)
+            distance_scores = [math.exp(-(distance - minimum)) for distance in distances]
+            total = sum(distance_scores)
+            probabilities = [score / total for score in distance_scores]
+            predicted = max(range(len(classes)), key=probabilities.__getitem__)
+            actual = class_index[row["class"]]
+            fold_correct += predicted == actual
+            predictions.append(
+                {
+                    "id": row["id"],
+                    "group": row["group"],
+                    "actual": row["class"],
+                    "predicted": classes[predicted],
+                    "confidence": _six(probabilities[predicted]),
+                    "_actual_index": actual,
+                    "_predicted_index": predicted,
+                    "_actual_probability": probabilities[actual],
+                }
+            )
+        folds.append(
+            {
+                "group": held_out,
+                "train": len(training),
+                "test": len(test),
+                "accuracy": _six(fold_correct / len(test)),
+                "selectedFeatures": [feature_names[feature] for feature in selected],
+            }
         )
 
+    predictions.sort(key=lambda item: item["id"])
+    confusion = [[0] * len(classes) for _ in classes]
+    correct = 0
+    loss = 0.0
+    for prediction in predictions:
+        actual = prediction["_actual_index"]
+        predicted = prediction["_predicted_index"]
+        confusion[actual][predicted] += 1
+        correct += actual == predicted
+        loss -= math.log(max(prediction["_actual_probability"], 1.0e-15))
 
-def test_case_count_meets_minimum():
-    assert len({c[0] for c in BATTERY}) == len(BATTERY), "duplicate case id"
-    assert len(BATTERY) >= 60, f"only {len(BATTERY)} graded cases, expected >= 60"
+    f1_values = []
+    for index in range(len(classes)):
+        true_positive = confusion[index][index]
+        predicted_count = sum(row[index] for row in confusion)
+        actual_count = sum(confusion[index])
+        precision = true_positive / predicted_count if predicted_count else 0.0
+        recall = true_positive / actual_count if actual_count else 0.0
+        f1_values.append(
+            0.0
+            if precision + recall == 0.0
+            else 2.0 * precision * recall / (precision + recall)
+        )
 
-
-def test_example_case_files_present():
-    for name in ("case_spd_n5_c6", "case_toy"):
-        assert (ENV / "data" / f"{name}.txt").exists(), f"missing example {name}.txt"
-
-
-def test_interface_contract_unaltered():
-    header = (FIXED / "matsqrt.hpp").read_text()
-    assert "MatSqrtResult matrix_sqrt(const Matrix& A);" in header, "signature altered"
-    for field in ("Matrix X", "Matrix Z", "Vector scale", "bool ok"):
-        assert field in header, f"expected field {field!r} missing"
-
-
-# --------------------------------------------------------------------------
-# adversarial negatives: each shortcut is recomputed here and shown to fail,
-# proving the discriminating power of the scale-trace grade is real.
-# --------------------------------------------------------------------------
-
-
-def _prod_absdet(A, n):
-    M = lu_decompose(A, n)
-    if M is None:
-        return 0.0
-    d = 1.0
-    for i in range(n):
-        d *= M[i][i]
-    return abs(d)
-
-
-def _trace_with(A, n, scaling):
-    """Recompute the coupled iteration using a chosen scaling rule.  Returns the
-    scale trace, or None if it produces a non-finite value (a rejection)."""
-    Y = [row[:] for row in A]
-    W = ident(n)
-    gs = []
-    for _k in range(K):
-        Yi = gj_inverse(Y, n)
-        Wi = gj_inverse(W, n)
-        if Yi is None or Wi is None:
-            return None
-        if scaling == "prodet":
-            d = _prod_absdet(Y, n) * _prod_absdet(W, n)
-            if d == 0.0 or not math.isfinite(d):
-                return None
-            g = d ** (-1.0 / (2 * n))
-        elif scaling == "frob":
-            ny = fro(Y, n)
-            nwi = fro(Wi, n)
-            if not math.isfinite(ny) or not math.isfinite(nwi) or ny == 0.0:
-                return None
-            g = math.sqrt(nwi / ny)
-        else:  # "none": no scaling
-            g = 1.0
-        if not math.isfinite(g) or g == 0.0:
-            return None
-        ig = 1.0 / g
-        gs.append(g)
-        Yn = [[0.5 * (g * Y[i][j] + ig * Wi[i][j]) for j in range(n)] for i in range(n)]
-        Wn = [[0.5 * (g * W[i][j] + ig * Yi[i][j]) for j in range(n)] for i in range(n)]
-        if not all(math.isfinite(v) for row in Yn for v in row):
-            return None
-        Y, W = Yn, Wn
-    return gs
-
-
-def _reference_mu0(logmods, n):
-    return math.exp(-sum(logmods) / (2 * n))
-
-
-def test_naive_product_determinant_is_rejected():
-    """Forming |det| as a product of pivots overflows or underflows on the wide
-    cases, so the mu it produces is non-finite; every wide case must break."""
-    wide = 0
-    broke = 0
-    for _idx, tag, n, A, _lm in BATTERY:
-        if tag in ("big", "small", "bigger"):
-            wide += 1
-            if _trace_with(A, n, "prodet") is None:
-                broke += 1
-    assert wide > 0
-    assert broke == wide, (
-        f"naive product determinant must break on every wide case, {broke}/{wide}"
-    )
-
-
-def test_frobenius_scaling_trace_is_rejected():
-    """A full but Frobenius-scaled iteration produces a valid square root yet a
-    different scale trace, so it must fail the scale grade on every case."""
-    failed = 0
-    for _idx, _tag, n, A, logmods in BATTERY:
-        g0 = _reference_mu0(logmods, n)
-        ft = _trace_with(A, n, "frob")
-        if ft is None or abs(ft[0] - g0) > SCALE_TOL * g0:
-            failed += 1
-    assert failed == len(BATTERY), (
-        f"Frobenius scaling must fail the trace grade everywhere, {failed}/{len(BATTERY)}"
-    )
-
-
-def test_unscaled_iteration_is_rejected():
-    """The unscaled coupled iteration (mu_k = 1) yields the wrong trace on every
-    case, and does not even converge on the wide ones."""
-    failed = 0
-    for _idx, _tag, n, A, logmods in BATTERY:
-        g0 = _reference_mu0(logmods, n)
-        ut = _trace_with(A, n, "none")
-        if ut is None or abs(ut[0] - g0) > SCALE_TOL * g0:
-            failed += 1
-    assert failed == len(BATTERY), (
-        f"unscaled iteration must fail the trace grade everywhere, {failed}/{len(BATTERY)}"
-    )
-
-
-def test_return_A_is_rejected():
-    """Returning X = A (and Z = I) misses the X X = A residual by orders of
-    magnitude on every conditioned case."""
-    bad = 0
-    for _idx, _tag, n, A, _lm in BATTERY:
-        rx = rel_resid(matmul(A, A, n), A, n)
-        if not math.isfinite(rx) or rx > TOL_X2A:
-            bad += 1
-    assert bad == len(BATTERY), "returning A must miss the residual on every case"
-
-
-def test_no_forbidden_libraries():
-    """No external linear-algebra routines are referenced in the agent source."""
-    forbidden = [
-        "dgesv",
-        "dpotrf",
-        "dsyev",
-        "dgeev",
-        "dgesvd",
-        "cblas_",
-        "gsl_linalg",
-        "gsl_matrix",
-        "Eigen::",
-        "LAPACKE_",
-        "armadillo",
-        "#include <mkl",
+    public_predictions = [
+        {key: value for key, value in prediction.items() if not key.startswith("_")}
+        for prediction in predictions
     ]
-    text = AGENT_IMPL.read_text()
-    for sym in forbidden:
-        assert sym not in text, f"forbidden symbol '{sym}' in src/matsqrt_impl.cpp"
+    return {
+        "dataset": data_path.name,
+        "instances": len(labeled),
+        "classAttribute": class_name,
+        "classes": classes,
+        "folds": folds,
+        "metrics": {
+            "accuracy": _six(correct / len(predictions)),
+            "macroF1": _six(sum(f1_values) / len(classes)),
+            "logLoss": _six(loss / len(predictions)),
+        },
+        "confusion": confusion,
+        "predictions": public_predictions,
+    }
+
+
+def _run(
+    data_path: Path,
+    output_path: Path,
+    *,
+    class_name: str = "outcome",
+    id_name: str = "sample_id",
+    group_name: str = "site",
+    top: int,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(COMMAND),
+            "--group",
+            group_name,
+            "--data",
+            str(data_path),
+            "--out",
+            str(output_path),
+            "--id",
+            id_name,
+            "--class",
+            class_name,
+            "--top",
+            str(top),
+        ],
+        cwd=APP,
+        text=True,
+        capture_output=True,
+        timeout=45,
+        check=False,
+    )
+
+
+def _assert_matches(
+    tmp_path: Path,
+    classes: list[str],
+    rows: list[dict],
+    *,
+    class_name: str = "outcome",
+    id_name: str = "sample_id",
+    group_name: str = "site",
+    feature_names: list[str] | None = None,
+    top: int | None = None,
+) -> tuple[dict, str]:
+    data_path = tmp_path / "input.arff"
+    output_path = tmp_path / "report.json"
+    feature_count = len(rows[0]["features"])
+    if top is None:
+        top = feature_count
+    _write_arff(
+        data_path,
+        classes,
+        rows,
+        class_name=class_name,
+        id_name=id_name,
+        group_name=group_name,
+        feature_names=feature_names,
+    )
+    result = _run(
+        data_path,
+        output_path,
+        class_name=class_name,
+        id_name=id_name,
+        group_name=group_name,
+        top=top,
+    )
+    assert result.returncode == 0, result.stderr
+    raw = output_path.read_text(encoding="utf-8")
+    actual = json.loads(raw)
+    assert actual == _expected(
+        data_path,
+        classes,
+        rows,
+        class_name=class_name,
+        top=top,
+        feature_names=feature_names,
+    )
+    return actual, raw
+
+
+def _balanced_rows() -> list[dict]:
+    rows = []
+    values = {
+        "west": [(0.2, "cold"), (0.6, "cold"), (3.8, "warm"), (4.2, "warm")],
+        "east": [(0.0, "cold"), (0.9, "cold"), (3.5, "warm"), (4.5, "warm")],
+        "north": [(0.4, "cold"), (1.1, "cold"), (3.6, "warm"), (4.0, "warm")],
+    }
+    for group, group_values in values.items():
+        for index, (feature, label) in enumerate(group_values):
+            rows.append(
+                {
+                    "id": f"{group}-{index}",
+                    "group": group,
+                    "features": [feature, feature * 0.7 + index * 0.1],
+                    "class": label,
+                }
+            )
+    return rows
+
+
+def test_cli_help_and_bad_syntax(tmp_path):
+    """The command exposes its fixed option interface and rejects malformed syntax."""
+    help_result = subprocess.run(
+        [str(COMMAND), "--help"],
+        cwd=APP,
+        text=True,
+        capture_output=True,
+        timeout=45,
+        check=False,
+    )
+    assert help_result.returncode == 0
+    assert help_result.stdout.startswith("usage: /app/bin/weka-cv-audit ")
+
+    bad_result = subprocess.run(
+        [str(COMMAND), "--data", str(tmp_path / "missing.arff")],
+        cwd=APP,
+        text=True,
+        capture_output=True,
+        timeout=45,
+        check=False,
+    )
+    assert bad_result.returncode == 2
+    assert bad_result.stderr.startswith("error: ")
+
+    duplicate_group = subprocess.run(
+        [
+            str(COMMAND),
+            "--data",
+            str(tmp_path / "missing.arff"),
+            "--class",
+            "outcome",
+            "--id",
+            "sample_id",
+            "--group",
+            "site",
+            "--out",
+            str(tmp_path / "report.json"),
+            "--top",
+            "2",
+            "--group",
+            "site",
+        ],
+        cwd=APP,
+        text=True,
+        capture_output=True,
+        timeout=45,
+        check=False,
+    )
+    assert duplicate_group.returncode == 2
+    assert "duplicate option: --group" in duplicate_group.stderr
+
+    duplicate_top = subprocess.run(
+        [
+            str(COMMAND),
+            "--data",
+            str(tmp_path / "missing.arff"),
+            "--class",
+            "outcome",
+            "--id",
+            "sample_id",
+            "--group",
+            "site",
+            "--out",
+            str(tmp_path / "report.json"),
+            "--top",
+            "2",
+            "--top",
+            "1",
+        ],
+        cwd=APP,
+        text=True,
+        capture_output=True,
+        timeout=45,
+        check=False,
+    )
+    assert duplicate_top.returncode == 2
+    assert "duplicate option: --top" in duplicate_top.stderr
+
+    non_integer_top = subprocess.run(
+        [
+            str(COMMAND),
+            "--data",
+            str(tmp_path / "missing.arff"),
+            "--class",
+            "outcome",
+            "--id",
+            "sample_id",
+            "--group",
+            "site",
+            "--out",
+            str(tmp_path / "report.json"),
+            "--top",
+            "two",
+        ],
+        cwd=APP,
+        text=True,
+        capture_output=True,
+        timeout=45,
+        check=False,
+    )
+    assert non_integer_top.returncode == 2
+    assert non_integer_top.stderr.startswith("error: ")
+
+
+def test_bundled_example_matches_the_contract(tmp_path):
+    """The supplied ARFF example produces the complete deterministic report."""
+    rows = [
+        {"id": "a-01", "group": "lab-a", "features": [1.0, 1.2], "class": "moss"},
+        {"id": "a-02", "group": "lab-a", "features": [1.3, None], "class": "moss"},
+        {"id": "a-03", "group": "lab-a", "features": [3.8, 4.1], "class": "fern"},
+        {"id": "a-04", "group": "lab-a", "features": [4.2, 3.9], "class": "fern"},
+        {"id": "b-01", "group": "lab-b", "features": [0.8, 1.1], "class": "moss"},
+        {"id": "b-02", "group": "lab-b", "features": [1.4, 1.0], "class": "moss"},
+        {"id": "b-03", "group": "lab-b", "features": [3.6, 3.7], "class": "fern"},
+        {"id": "b-04", "group": "lab-b", "features": [4.4, 4.2], "class": "fern"},
+        {"id": "c-01", "group": "lab-c", "features": [0.9, 0.7], "class": "moss"},
+        {"id": "c-02", "group": "lab-c", "features": [1.5, 1.4], "class": "moss"},
+        {"id": "c-03", "group": "lab-c", "features": [3.9, 3.6], "class": "fern"},
+        {"id": "c-04", "group": "lab-c", "features": [4.1, None], "class": "fern"},
+        {"id": None, "group": None, "features": [9.0, 9.0], "class": None},
+    ]
+    output_path = tmp_path / "sample-report.json"
+    result = _run(
+        APP / "examples" / "sites.arff",
+        output_path,
+        class_name="species",
+        id_name="sample_id",
+        group_name="site",
+        top=2,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(output_path.read_text()) == _expected(
+        APP / "examples" / "sites.arff",
+        ["moss", "fern"],
+        rows,
+        class_name="species",
+        top=2,
+        feature_names=["height", "moisture"],
+    )
+
+
+def test_fold_local_preprocessing_and_training(tmp_path):
+    """Held-out groups do not influence imputation, scaling, or class centroids."""
+    rows = []
+    group_values = {
+        "g1": [(0.0, "a"), (1.0, "a"), (9.0, "b"), (10.0, "b")],
+        "g2": [(0.2, "a"), (1.2, "a"), (8.8, "b"), (10.2, "b")],
+        "g3": [(9.5, "a"), (8.7, "a"), (0.4, "b"), (1.1, "b")],
+    }
+    for group, values in group_values.items():
+        for index, (value, label) in enumerate(values):
+            rows.append(
+                {
+                    "id": f"{group}-{index}",
+                    "group": group,
+                    "features": [value, None if index == 1 else value * 100],
+                    "class": label,
+                }
+            )
+    report, _ = _assert_matches(tmp_path, ["a", "b"], rows, top=2)
+    assert any(
+        item["actual"] != item["predicted"] for item in report["predictions"]
+    )
+
+
+def test_fold_local_fisher_feature_selection_ignores_held_out_group(tmp_path):
+    """Held-out rows cannot change Fisher scores or the predictors chosen for a fold."""
+    feature_names = ["signal", "decoy"]
+    rows = [
+        {"id": "g1-a1", "group": "g1", "features": [0.0, 0.0], "class": "alpha"},
+        {"id": "g1-a2", "group": "g1", "features": [0.2, 0.0], "class": "alpha"},
+        {"id": "g1-b1", "group": "g1", "features": [10.0, 0.0], "class": "beta"},
+        {"id": "g1-b2", "group": "g1", "features": [10.2, 0.0], "class": "beta"},
+        {"id": "g2-a1", "group": "g2", "features": [100.0, 0.0], "class": "alpha"},
+        {"id": "g2-a2", "group": "g2", "features": [100.2, 0.0], "class": "alpha"},
+        {"id": "g2-b1", "group": "g2", "features": [100.0, 100.0], "class": "beta"},
+        {"id": "g2-b2", "group": "g2", "features": [100.2, 100.0], "class": "beta"},
+        {"id": "g3-a1", "group": "g3", "features": [0.0, 0.0], "class": "alpha"},
+        {"id": "g3-a2", "group": "g3", "features": [0.2, 0.0], "class": "alpha"},
+        {"id": "g3-b1", "group": "g3", "features": [10.0, 0.0], "class": "beta"},
+        {"id": "g3-b2", "group": "g3", "features": [10.2, 0.0], "class": "beta"},
+    ]
+    report, _ = _assert_matches(
+        tmp_path,
+        ["alpha", "beta"],
+        rows,
+        feature_names=feature_names,
+        top=1,
+    )
+    expected = _expected(
+        tmp_path / "input.arff",
+        ["alpha", "beta"],
+        rows,
+        feature_names=feature_names,
+        top=1,
+    )
+    for actual_fold, expected_fold in zip(report["folds"], expected["folds"], strict=True):
+        assert actual_fold["selectedFeatures"] == expected_fold["selectedFeatures"]
+    g2_fold = next(fold for fold in report["folds"] if fold["group"] == "g2")
+    assert g2_fold["selectedFeatures"] == ["signal"]
+
+
+def test_fisher_score_ties_use_arff_predictor_order(tmp_path):
+    """Equal Fisher scores rank earlier ARFF predictors ahead of later ones."""
+    feature_names = ["first", "second", "third"]
+    rows = []
+    for group in ["g1", "g2"]:
+        for index, label in enumerate(["low", "high"]):
+            value = float(index * 5 + 1)
+            rows.append(
+                {
+                    "id": f"{group}-{label}",
+                    "group": group,
+                    "features": [value, value, value + 0.001],
+                    "class": label,
+                }
+            )
+    report, _ = _assert_matches(
+        tmp_path,
+        ["low", "high"],
+        rows,
+        feature_names=feature_names,
+        top=2,
+    )
+    for fold in report["folds"]:
+        assert fold["selectedFeatures"] == ["first", "second"]
+
+
+def test_missing_values_zero_variance_and_three_classes(tmp_path):
+    """Fold statistics handle absent values, constant predictors, and all classes."""
+    rows = []
+    for group_index, group in enumerate(["gamma", "alpha", "beta"]):
+        for class_index, label in enumerate(["red", "green", "blue"]):
+            rows.append(
+                {
+                    "id": f"{label}-{group}",
+                    "group": group,
+                    "features": [
+                        class_index * 2.0 + group_index * 0.2,
+                        None if group != "gamma" else class_index + 0.5,
+                        7.0,
+                    ],
+                    "class": label,
+                }
+            )
+    _assert_matches(tmp_path, ["red", "green", "blue"], rows, top=3)
+
+
+def test_unlabeled_rows_are_discarded_before_validation(tmp_path):
+    """An unlabeled row has no effect even when its id and group are missing."""
+    rows = _balanced_rows()
+    rows.extend(
+        [
+            {"id": None, "group": None, "features": [999.0, None], "class": None},
+            {
+                "id": "west-0",
+                "group": "west",
+                "features": [-999.0, -999.0],
+                "class": None,
+            },
+        ]
+    )
+    report, _ = _assert_matches(tmp_path, ["cold", "warm"], rows, top=2)
+    assert report["instances"] == 12
+    assert len(report["predictions"]) == 12
+
+
+def test_macro_f1_confidence_and_log_loss(tmp_path):
+    """Metrics use class-macro F1 and probabilities for their documented roles."""
+    rows = []
+    for group_index, group in enumerate(["one", "two", "three"]):
+        for index in range(5):
+            rows.append(
+                {
+                    "id": f"{group}-major-{index}",
+                    "group": group,
+                    "features": [index * 0.2 + group_index],
+                    "class": "major",
+                }
+            )
+        rows.append(
+            {
+                "id": f"{group}-minor",
+                "group": group,
+                "features": [group_index + 0.3],
+                "class": "minor",
+            }
+        )
+    report, _ = _assert_matches(tmp_path, ["major", "minor"], rows, top=1)
+    assert any(
+        item["actual"] != item["predicted"] for item in report["predictions"]
+    )
+
+
+def test_equal_distances_prefer_class_declaration_order(tmp_path):
+    """Exact probability ties select the earlier declared class with confidence one half."""
+    rows = []
+    for group in ["g3", "g1", "g2"]:
+        for label in ["first", "second"]:
+            rows.append(
+                {
+                    "id": f"{group}-{label}",
+                    "group": group,
+                    "features": [4.0, 4.0],
+                    "class": label,
+                }
+            )
+    report, _ = _assert_matches(tmp_path, ["first", "second"], rows, top=2)
+    assert {item["predicted"] for item in report["predictions"]} == {"first"}
+    assert {item["confidence"] for item in report["predictions"]} == {0.5}
+
+
+def test_report_order_names_and_fixed_decimal_rendering(tmp_path):
+    """Names are resolved literally and report arrays and decimals are canonical."""
+    rows = _balanced_rows()
+    random.Random(91).shuffle(rows)
+    report, raw = _assert_matches(
+        tmp_path,
+        ["cold", "warm"],
+        rows,
+        class_name="target label",
+        id_name="sample key",
+        group_name="collection site",
+        feature_names=["signal one", "signal two"],
+        top=2,
+    )
+    assert [fold["group"] for fold in report["folds"]] == ["east", "north", "west"]
+    ids = [prediction["id"] for prediction in report["predictions"]]
+    assert ids == sorted(ids)
+    decimals = re.findall(
+        r'"(?:accuracy|macroF1|logLoss|confidence)": (-?\d+\.\d{6})(?=[,}])',
+        raw,
+    )
+    assert len(decimals) == len(report["folds"]) + 3 + len(report["predictions"])
+
+
+def test_seeded_generated_audits_match_independent_calculation(tmp_path):
+    """Several generated ARFF datasets match an independent grouped evaluation."""
+    rng = random.Random(20260725)
+    for case in range(3):
+        rows = []
+        groups = ["site-z", "site-a", "site-m", "site-b"]
+        for group_index, group in enumerate(groups):
+            for class_index, label in enumerate(["low", "high"]):
+                for repetition in range(2):
+                    features = []
+                    for feature in range(3):
+                        value = (
+                            class_index * (2.0 + feature)
+                            + group_index * 0.35
+                            + rng.uniform(-0.8, 0.8)
+                        )
+                        features.append(
+                            None if rng.random() < 0.12 else round(value, 6)
+                        )
+                    rows.append(
+                        {
+                            "id": (
+                                f"case-{case}-{group_index}-{class_index}-{repetition}"
+                            ),
+                            "group": group,
+                            "features": features,
+                            "class": label,
+                        }
+                    )
+        case_dir = tmp_path / f"case-{case}"
+        case_dir.mkdir()
+        _assert_matches(case_dir, ["low", "high"], rows, top=2)
+
+
+def test_invalid_data_removes_an_existing_report(tmp_path):
+    """A data validation failure exits one and leaves no stale output report."""
+    rows = _balanced_rows()
+    rows[1]["id"] = rows[0]["id"]
+    data_path = tmp_path / "duplicate.arff"
+    output_path = tmp_path / "report.json"
+    _write_arff(data_path, ["cold", "warm"], rows)
+    output_path.write_text('{"stale": true}\n')
+
+    result = _run(data_path, output_path, top=2)
+
+    assert result.returncode == 1
+    assert result.stderr.startswith("error: id values must be unique")
+    assert not output_path.exists()
+
+
+def test_invalid_top_values_remove_an_existing_report(tmp_path):
+    """Out-of-range top counts exit one and leave no stale output report."""
+    data_path = tmp_path / "valid.arff"
+    _write_arff(data_path, ["cold", "warm"], _balanced_rows())
+    for top in (0, 3):
+        output_path = tmp_path / f"top-{top}.json"
+        output_path.write_text('{"stale": true}\n', encoding="utf-8")
+        result = _run(data_path, output_path, top=top)
+        assert result.returncode == 1, (top, result.stderr)
+        assert result.stderr.startswith("error: "), (top, result.stderr)
+        assert not output_path.exists(), top
+
+
+def test_invalid_arff_schemas_are_rejected(tmp_path):
+    """Attribute types, predictor shape, group count, and fold coverage are validated."""
+    cases = {
+        "numeric-class": """
+@relation bad
+@attribute id string
+@attribute group string
+@attribute x numeric
+@attribute outcome numeric
+@data
+'a','g1',0,0
+'b','g2',1,1
+""",
+        "numeric-id": """
+@relation bad
+@attribute id numeric
+@attribute group string
+@attribute x numeric
+@attribute outcome {a,b}
+@data
+1,'g1',0,a
+2,'g1',1,b
+3,'g2',0,a
+4,'g2',1,b
+""",
+        "nominal-predictor": """
+@relation bad
+@attribute id string
+@attribute group string
+@attribute x {low,high}
+@attribute outcome {a,b}
+@data
+'a','g1',low,a
+'b','g1',high,b
+'c','g2',low,a
+'d','g2',high,b
+""",
+        "no-predictor": """
+@relation bad
+@attribute id string
+@attribute group string
+@attribute outcome {a,b}
+@data
+'a','g1',a
+'b','g1',b
+'c','g2',a
+'d','g2',b
+""",
+        "one-group": """
+@relation bad
+@attribute id string
+@attribute group string
+@attribute x numeric
+@attribute outcome {a,b}
+@data
+'a','g1',0,a
+'b','g1',1,b
+""",
+        "missing-training-class": """
+@relation bad
+@attribute id string
+@attribute group string
+@attribute x numeric
+@attribute outcome {a,b}
+@data
+'a','g1',0,a
+'b','g1',1,a
+'c','g2',2,b
+'d','g2',3,b
+""",
+        "missing-group": """
+@relation bad
+@attribute id string
+@attribute group string
+@attribute x numeric
+@attribute outcome {a,b}
+@data
+'a',?,0,a
+'b','g1',1,b
+'c','g2',0,a
+'d','g2',1,b
+""",
+    }
+
+    for name, source in cases.items():
+        data_path = tmp_path / f"{name}.arff"
+        output_path = tmp_path / f"{name}.json"
+        data_path.write_text(source.strip() + "\n", encoding="utf-8")
+        output_path.write_text('{"stale": true}\n', encoding="utf-8")
+        result = _run(data_path, output_path, top=1)
+        assert result.returncode == 1, (name, result.stderr)
+        assert result.stderr.startswith("error: "), name
+        assert not output_path.exists(), name
+
+    valid_path = tmp_path / "valid.arff"
+    _write_arff(valid_path, ["cold", "warm"], _balanced_rows())
+    result = _run(
+        valid_path,
+        tmp_path / "missing-attribute.json",
+        class_name="absent",
+        top=2,
+    )
+    assert result.returncode == 1
+    assert result.stderr.startswith("error: attribute not found: absent")

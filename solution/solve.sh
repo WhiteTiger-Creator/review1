@@ -1,22 +1,34 @@
 #!/bin/bash
 set -euo pipefail
 
-cd /app/environment
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE=""
+for candidate in \
+    "$SCRIPT_DIR/reference/ReferenceAudit.java" \
+    /solution/reference/ReferenceAudit.java \
+    /oracle/reference/ReferenceAudit.java; do
+    if [ -f "$candidate" ]; then
+        SOURCE="$candidate"
+        break
+    fi
+done
 
-cp /solution/src/matsqrt_impl.cpp src/matsqrt_impl.cpp
-
-rm -rf build
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-
-test -x ./build/matsqrt || {
-    echo "solve.sh: build did not produce ./build/matsqrt" >&2
+if [ -z "$SOURCE" ]; then
+    echo "reference source not found" >&2
     exit 1
-}
+fi
 
-./build/matsqrt data/case_spd_n5_c6.txt /tmp/matsqrt_smoke.out || {
-    echo "solve.sh: matsqrt failed on case_spd_n5_c6.txt" >&2
-    exit 1
-}
+mkdir -p /app/src/audit
+sed \
+    -e 's/^package refaudit;$/package audit;/' \
+    -e 's/public final class ReferenceAudit/public final class Main/' \
+    "$SOURCE" > /app/src/audit/Main.java
 
-echo "solve.sh: build succeeded"
+chmod 0755 /app/bin/weka-cv-audit
+/app/bin/weka-cv-audit \
+    --data /app/examples/sites.arff \
+    --class species \
+    --id sample_id \
+    --group site \
+    --top 2 \
+    --out /app/report.json
