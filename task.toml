@@ -3,25 +3,25 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
+difficulty = "hard"
 category = "machine-learning"
 subcategories = []
-difficulty = "hard"
-codebase_size = "minimal"
 number_of_milestones = 0
-languages = ["go", "bash"]
-tags = ["offline-evaluation", "inverse-propensity", "doubly-robust", "contextual-bandit", "evaluation-pipeline"]
-expert_time_estimate_min = 90.0
-junior_time_estimate_min = 240.0
+codebase_size = "small"
+languages = ["go", "rust"]
+tags = ["contrastive-learning", "soft-dtw", "selective-prediction", "gloss-alignment", "go", "rust"]
+expert_time_estimate_min = 150
+junior_time_estimate_min = 300
+
+[verifier]
+timeout_sec = 450.0
+
+[agent]
+timeout_sec = 1200.0
 
 [environment]
 allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 900.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-
-[agent]
-timeout_sec = 1800
-
-[verifier]
-timeout_sec = 900

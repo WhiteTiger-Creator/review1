@@ -1,8 +1,0 @@
-{
-  "schema_version": "1.0",
-  "policy_source": "offline-bandit-ips-v1",
-  "cutoff_unix": 1704067200,
-  "eval_window_sec": 604800,
-  "overlay_profile": "dashboard",
-  "legacy_reconcile": false
-}
