@@ -1,13 +1,22 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-install -m 0644 /solution/fixed/schedule/enumerate.go /app/internal/schedule/enumerate.go
-install -m 0644 /solution/fixed/schedule/coalesce.go /app/internal/schedule/coalesce.go
-install -m 0644 /solution/fixed/dispatch/dependency.go /app/internal/dispatch/dependency.go
-install -m 0644 /solution/fixed/recovery/recover.go /app/internal/recovery/recover.go
+cd /app/environment
 
-gofmt -w \
-  /app/internal/schedule/enumerate.go \
-  /app/internal/schedule/coalesce.go \
-  /app/internal/dispatch/dependency.go \
-  /app/internal/recovery/recover.go
+cp /solution/src/matsqrt_impl.cpp src/matsqrt_impl.cpp
+
+rm -rf build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+
+test -x ./build/matsqrt || {
+    echo "solve.sh: build did not produce ./build/matsqrt" >&2
+    exit 1
+}
+
+./build/matsqrt data/case_spd_n5_c6.txt /tmp/matsqrt_smoke.out || {
+    echo "solve.sh: matsqrt failed on case_spd_n5_c6.txt" >&2
+    exit 1
+}
+
+echo "solve.sh: build succeeded"
