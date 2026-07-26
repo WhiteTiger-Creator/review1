@@ -1,0 +1,5 @@
+{
+  "id": "grid-split-gen",
+  "description": "Shared hub generator between posts",
+  "source_wave": "overloaded-generator"
+}

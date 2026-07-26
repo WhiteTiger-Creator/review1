@@ -1,0 +1,3 @@
+Signaling and delay
+
+Signal tokens are finite for the whole match. Legal types include WARN_LANE, COVER, NEED_POWER, ACK, SYNC_CAPTURE, STATUS, and CANCEL_SCAN. Messages enter a one round delay queue before delivery. Jamming phases drop messages after consuming a token and can block ACK specifically. WAVE_PLAN and partner private payloads are illegal. Ambiguous STATUS messages do not substitute for WARN_LANE when coordinating coverage. Acknowledgment should reference the delayed warning that arrived in signals_in. Prefer spending tokens on information the partner cannot observe rather than repeating public state.

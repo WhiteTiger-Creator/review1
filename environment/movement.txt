@@ -1,0 +1,3 @@
+Movement and sector geometry
+
+Command posts occupy named sectors on an adjacency graph. A move action may step to an adjacent sector or name a farther sector; the engine advances only one legal hop toward that goal each round. Distance is shortest path length on the undirected edges. Interception requires the actor to be within interceptor range of the contact sector after movement resolves in the same simultaneous phase. Holding preserves position and spends no power. Reinforce marks presence on a sector without capturing threats. Identical seeds and graphs always yield identical hop choices when multiple neighbors share the same remaining distance because neighbor identifiers are ordered lexicographically.

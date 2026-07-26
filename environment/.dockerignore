@@ -1,11 +1,14 @@
 .git
 .gitignore
-.env
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-solution/
-tests/
+tests
+solution
+*.zip
+.DS_Store
+.env
+*.log

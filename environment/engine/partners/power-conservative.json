@@ -1,0 +1,4 @@
+{
+  "id": "power-conservative",
+  "summary": "Avoids optional scans, preserves generator headroom, signals NEED_POWER sparingly"
+}

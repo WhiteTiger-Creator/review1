@@ -1,0 +1,207 @@
+{
+  "name": "civilian-evac",
+  "seed": 404,
+  "horizon": 12,
+  "accept_score": 100,
+  "sync_capture_contact": "boss",
+  "sectors": [
+    {
+      "id": "L0",
+      "x": 0,
+      "y": 3,
+      "role": "entry"
+    },
+    {
+      "id": "L1",
+      "x": 0,
+      "y": 2
+    },
+    {
+      "id": "L2",
+      "x": 0,
+      "y": 1,
+      "role": "post"
+    },
+    {
+      "id": "L3",
+      "x": 0,
+      "y": 0,
+      "role": "exit"
+    },
+    {
+      "id": "H",
+      "x": 1,
+      "y": 1,
+      "role": "hub"
+    },
+    {
+      "id": "R0",
+      "x": 2,
+      "y": 3,
+      "role": "entry"
+    },
+    {
+      "id": "R1",
+      "x": 2,
+      "y": 2
+    },
+    {
+      "id": "R2",
+      "x": 2,
+      "y": 1,
+      "role": "post"
+    },
+    {
+      "id": "R3",
+      "x": 2,
+      "y": 0,
+      "role": "exit"
+    },
+    {
+      "id": "CV",
+      "x": 1,
+      "y": 0,
+      "role": "civilian"
+    }
+  ],
+  "edges": [
+    [
+      "L0",
+      "L1"
+    ],
+    [
+      "L1",
+      "L2"
+    ],
+    [
+      "L2",
+      "L3"
+    ],
+    [
+      "R0",
+      "R1"
+    ],
+    [
+      "R1",
+      "R2"
+    ],
+    [
+      "R2",
+      "R3"
+    ],
+    [
+      "L2",
+      "H"
+    ],
+    [
+      "H",
+      "R2"
+    ],
+    [
+      "L3",
+      "CV"
+    ],
+    [
+      "CV",
+      "R3"
+    ],
+    [
+      "H",
+      "CV"
+    ]
+  ],
+  "agent_post": {
+    "id": "alpha",
+    "sector": "L2",
+    "battery": 5,
+    "battery_max": 6
+  },
+  "partner_post": {
+    "id": "bravo",
+    "sector": "R2",
+    "battery": 5,
+    "battery_max": 6
+  },
+  "generators": [
+    {
+      "id": "G1",
+      "sector": "H",
+      "capacity": 6,
+      "links": [
+        "alpha",
+        "bravo"
+      ]
+    }
+  ],
+  "civilian_corridors": [
+    [
+      "L3",
+      "CV",
+      "R3"
+    ]
+  ],
+  "signal_budget": 5,
+  "signal_types": [
+    "WARN_LANE",
+    "COVER",
+    "NEED_POWER",
+    "ACK",
+    "SYNC_CAPTURE",
+    "STATUS",
+    "CANCEL_SCAN"
+  ],
+  "jamming": [],
+  "waves": [
+    {
+      "id": "fake",
+      "spawn_round": 1,
+      "lane": [
+        "L0",
+        "L1",
+        "L2"
+      ],
+      "kind": "false",
+      "speed": 1,
+      "hp": 1
+    },
+    {
+      "id": "real",
+      "spawn_round": 2,
+      "lane": [
+        "R0",
+        "R1",
+        "R2",
+        "R3"
+      ],
+      "kind": "incursion",
+      "speed": 1,
+      "hp": 1
+    },
+    {
+      "id": "boss",
+      "spawn_round": 5,
+      "lane": [
+        "L0",
+        "L1",
+        "L2",
+        "H",
+        "CV"
+      ],
+      "kind": "incursion",
+      "speed": 1,
+      "hp": 2
+    }
+  ],
+  "partner_doctrine": "signal-explicit",
+  "scoring": {
+    "infrastructure": 10,
+    "civilian": 5,
+    "false_alarm_penalty": 3,
+    "sync_capture": 8,
+    "breakthrough_penalty": 15,
+    "integrity_bonus": 4
+  },
+  "max_actions": 4,
+  "scan_range": 1,
+  "interceptor_range": 1
+}
