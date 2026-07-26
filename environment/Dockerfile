@@ -1,43 +1,38 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+FROM public.ecr.aws/docker/library/ubuntu:24.04@sha256:0d39fcc8335d6d74d5502f6df2d30119ff4790ebbb60b364818d5112d9e3e932
 
-LABEL org.opencontainers.image.title="orbital-salvage-fleet-command" \
-    org.opencontainers.image.source="https://github.com/laude-institute/terminal-bench" \
-    org.opencontainers.image.revision="1.0.0" \
-    org.opencontainers.image.created="2026-07-26T00:00:00Z" \
-    org.opencontainers.image.version="1.0.0" \
-    org.opencontainers.image.licenses="MIT"
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    GOTOOLCHAIN=local \
-    GO111MODULE=on \
-    CGO_ENABLED=0 \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
-
-COPY requirements.lock /tmp/requirements.lock
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        asciinema=2.2.0-1 \
-        ca-certificates=20230311+deb12u1 \
-        make=4.3-4.1 \
-        python3=3.11.2-1+b1 \
-        python3-pip=23.0.1+dfsg-1 \
-        tmux=3.3a-3 \
-    && pip3 install --break-system-packages --no-cache-dir --require-hashes --no-deps \
-        -r /tmp/requirements.lock \
-    && ln -sf /usr/bin/python3 /usr/bin/python \
-    && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/requirements.lock
+        asciinema \
+        ca-certificates \
+        make \
+        openjdk-17-jdk-headless \
+        python3 \
+        python3-venv \
+        tmux \
+    && rm -rf /var/lib/apt/lists/*
 
+COPY requirements.lock /tmp/requirements.lock
+RUN python3 -m venv /opt/verifier \
+    && /opt/verifier/bin/pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock \
+    && rm /tmp/requirements.lock
+
+ENV PATH="/opt/verifier/bin:${PATH}"
 WORKDIR /app
 
-COPY go.mod Makefile /app/
-COPY sortie_deck/ /app/sortie_deck/
-COPY mission_brief/ /app/mission_brief/
-COPY osfcmd/ /app/osfcmd/
-COPY osflib/ /app/osflib/
+COPY app/Makefile /app/Makefile
+COPY app/bin/ /app/bin/
+COPY app/lib/ /app/lib/
+COPY app/tablebook/ /app/tablebook/
+COPY app/examples/ /app/examples/
+COPY app/src/ /app/src/
 
-RUN mkdir -p /app/build
+RUN java -version \
+    && javac -version \
+    && make -C /app compile-check \
+    && make -C /app starter-check
+
+CMD ["/bin/bash"]
