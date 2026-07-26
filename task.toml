@@ -3,28 +3,44 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "medium"
-category = "security"
-tags = ["trust", "revocation", "authorization", "federation", "cutover", "go"]
-languages = ["go", "bash"]
+difficulty = "hard"
+category = "machine-learning"
+tags = ["machine-learning", "calibration", "residual", "r", "bash"]
+languages = ["r", "bash"]
 codebase_size = "small"
 number_of_milestones = 0
-subcategories = []
-expert_time_estimate_min = 90
-junior_time_estimate_min = 300
+subcategories = ["long_context"]
+expert_time_estimate_min = 75
+junior_time_estimate_min = 240
+difficulty_mechanism_plan = '''
+To solve this puzzle, the model must master three interconnected domains representing high difficulty:
+1. **Policy Reconciliation (State Reconstruction)**: The agent must merge missing adjustment bands from the historical policy engine (`legacy_e.R`) during the table staging phase, which requires cross-referencing json files, R scripts, and doc indices before downstream consumption.
+why_model_misses_it: Agent attempts to fix only the downstream output directly without implementing the table generation join, causing test failure when input datasets are swapped.
+2. **Strict Multi-Constraint Optimization**: The solver must reconstruct forward scores from base_pred + adjustments, but must also retro-propagate constraints (diff >= 1e-9) backwards if a residual ceiling is reached, enforcing global constraint satisfaction.
+why_model_misses_it: Agent implements a trivial forward clamp, failing strict monotonicity in edge cases where backwards propagation is required, or violating residual limits.
+3. **Multi-Pass Cache Ledger Coherence**: The agent must mutate an append-only binary ledger where multi-epoch runs correctly concatenate canonical schemas without duplication or omission (`loop_c.R`).
+why_model_misses_it: Agent wipes and overwrites the cache during intermediate epochs (refresh_flag logic flaw), failing the multi-epoch cryptographic replay verification in `engine.R`.
+'''
+
+[category_profile]
+primary_activity = "machine-learning"
+justification = "Requires implementing constraint optimization over tabular data in R."
+distractor_skills = ["bash"]
+
+[reference_pattern]
+justification_if_none = "New approach to multi-constraint optimization in R."
+
+
+[verifier]
+timeout_sec = 1200
 
 [agent]
 timeout_sec = 1800
 
-[verifier]
-timeout_sec = 900
-
 [environment]
 allow_internet = false
 build_timeout_sec = 600
-docker_flags = []
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-gpus = 0
-gpu_types = []
+workdir = "/app"
