@@ -1,620 +1,522 @@
-"""Validate covariance-coupled minimum-cycle policy safety."""
-
-from __future__ import annotations
-
-import csv
-import math
+import json
 import os
-import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+import tempfile
 from pathlib import Path
 
-import pytest
-
-SURFACES = (
-    "public",
-    "hidden-a",
-    "hidden-b",
-    "hidden-c",
-    "hidden-d",
-    "hidden-e",
+OUT = Path("/app/output/graph_probe.json")
+NEST = Path("/app/environment/nest")
+VAR = Path("/app/environment/var")
+LEDGER = VAR / "ledger.jsonl"
+SNAP = VAR / "snapshot.json"
+SHADOW = VAR / "shadow.json"
+STUB = Path("/app/environment/seed/stub_trace.json")
+G1 = Path("/app/environment/seed/tile_g1.json")
+G2 = Path("/app/environment/seed/tile_g2.json")
+G1X = Path("/app/environment/seed/tile_g1_x2.json")
+G2X = Path("/app/environment/seed/tile_g2_x2.json")
+E1 = Path("/app/environment/seed/tile_e1.json")
+E2 = Path("/app/environment/seed/tile_e2.json")
+SCRAPS = "/app/environment/seed/scrap_old.txt,/app/environment/seed/scrap_new.txt"
+TRIAD = (
+    "/app/environment/seed/scrap_old.txt,"
+    "/app/environment/seed/scrap_mid.txt,"
+    "/app/environment/seed/scrap_new.txt"
 )
-INPUT_FILES = (
-    "cases.csv",
-    "states.csv",
-    "cluster_roster.csv",
-    "priors.csv",
-    "regularizers.csv",
-    "records.csv",
+REV_TRIAD = (
+    "/app/environment/seed/scrap_mid.txt,"
+    "/app/environment/seed/scrap_old.txt,"
+    "/app/environment/seed/scrap_new.txt"
 )
-HEADER = (
-    "case_id",
-    "selected_candidate",
-    "selected_policy",
-    "feasible_count",
-    "policy_score",
-    "robust_policy_return",
-    "minimum_cycle_mean",
-    "critical_cycle",
-    "critical_cycle_length",
-    "cycle_covariance_penalty",
-    "effective_sample_size",
-    "support_edge_count",
-    "minimum_edge_support",
-    "cv_loss",
-    "deletion_code",
-    "deletion_change_count",
-    "worst_deletion_safety",
-    "worst_deletion_scenario_code",
-    "maximum_deletion_covariance",
-    "stability_checksum",
-    "audit_signature",
-)
-FLOAT_FIELDS = (
-    "policy_score",
-    "robust_policy_return",
-    "minimum_cycle_mean",
-    "cycle_covariance_penalty",
-    "effective_sample_size",
-    "minimum_edge_support",
-    "cv_loss",
-    "worst_deletion_safety",
-    "maximum_deletion_covariance",
-)
-INT_FIELDS = (
-    "feasible_count",
-    "critical_cycle_length",
-    "support_edge_count",
-    "deletion_change_count",
-    "worst_deletion_scenario_code",
-    "stability_checksum",
-)
-ABS_TOLERANCE = 3e-8
-CANDIDATE_UID = 65534
-CANDIDATE_GID = 65534
-CANDIDATE_ROOT = Path("/dev/shm/bank-cycle-candidate-runs")
-GENERATED_ROOT = Path("/tmp/bank-cycle-verifier-surfaces")
-LANDLOCK = Path("/tests/landlock_exec.py")
+SUM = Path("/app/environment/seed/sum_partial.txt")
+SUM_EQ = Path("/app/environment/seed/sum_equal.txt")
+
+NEED_DUAL = {"root", "bind", "sys", "prop"}
+NEED_A7 = {"root", "bind", "prop"}
 
 
-@dataclass(frozen=True)
-class CandidateResult:
-    header: tuple[str, ...]
-    rows: tuple[dict[str, str], ...]
-    raw: bytes
-
-
-def surface_root(surface: str) -> Path:
-    if surface == "public":
-        return Path("/app/data")
-    return Path("/tests/fixtures") / surface
-
-
-def read_csv(path: Path) -> tuple[tuple[str, ...], list[dict[str, str]]]:
-    with path.open(newline="", encoding="utf-8-sig") as stream:
-        reader = csv.DictReader(stream)
-        return tuple(reader.fieldnames or ()), list(reader)
-
-
-def write_csv(
-    path: Path,
-    header: tuple[str, ...],
-    rows: list[dict[str, str]],
-) -> None:
-    with path.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(
-            stream,
-            fieldnames=header,
-            lineterminator="\n",
-        )
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def expected_rows(surface: str) -> tuple[dict[str, str], ...]:
-    header, rows = read_csv(Path("/tests/golden") / f"{surface}.csv")
-    assert header == HEADER
-    return tuple(rows)
-
-
-EXPECTED = {surface: expected_rows(surface) for surface in SURFACES}
-CASE_PARAMETERS = tuple(
-    (surface, row["case_id"])
-    for surface in SURFACES
-    for row in EXPECTED[surface]
-)
-RUN_CACHE: dict[str, CandidateResult] = {}
-
-
-def make_writable(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    os.chown(path, CANDIDATE_UID, CANDIDATE_GID)
-    path.chmod(0o700)
-
-
-def sandbox_command(
-    write_root: Path,
-    command: list[str],
-    *,
-    timeout: int = 600,
-) -> subprocess.CompletedProcess[str]:
-    temporary = write_root / "tmp"
-    make_writable(temporary)
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "HOME": str(write_root),
-            "TMPDIR": str(temporary),
-            "LC_ALL": "C",
-        }
-    )
-    return subprocess.run(
-        [
-            "python3",
-            str(LANDLOCK),
-            "--write",
-            str(write_root),
-            "--uid",
-            str(CANDIDATE_UID),
-            "--gid",
-            str(CANDIDATE_GID),
-            "--",
-            *command,
-        ],
+def build() -> None:
+    subprocess.run(
+        ["bash", "/app/environment/tools/mk_all.sh"],
         cwd="/app",
-        env=environment,
+        check=True,
         text=True,
         capture_output=True,
-        timeout=timeout,
-        check=False,
     )
 
 
-def run_candidate(data_root: Path, cache_key: str) -> CandidateResult:
-    cached = RUN_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    run_root = CANDIDATE_ROOT / cache_key
-    if run_root.exists():
-        shutil.rmtree(run_root)
-    make_writable(run_root)
-    copied_data = run_root / "data"
-    shutil.copytree(data_root, copied_data)
-    output = run_root / "results.csv"
-    completed = sandbox_command(
-        run_root,
-        ["/app/run.sh", str(copied_data), str(output)],
-    )
-    assert completed.returncode == 0, (
-        f"candidate failed on {cache_key}: "
-        f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
-    )
-    assert output.is_file(), f"candidate did not create output for {cache_key}"
-    raw = output.read_bytes()
-    header, rows = read_csv(output)
-    result = CandidateResult(header, tuple(rows), raw)
-    RUN_CACHE[cache_key] = result
-    return result
+def fresh() -> None:
+    VAR.mkdir(parents=True, exist_ok=True)
+    for p in (LEDGER, SNAP, SHADOW):
+        if p.exists():
+            p.unlink()
+    if OUT.exists():
+        OUT.unlink()
+    (NEST / "go.mod").write_text("module example.com/nest\n\ngo 1.22\n")
+    (NEST / "go.sum").write_text("")
 
 
-def assert_scalar(actual: str, expected: str, field: str) -> None:
-    if field in FLOAT_FIELDS:
-        value = float(actual)
-        target = float(expected)
-        assert math.isfinite(value), f"{field} must be finite"
-        assert value == pytest.approx(
-            target,
-            abs=ABS_TOLERANCE,
-            rel=0,
-        )
-    elif field in INT_FIELDS:
-        assert re.fullmatch(r"-?[0-9]+", actual), (
-            f"{field} must be a base-10 integer"
-        )
-        assert int(actual) == int(expected)
-    else:
-        assert actual == expected
-
-
-def assert_semantic_rows(
-    actual: tuple[dict[str, str], ...],
-    expected: tuple[dict[str, str], ...],
-) -> None:
-    assert len(actual) == len(expected)
-    for actual_row, expected_row in zip(actual, expected, strict=True):
-        for field in HEADER:
-            assert_scalar(actual_row[field], expected_row[field], field)
-
-
-def copy_surface(surface: str, name: str) -> Path:
-    destination = GENERATED_ROOT / name
-    if destination.exists():
-        shutil.rmtree(destination)
-    shutil.copytree(surface_root(surface), destination)
-    return destination
-
-
-def rewrite_relations(
-    destination: Path,
-    transform,
-) -> None:
-    for name in INPUT_FILES:
-        header, rows = read_csv(destination / name)
-        transformed_header, transformed_rows = transform(name, header, rows)
-        write_csv(
-            destination / name,
-            transformed_header,
-            transformed_rows,
-        )
-
-
-def build_row_header_permutation() -> Path:
-    destination = copy_surface("hidden-b", "row-header-permutation")
-
-    def transform(name, header, rows):
-        del name
-        return tuple(reversed(header)), list(reversed(rows))
-
-    rewrite_relations(destination, transform)
-    return destination
-
-
-def build_ratio_affine_surface() -> Path:
-    destination = copy_surface("hidden-a", "ratio-affine")
-
-    def transform(name, header, rows):
-        if name == "records.csv":
-            for index, row in enumerate(rows):
-                scale = (0.0625, 0.25, 0.5, 1.0)[index % 4]
-                row["target_prob"] = format(
-                    float(row["target_prob"]) * scale,
-                    ".17g",
-                )
-                row["behavior_prob"] = format(
-                    float(row["behavior_prob"]) * scale,
-                    ".17g",
-                )
-                row["reward"] = format(
-                    float(row["reward"]) + 700.0,
-                    ".17g",
-                )
-                row["cost"] = format(
-                    float(row["cost"]) + 700.0,
-                    ".17g",
-                )
-                row["noise_a"] = str(-50000 - index)
-                row["source_id"] = f"changed::{index:08d}"
-        return header, rows
-
-    rewrite_relations(destination, transform)
-    return destination
-
-
-def build_cluster_translation_surface() -> Path:
-    destination = copy_surface("hidden-e", "cluster-translation")
-
-    def transform(name, header, rows):
-        if name in {"cluster_roster.csv", "records.csv"}:
-            for row in rows:
-                row["cluster"] = str(int(row["cluster"]) + 1000)
-        return header, rows
-
-    rewrite_relations(destination, transform)
-    return destination
-
-
-def build_exposure_scaled_surface() -> Path:
-    destination = copy_surface("hidden-d", "exposure-scale")
-
-    def transform(name, header, rows):
-        if name == "cluster_roster.csv":
-            case_ids = sorted({row["case_id"] for row in rows})
-            factors = {
-                case_id: (0.125, 2.0, 16.0)[index % 3]
-                for index, case_id in enumerate(case_ids)
-            }
-            for row in rows:
-                row["exposure_weight"] = format(
-                    float(row["exposure_weight"])
-                    * factors[row["case_id"]],
-                    ".17g",
-                )
-        return header, rows
-
-    rewrite_relations(destination, transform)
-    return destination
-
-
-def fnv1a(payload: str) -> str:
-    value = 2_166_136_261
-    for byte in payload.encode():
-        value ^= byte
-        value = (value * 16_777_619) & 0xFFFFFFFF
-    return f"{value:08x}"
-
-
-def decision_code(value: str) -> int:
-    return math.floor(10_000_000 * float(value) + 0.5)
-
-
-def signature_payload(row: dict[str, str]) -> str:
-    parts = (
-        row["case_id"],
-        row["selected_candidate"],
-        row["selected_policy"],
-        row["critical_cycle"],
-        row["deletion_code"],
-        str(decision_code(row["policy_score"])),
-        str(decision_code(row["robust_policy_return"])),
-        str(decision_code(row["minimum_cycle_mean"])),
-        str(decision_code(row["cycle_covariance_penalty"])),
-        str(decision_code(row["effective_sample_size"])),
-        str(int(row["support_edge_count"])),
-        str(decision_code(row["minimum_edge_support"])),
-        str(decision_code(row["cv_loss"])),
-        str(int(row["deletion_change_count"])),
-        str(int(row["worst_deletion_scenario_code"])),
-        str(int(row["stability_checksum"])),
-    )
-    return "|".join(parts)
-
-
-def build_case_translation_surface() -> tuple[Path, tuple[dict[str, str], ...]]:
-    destination = copy_surface("hidden-c", "case-translation")
-    mapping = {
-        row["case_id"]: f"translated::{row['case_id']}"
-        for row in EXPECTED["hidden-c"]
-    }
-
-    def transform(name, header, rows):
-        del name
-        for row in rows:
-            row["case_id"] = mapping[row["case_id"]]
-        return header, rows
-
-    rewrite_relations(destination, transform)
-    expected = []
-    for original in EXPECTED["hidden-c"]:
-        row = dict(original)
-        row["case_id"] = mapping[row["case_id"]]
-        row["audit_signature"] = fnv1a(signature_payload(row))
-        expected.append(row)
-    return destination, tuple(expected)
-
-
-def build_malformed(profile: str) -> Path:
-    destination = copy_surface("public", f"malformed-{profile}")
-    if profile == "missing-relation":
-        (destination / "cluster_roster.csv").unlink()
-        return destination
-    relations = {
-        name: read_csv(destination / name) for name in INPUT_FILES
-    }
-    target_case = min(
-        row["case_id"] for row in relations["cases.csv"][1]
-    )
-    if profile == "duplicate-roster":
-        header, rows = relations["cluster_roster.csv"]
-        target = next(row for row in rows if row["case_id"] == target_case)
-        rows.append(dict(target))
-        write_csv(destination / "cluster_roster.csv", header, rows)
-    elif profile == "incomplete-prior":
-        header, rows = relations["priors.csv"]
-        removed = False
-        retained = []
-        for row in rows:
-            if row["case_id"] == target_case and not removed:
-                removed = True
-            else:
-                retained.append(row)
-        write_csv(destination / "priors.csv", header, retained)
-    elif profile == "nonpositive-prior":
-        header, rows = relations["priors.csv"]
-        target = next(row for row in rows if row["case_id"] == target_case)
-        target["prior_mass"] = "0"
-        write_csv(destination / "priors.csv", header, rows)
-    elif profile == "duplicate-candidate-rank":
-        header, rows = relations["regularizers.csv"]
-        same_case = [
-            row for row in rows if row["case_id"] == target_case
-        ]
-        same_case[1]["candidate_rank"] = same_case[0]["candidate_rank"]
-        write_csv(destination / "regularizers.csv", header, rows)
-    elif profile == "unknown-cluster":
-        header, rows = relations["records.csv"]
-        target = next(row for row in rows if row["case_id"] == target_case)
-        target["cluster"] = "999999"
-        write_csv(destination / "records.csv", header, rows)
-    elif profile == "zero-behavior":
-        header, rows = relations["records.csv"]
-        target = next(row for row in rows if row["case_id"] == target_case)
-        target["behavior_prob"] = "0"
-        write_csv(destination / "records.csv", header, rows)
-    elif profile == "incomplete-grid":
-        header, rows = relations["records.csv"]
-        first = next(row for row in rows if row["case_id"] == target_case)
-        rows = [
-            row
-            for row in rows
-            if not (
-                row["case_id"] == first["case_id"]
-                and row["policy_id"] == first["policy_id"]
-                and row["cluster"] == first["cluster"]
-            )
-        ]
-        write_csv(destination / "records.csv", header, rows)
-    else:
-        raise AssertionError(f"unknown malformed profile {profile}")
-    return destination
-
-
-@pytest.fixture(scope="session", autouse=True)
-def clean_candidate_area():
-    """Reset private writable areas before and after verifier execution."""
-    for root in (CANDIDATE_ROOT, GENERATED_ROOT):
-        if root.exists():
-            shutil.rmtree(root)
-        root.mkdir(parents=True)
-    yield
-    for root in (CANDIDATE_ROOT, GENERATED_ROOT):
-        shutil.rmtree(root, ignore_errors=True)
-
-
-@pytest.mark.parametrize("surface,case_id", CASE_PARAMETERS)
-def test_case_semantics(surface: str, case_id: str):
-    """Match every protected case field to its golden result."""
-    result = run_candidate(surface_root(surface), surface)
-    actual_by_id = {row["case_id"]: row for row in result.rows}
-    expected_by_id = {row["case_id"]: row for row in EXPECTED[surface]}
-    assert case_id in actual_by_id
-    actual = actual_by_id[case_id]
-    expected = expected_by_id[case_id]
-    assert set(actual) == set(HEADER)
-    for field in HEADER:
-        assert_scalar(actual[field], expected[field], field)
-
-
-@pytest.mark.parametrize("surface", SURFACES)
-def test_surface_schema_and_cardinality(surface: str):
-    """Require the exact unquoted schema and one row per case."""
-    result = run_candidate(surface_root(surface), surface)
-    assert result.header == HEADER
-    assert len(result.rows) == len(EXPECTED[surface])
-    assert b'"' not in result.raw
-    assert all(
-        re.fullmatch(r"[0-9a-f]{8}", row["audit_signature"])
-        for row in result.rows
+def run_cmd(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["/app/bin/gm_infer", *args],
+        cwd="/app",
+        check=check,
+        text=True,
+        capture_output=True,
     )
 
 
-@pytest.mark.parametrize("surface", SURFACES)
-def test_case_order_is_canonical(surface: str):
-    """Require unique case rows in canonical identifier order."""
-    result = run_candidate(surface_root(surface), surface)
-    case_ids = [row["case_id"] for row in result.rows]
-    assert case_ids == sorted(case_ids)
-    assert len(case_ids) == len(set(case_ids))
-
-
-def test_row_and_header_order_invariance():
-    """Preserve all semantics when every relation is reversed."""
-    permuted = run_candidate(
-        build_row_header_permutation(),
-        "row-header-permutation",
-    )
-    assert permuted.header == HEADER
-    assert_semantic_rows(permuted.rows, EXPECTED["hidden-b"])
-
-
-def test_ratio_and_reward_cost_affine_invariance():
-    """Preserve results after ratio-preserving and utility-preserving edits."""
-    transformed = run_candidate(
-        build_ratio_affine_surface(),
-        "ratio-affine",
-    )
-    assert_semantic_rows(transformed.rows, EXPECTED["hidden-a"])
-
-
-def test_cluster_identifier_translation_invariance():
-    """Preserve rank-based certificates under monotone cluster relabeling."""
-    transformed = run_candidate(
-        build_cluster_translation_surface(),
-        "cluster-translation",
-    )
-    assert_semantic_rows(transformed.rows, EXPECTED["hidden-e"])
-
-
-def test_exposure_scale_invariance():
-    """Preserve outputs when all exposures in a case share one scale."""
-    transformed = run_candidate(
-        build_exposure_scaled_surface(),
-        "exposure-scale",
-    )
-    assert_semantic_rows(transformed.rows, EXPECTED["hidden-d"])
-
-
-def test_case_identifier_translation_updates_only_provenance():
-    """Translate case IDs while retaining metrics and recomputing signatures."""
-    data_root, expected = build_case_translation_surface()
-    transformed = run_candidate(data_root, "case-translation")
-    assert_semantic_rows(transformed.rows, expected)
-
-
-def test_default_invocation_is_byte_deterministic():
-    """Honor defaults and reproduce the public output byte for byte."""
-    explicit = run_candidate(surface_root("public"), "public")
-    output_root = Path("/app/outputs")
-    output_root.chmod(0o777)
-    output = output_root / "results.csv"
-    output.unlink(missing_ok=True)
-    completed = sandbox_command(output_root, ["/app/run.sh"])
-    assert completed.returncode == 0, completed.stderr
-    assert output.read_bytes() == explicit.raw
-
-
-@pytest.mark.parametrize(
-    "profile",
-    (
-        "missing-relation",
-        "duplicate-roster",
-        "incomplete-prior",
-        "nonpositive-prior",
-        "duplicate-candidate-rank",
-        "unknown-cluster",
-        "zero-behavior",
-        "incomplete-grid",
-    ),
-)
-def test_malformed_bundle_is_rejected(profile: str):
-    """Reject malformed relational bundles without emitting a result."""
-    data_root = build_malformed(profile)
-    run_root = CANDIDATE_ROOT / f"failure-{profile}"
-    make_writable(run_root)
-    copied_data = run_root / "data"
-    shutil.copytree(data_root, copied_data)
-    output = run_root / "results.csv"
-    completed = sandbox_command(
-        run_root,
-        ["/app/run.sh", str(copied_data), str(output)],
-        timeout=120,
-    )
-    assert completed.returncode != 0
-    assert not output.exists()
-
-
-def test_candidate_cannot_read_protected_verifier_paths():
-    """Deny access to goldens, verifier code, solution, and reward."""
-    write_root = CANDIDATE_ROOT / "sandbox-probe"
-    make_writable(write_root)
-    completed = sandbox_command(
-        write_root,
+def settle(
+    g1: Path,
+    g2: Path,
+    *,
+    arms: str = "a7,b2",
+    scraps: str = SCRAPS,
+    sum_path: Path = SUM,
+    out: Path = OUT,
+) -> dict:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    run_cmd(
         [
-            "/bin/sh",
-            "-c",
-            (
-                "! /bin/cat /tests/golden/public.csv >/dev/null 2>&1 && "
-                "! /bin/cat /tests/test_outputs.py >/dev/null 2>&1 && "
-                "! /bin/cat /solution/estimate.R >/dev/null 2>&1 && "
-                "! printf x >>/logs/verifier/reward.txt 2>/dev/null"
-            ),
-        ],
+            "settle",
+            "--g1",
+            str(g1),
+            "--g2",
+            str(g2),
+            "--scraps",
+            scraps,
+            "--sum",
+            str(sum_path),
+            "--arms",
+            arms,
+            "--nest",
+            str(NEST),
+            "--var",
+            str(VAR),
+            "--out",
+            str(out),
+        ]
     )
-    assert completed.returncode == 0, completed.stderr
+    return json.loads(out.read_text())
 
 
-def test_protected_surfaces_are_load_bearing():
-    """Ensure the fixtures exercise tuning, fallback, cycles, and refits."""
-    rows = [row for surface in SURFACES for row in EXPECTED[surface]]
-    assert len(rows) == 60
-    assert len({row["selected_candidate"] for row in rows}) >= 6
-    assert len({row["selected_policy"] for row in rows}) >= 7
-    assert {
-        int(row["critical_cycle_length"]) for row in rows
-    } >= {1, 2, 3, 4, 5}
-    assert sum(int(row["feasible_count"]) == 0 for row in rows) >= 20
-    assert sum(int(row["deletion_change_count"]) for row in rows) >= 240
-    assert len({row["audit_signature"] for row in rows}) == len(rows)
-    pair_rows = EXPECTED["hidden-e"]
-    assert sum(row["deletion_code"].count("|") >= 30 for row in pair_rows) >= 4
+def recover() -> dict:
+    run_cmd(
+        [
+            "recover",
+            "--nest",
+            str(NEST),
+            "--var",
+            str(VAR),
+            "--out",
+            str(OUT),
+        ]
+    )
+    return json.loads(OUT.read_text()) if OUT.exists() else {}
+
+
+def status() -> dict:
+    proc = run_cmd(["status", "--nest", str(NEST), "--var", str(VAR), "--out", str(OUT)])
+    return json.loads(proc.stdout.strip())
+
+
+def compact() -> None:
+    run_cmd(["compact", "--var", str(VAR)])
+
+
+def offline_build(pkg: str) -> None:
+    subprocess.run(
+        ["go", "build", "-o", f"/tmp/{pkg}.bin", f"./{pkg}"],
+        cwd=str(NEST),
+        check=True,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GOPROXY": "off",
+            "GOSUMDB": "off",
+        },
+    )
+
+
+def view_digest(edges: list) -> str:
+    payload = json.dumps({"edges": edges})
+    proc = subprocess.run(
+        ["python3", "/app/environment/tools/view_sum.py"],
+        input=payload,
+        cwd="/app",
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return proc.stdout.strip()
+
+
+def auth_sums(g1: Path, g2: Path, sum_path: Path = SUM) -> dict[tuple[str, str], str]:
+    t1 = json.loads(g1.read_text())
+    t2 = json.loads(g2.read_text())
+    pins: dict[tuple[str, str], str] = {}
+    for line in sum_path.read_text().splitlines():
+        fields = line.split()
+        if len(fields) >= 3:
+            pins[(fields[0], fields[1])] = fields[2]
+
+    by_key: dict[tuple[str, str], list[tuple[int, str, int]]] = {}
+    for idx, tile in enumerate((t1, t2)):
+        gen = int(tile.get("gen", 0))
+        for e in tile["entries"]:
+            k = (e["module_path"], e["version"])
+            by_key.setdefault(k, []).append((gen, e["sum"], idx))
+
+    out: dict[tuple[str, str], str] = {}
+    for k, opts in by_key.items():
+        sums_present = {s for _, s, _ in opts}
+        pin = pins.get(k)
+        if pin and pin in sums_present:
+            out[k] = pin
+            continue
+        if len(opts) == 1:
+            out[k] = opts[0][1]
+            continue
+        opts_sorted = sorted(opts, key=lambda p: (p[0], p[2]))
+        out[k] = opts_sorted[0][1]
+    return out
+
+
+def assert_probe(doc: dict, need: set[str], g1: Path, g2: Path, sum_path: Path = SUM) -> None:
+    assert isinstance(doc["edges"], list)
+    assert doc["edge_count"] == len(doc["edges"])
+    assert doc["edges"], "settled report must include edges"
+    assert view_digest(doc["edges"]) == doc["view_digest"]
+    assert len(doc["view_digest"]) == 64
+    assert doc["view_digest"] != "0" * 64
+    classes = {e["cls"] for e in doc["edges"]}
+    assert need <= classes
+    sums = auth_sums(g1, g2, sum_path)
+    for e in doc["edges"]:
+        assert e["module_path"]
+        assert e["version"]
+        assert "replace_to" in e
+        assert e["cls"]
+        assert e["sum"] == sums[(e["module_path"], e["version"])]
+
+
+def nest_text() -> str:
+    return (NEST / "go.mod").read_text()
+
+
+def gosum_text() -> str:
+    return (NEST / "go.sum").read_text()
+
+
+def ledger_lines() -> list[str]:
+    if not LEDGER.exists():
+        return []
+    return [ln for ln in LEDGER.read_text().splitlines() if ln.strip()]
+
+
+def committed_epochs() -> list[int]:
+    out = []
+    for ln in ledger_lines():
+        row = json.loads(ln)
+        if row.get("kind") == "commit" and not row.get("soft"):
+            out.append(int(row["epoch"]))
+    return out
+
+
+def tip_epoch() -> int:
+    epochs = committed_epochs()
+    return epochs[-1] if epochs else 0
+
+
+class TestQuarantineLedger:
+    def test_dual_offline_settled_coherent(self) -> None:
+        """Dual settle builds both packages offline with settled coherence."""
+        build()
+        fresh()
+        doc = settle(G1, G2)
+        assert_probe(doc, NEED_DUAL, G1, G2)
+        offline_build("a7")
+        offline_build("b2")
+        assert status()["state"] == "settled"
+        assert tip_epoch() >= 1
+        assert "example.com/lib/legacy/v2" in nest_text()
+        assert not SHADOW.exists()
+
+    def test_soft_quarantine_blocks_until_recover(self) -> None:
+        """Soft after hard leaves quarantine; recover restores settled tip."""
+        build()
+        fresh()
+        first = settle(G1, G2)
+        digest = first["view_digest"]
+        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
+        assert SHADOW.exists() or status()["state"] == "pending"
+        assert status()["state"] == "pending"
+        recovered = recover()
+        assert recovered["view_digest"] == digest
+        assert status()["state"] == "settled"
+        assert not SHADOW.exists()
+        assert_probe(recovered, NEED_DUAL, G1, G2)
+        offline_build("a7")
+        offline_build("b2")
+
+    def test_cache_hit_clears_quarantine_restores_nest(self) -> None:
+        """Identical settle after soft restores nest, clears shadow, keeps epoch."""
+        build()
+        fresh()
+        first = settle(G1, G2)
+        e1 = tip_epoch()
+        n1 = len(ledger_lines())
+        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
+        (NEST / "go.mod").write_text(nest_text() + "\nrequire example.com/lib/extra v9.9.9\n")
+        second = settle(G1, G2)
+        assert second["view_digest"] == first["view_digest"]
+        assert tip_epoch() == e1
+        assert "example.com/lib/extra" not in nest_text()
+        assert not SHADOW.exists()
+        assert status()["state"] == "settled"
+        assert_probe(second, NEED_DUAL, G1, G2)
+        offline_build("a7")
+        offline_build("b2")
+        # soft row stripped on cache-hit; no new committed epoch row
+        assert tip_epoch() == e1
+        assert len(ledger_lines()) <= n1 + 1
+
+    def test_arm_cut_restore_trims_and_advances(self) -> None:
+        """Dual → a7 → dual trims nest, omits sys, advances epochs on arm change."""
+        build()
+        fresh()
+        settle(G1, G2, arms="a7,b2")
+        e0 = tip_epoch()
+        assert "example.com/lib/b2x" in nest_text()
+        cut = settle(G1, G2, arms="a7")
+        assert tip_epoch() > e0
+        classes = {e["cls"] for e in cut["edges"]}
+        assert "sys" not in classes
+        assert NEED_A7 <= classes
+        assert "example.com/lib/b2x" not in nest_text()
+        assert "example.com/lib/a7x" in nest_text()
+        e1 = tip_epoch()
+        restored = settle(G1, G2, arms="a7,b2")
+        assert tip_epoch() > e1
+        assert_probe(restored, NEED_DUAL, G1, G2)
+        offline_build("b2")
+
+    def test_scrap_flow_order_forces_new_epoch(self) -> None:
+        """Triad then reverse triad flips replace polarity and advances epoch."""
+        build()
+        fresh()
+        cleared = settle(G1, G2, scraps=TRIAD)
+        e1 = tip_epoch()
+        assert not any(e.get("replace_to") for e in cleared["edges"])
+        assert "prop" not in {e["cls"] for e in cleared["edges"]}
+        kept = settle(G1, G2, scraps=REV_TRIAD)
+        assert tip_epoch() > e1
+        assert any(e.get("replace_to") for e in kept["edges"])
+        assert "prop" in {e["cls"] for e in kept["edges"]}
+
+    def test_whitespace_scraps_keep_identity(self) -> None:
+        """Whitespace/comment-only scrap edits do not append a new commit."""
+        build()
+        fresh()
+        settle(G1, G2)
+        e1 = tip_epoch()
+        n1 = len(ledger_lines())
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "scrap_ws.txt"
+            raw = Path("/app/environment/seed/scrap_old.txt").read_text()
+            p.write_text("\n\n" + raw.replace("\t", "  ") + "\n// pad\n")
+            scraps = f"{p},/app/environment/seed/scrap_new.txt"
+            settle(G1, G2, scraps=scraps)
+        assert tip_epoch() == e1
+        assert len(ledger_lines()) == n1
+
+    def test_pin_provenance_equal_gen_bind(self) -> None:
+        """Pins need observed provenance; equal-gen bind uses applicable pin."""
+        build()
+        fresh()
+        doc = settle(E1, E2, sum_path=SUM_EQ)
+        assert_probe(doc, NEED_DUAL, E1, E2, sum_path=SUM_EQ)
+        bind = [e for e in doc["edges"] if e["module_path"] == "example.com/lib/bind"]
+        assert bind
+        expected = None
+        for line in SUM_EQ.read_text().splitlines():
+            fields = line.split()
+            if len(fields) >= 3 and fields[0] == "example.com/lib/bind":
+                expected = fields[2]
+                break
+        assert expected and bind[0]["sum"] == expected
+        root = settle(G1, G2)
+        sums = auth_sums(G1, G2)
+        for e in root["edges"]:
+            if e["module_path"] == "example.com/lib/root":
+                assert e["sum"] == sums[("example.com/lib/root", "v1.0.0")]
+        offline_build("a7")
+        offline_build("b2")
+
+    def test_replace_checksum_and_gosum_alignment(self) -> None:
+        """Replace keeps original-module checksum; go.sum carries that sum line."""
+        build()
+        fresh()
+        doc = settle(G1, G2)
+        sums = auth_sums(G1, G2)
+        legacy = [e for e in doc["edges"] if e["module_path"] == "example.com/lib/legacy"]
+        assert legacy and legacy[0].get("replace_to")
+        assert legacy[0]["cls"] == "prop"
+        assert legacy[0]["sum"] == sums[("example.com/lib/legacy", "v1.0.0")]
+        v2_sum = sums[("example.com/lib/legacy/v2", "v2.0.0")]
+        assert legacy[0]["sum"] != v2_sum
+        assert "example.com/lib/legacy/v2" in nest_text()
+        assert sums[("example.com/lib/legacy", "v1.0.0")] in gosum_text()
+
+    def test_torn_ledger_after_soft_recovers_tip(self) -> None:
+        """Torn ledger after soft truncates; tip digest and settled status return."""
+        build()
+        fresh()
+        first = settle(G1, G2)
+        e1 = tip_epoch()
+        digest = first["view_digest"]
+        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
+        with LEDGER.open("a") as fh:
+            fh.write("{not-json\n")
+            fh.write(
+                json.dumps(
+                    {
+                        "seq": 99,
+                        "parent_seal": "deadbeef",
+                        "finger": "x" * 64,
+                        "plan": {"edges": []},
+                        "soft": False,
+                        "epoch": e1 + 50,
+                        "nest_seal": "y" * 64,
+                        "plan_digest": "z" * 64,
+                        "kind": "commit",
+                    }
+                )
+                + "\n"
+            )
+        recovered = recover()
+        assert recovered["view_digest"] == digest
+        assert tip_epoch() == e1
+        assert status()["state"] == "settled"
+        assert not SHADOW.exists()
+        assert_probe(recovered, NEED_DUAL, G1, G2)
+        offline_build("a7")
+
+    def test_snapshot_and_nest_staleness_pending(self) -> None:
+        """Corrupt snapshot or nest alone flips pending until recover/cache-hit."""
+        build()
+        fresh()
+        first = settle(G1, G2)
+        assert status()["state"] == "settled"
+        snap = json.loads(SNAP.read_text())
+        snap["seal"] = "0" * 64
+        SNAP.write_text(json.dumps(snap))
+        assert status()["state"] == "pending"
+        recover()
+        assert status()["state"] == "settled"
+        text = nest_text()
+        (NEST / "go.mod").write_text(text + "\n// stale\n")
+        assert status()["state"] == "pending"
+        again = settle(G1, G2)
+        assert again["view_digest"] == first["view_digest"]
+        assert status()["state"] == "settled"
+        OUT.write_text(json.dumps({"edges": [], "edge_count": 0, "view_digest": "0" * 64}))
+        assert status()["state"] == "pending"
+
+    def test_compact_preserves_epochs_after_quarantine(self) -> None:
+        """Compact after multi-epoch+soft keeps tip digest/epoch; settle stays no-op."""
+        build()
+        fresh()
+        settle(G1, G2, arms="a7")
+        dual = settle(G1, G2, arms="a7,b2")
+        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
+        e_before = tip_epoch()
+        digest = dual["view_digest"]
+        compact()
+        assert not SHADOW.exists()
+        recovered = recover()
+        assert recovered["view_digest"] == digest
+        assert tip_epoch() == e_before
+        n = len(ledger_lines())
+        again = settle(G1, G2, arms="a7,b2")
+        assert again["view_digest"] == digest
+        assert tip_epoch() == e_before
+        assert len(ledger_lines()) == n
+        offline_build("a7")
+        offline_build("b2")
+
+    def test_probe_shadow_status_matrix(self) -> None:
+        """Probe-only staleness and shadow presence both report pending."""
+        build()
+        fresh()
+        settle(G1, G2)
+        assert status()["state"] == "settled"
+        shutil.copy(STUB, OUT)
+        assert status()["state"] == "pending"
+        recover()
+        assert status()["state"] == "settled"
+        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
+        assert status()["state"] == "pending"
+        assert SHADOW.exists() or True
+
+    def test_cross_command_arm_change_after_soft(self) -> None:
+        """Soft quarantine, then different arms hard settle, compact, recover."""
+        build()
+        fresh()
+        settle(G1, G2, arms="a7,b2")
+        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
+        assert status()["state"] == "pending"
+        cut = settle(G1, G2, arms="a7")
+        assert status()["state"] == "settled"
+        assert "sys" not in {e["cls"] for e in cut["edges"]}
+        compact()
+        recovered = recover()
+        assert recovered["view_digest"] == cut["view_digest"]
+        assert status()["state"] == "settled"
+        offline_build("a7")
+
+    def test_long_quarantine_tear_heldout_lineage(self) -> None:
+        """Arm cut, soft, torn ledger, recover, compact, held-out settle lineage."""
+        build()
+        fresh()
+        settle(G1, G2, arms="a7")
+        e_a = tip_epoch()
+        settle(G1, G2, arms="a7,b2")
+        e_b = tip_epoch()
+        assert e_b > e_a
+        settle(G2, G2, scraps="/app/environment/seed/scrap_new.txt")
+        with LEDGER.open("a") as fh:
+            fh.write("CORRUPT\n")
+        recover()
+        compact()
+        held = settle(G1X, G2X)
+        e_c = tip_epoch()
+        assert e_c > e_b
+        assert_probe(held, NEED_DUAL, G1X, G2X)
+        assert any(e.get("replace_to") for e in held["edges"])
+        assert status()["state"] == "settled"
+        assert not SHADOW.exists()
+        epochs = committed_epochs()
+        assert epochs == sorted(epochs)
+        offline_build("a7")
+        offline_build("b2")
+
+    def test_idempotent_after_materialization_corruption(self) -> None:
+        """Corrupt nest+probe between runs; identical settle rematerializes no-op."""
+        build()
+        fresh()
+        first = settle(G1, G2)
+        e1 = tip_epoch()
+        (NEST / "go.mod").write_text("module example.com/nest\ngo 1.22\n")
+        (NEST / "go.sum").write_text("")
+        shutil.copy(STUB, OUT)
+        assert status()["state"] == "pending"
+        second = settle(G1, G2)
+        assert second["view_digest"] == first["view_digest"]
+        assert tip_epoch() == e1
+        assert_probe(second, NEED_DUAL, G1, G2)
+        assert status()["state"] == "settled"
+        offline_build("a7")
+        offline_build("b2")

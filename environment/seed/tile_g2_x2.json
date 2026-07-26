@@ -1,0 +1,31 @@
+{
+  "gen": 2,
+  "note": "held-generation-2",
+  "entries": [
+    {
+      "module_path": "example.com/lib/root",
+      "version": "v1.0.0",
+      "sum": "30262ae59faef2a7900c38d7ee20d6c51a8242e3db56e67143225865494d3f9c"
+    },
+    {
+      "module_path": "example.com/lib/bind",
+      "version": "v1.2.0",
+      "sum": "4eaa5bc2baa4f754ffe7f21c6a538ebe8659afd686dddd99d329a78e1ea1349c"
+    },
+    {
+      "module_path": "example.com/lib/a7x",
+      "version": "v0.3.0",
+      "sum": "f67e7e2e8ac0ab93e4047e8b7b1da988c7f15129e1c50e628e04ec0a69c9801f"
+    },
+    {
+      "module_path": "example.com/lib/legacy",
+      "version": "v1.0.0",
+      "sum": "4013ba6654615e3202da281212ff731205843ff73a9663720da14fac6fe7a960"
+    },
+    {
+      "module_path": "example.com/lib/extra",
+      "version": "v9.9.9",
+      "sum": "382226d30b368cee6e7ca704a1b145819ee25a7baa98a84c9f5b5690ce3ecad3"
+    }
+  ]
+}
