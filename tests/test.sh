@@ -1,9 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set +e
+
 mkdir -p /logs/verifier
-cd /tests
-/opt/venv/bin/python -m pytest --ctrf /logs/verifier/ctrf.json -rA test_protocol.py
-if [ $? -eq 0 ]; then
-  echo 1 > /logs/verifier/reward.txt
+pytest -p no:cacheprovider -rA /tests/test_pod_source_lock.py
+status=$?
+if [ "$status" -eq 0 ]; then
+    echo 1 > /logs/verifier/reward.txt
 else
-  echo 0 > /logs/verifier/reward.txt
+    echo 0 > /logs/verifier/reward.txt
 fi

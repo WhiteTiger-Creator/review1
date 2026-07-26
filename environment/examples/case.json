@@ -1,1 +1,0 @@
-{"case_id":"example","nodes":3,"seed":17,"events":[{"type":"request_lease","time":0,"node":0,"term":1,"ttl":3,"targets":[0,1]},{"type":"write","time":0,"node":0,"token":1,"write_id":"w0","targets":[0,1],"value":9},{"type":"tick","time":1,"delta":1}]}
