@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hwml.pin/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["scheme", "vault_digest", "row_count", "identity", "pin_seq", "policy_epoch"],
+  "properties": {
+    "scheme": {"const": "hwml.pin/v1"},
+    "vault_digest": {"type": "string", "minLength": 64, "maxLength": 64},
+    "row_count": {"type": "integer", "minimum": 0},
+    "identity": {"type": "string"},
+    "pin_seq": {"type": "integer", "minimum": 1},
+    "policy_epoch": {"type": "integer", "minimum": 1}
+  }
+}

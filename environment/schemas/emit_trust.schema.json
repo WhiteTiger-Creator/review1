@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hwml.trust/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "scheme", "identity", "vault_digest", "pin_digest", "beta_digest",
+    "commit_digest", "seal_digest", "forecast_digest", "mape", "r2", "metrics_pass"
+  ],
+  "properties": {
+    "scheme": {"const": "hwml.trust/v1"},
+    "identity": {"type": "string"},
+    "vault_digest": {"type": "string", "minLength": 64, "maxLength": 64},
+    "pin_digest": {"type": "string", "minLength": 64, "maxLength": 64},
+    "beta_digest": {"type": "string", "minLength": 64, "maxLength": 64},
+    "commit_digest": {"type": "string", "minLength": 64, "maxLength": 64},
+    "seal_digest": {"type": "string", "minLength": 64, "maxLength": 64},
+    "forecast_digest": {"type": "string", "minLength": 64, "maxLength": 64},
+    "mape": {"type": "number"},
+    "r2": {"type": "number"},
+    "metrics_pass": {"type": "boolean"}
+  }
+}
