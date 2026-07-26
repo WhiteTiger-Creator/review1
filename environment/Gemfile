@@ -1,0 +1,5 @@
+source "https://rubygems.org"
+
+# Offline Bundler pin manifest for the gemindex dependency-lock closure image.
+# Runtime resolve uses local gemindex + lock overlays only (no network installs).
+ruby "3.3.0"

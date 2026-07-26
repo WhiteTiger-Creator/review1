@@ -1,6 +1,0 @@
-{
-  "note": "held-out lane tx labels for annex resolution checks",
-  "held_out_txs": {
-    "L2": ["tx-hold-a", "tx-hold-b", "tx-hold-c", "tx-hold-d"]
-  }
-}

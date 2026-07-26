@@ -1,0 +1,5 @@
+schema: lock-overlay/v1
+name: o_c
+pins:
+  eta-proto: "1.5.0"
+  theta-metrics: "2.2.1"

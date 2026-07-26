@@ -1,8 +1,0 @@
-[driver]
-binary = "/app/environment/tools/drvx"
-build_dir = "/app/build"
-
-[authority]
-clock = "annex"
-fold = "grant"
-scratch = "preview_only"

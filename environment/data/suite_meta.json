@@ -1,7 +1,0 @@
-{
-  "lanes": ["L0", "L1", "L2"],
-  "held_out": ["L2"],
-  "schema_transcript": "nubx-transcript-v1",
-  "schema_replay": "nubx-replay-v1",
-  "notes": "lanes drive synth row order; held_out must resolve from annex NUBX clocks"
-}
