@@ -1,0 +1,54 @@
+{
+  "page_slots": 10,
+  "templates": [
+    {
+      "template_id": "list_v4",
+      "organic_slots": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "reserved_slots": []
+    },
+    {
+      "template_id": "grid_two_col",
+      "organic_slots": [
+        1,
+        3,
+        5,
+        7,
+        9,
+        2,
+        4,
+        6,
+        8,
+        10
+      ],
+      "reserved_slots": []
+    },
+    {
+      "template_id": "feature_stack",
+      "organic_slots": [
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "reserved_slots": [
+        1,
+        2,
+        3
+      ]
+    }
+  ]
+}
