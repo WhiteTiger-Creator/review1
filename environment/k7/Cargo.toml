@@ -1,8 +1,0 @@
-[package]
-name = "k7"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "k7"
-path = "src/main.rs"

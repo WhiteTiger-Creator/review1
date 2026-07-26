@@ -1,3 +1,8 @@
-# Chironym align-risk desk
+# Ground-station kernel lockdown fortify gate
 
-Go coordinator + Rust InfoNCE embedder + Rust soft-DTW aligner for selective-risk evaluation of frozen sign-language translation hypotheses. Learning contracts live in `docs/contracts.md`.
+Offline security admission tooling that compiles least-privilege sysctl
+fortification profiles and audits live kernel probe traces for kptr,
+Yama ptrace, dmesg, and unprivileged BPF leaks on satellite ground-station hosts.
+
+Authoritative hardening behavior is defined by the ground lockdown ledger under
+`ground-canon/`. Operational notes elsewhere are historical drafts only.
