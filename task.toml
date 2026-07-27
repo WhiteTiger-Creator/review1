@@ -4,24 +4,36 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-subcategories = []
+category = "system-administration"
+subcategories = ["db_interaction"]
 number_of_milestones = 0
 codebase_size = "small"
-languages = ["go", "rust"]
-tags = ["contrastive-learning", "soft-dtw", "selective-prediction", "gloss-alignment", "go", "rust"]
-expert_time_estimate_min = 150
-junior_time_estimate_min = 300
-
-[verifier]
-timeout_sec = 450.0
+languages = ["rust", "sql", "bash"]
+tags = [
+  "credential-store",
+  "daemon-administration",
+  "services",
+  "generation-handoff",
+  "sqlite",
+  "reconciliation",
+  "reader-snapshots",
+  "crash-recovery",
+]
+expert_time_estimate_min = 210
+junior_time_estimate_min = 480
 
 [agent]
-timeout_sec = 1200.0
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 900
 
 [environment]
-allow_internet = false
-build_timeout_sec = 900.0
+build_timeout_sec = 900
 cpus = 2
 memory_mb = 4096
-storage_mb = 10240
+storage_mb = 8192
+allow_internet = false
+docker_flags = []
+gpus = 0
+gpu_types = []

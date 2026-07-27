@@ -1,48 +1,61 @@
-# Go + Rust digest-pinned toolchains (offline runtime; no network cargo/go fetches).
-FROM rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36 AS rust-toolchain
-
-FROM golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TERM=xterm
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-ENV TMUX_TMPDIR=/var/tmp/tmux
-ENV CARGO_HOME=/usr/local/cargo
-ENV RUSTUP_HOME=/usr/local/rustup
-ENV PATH=/opt/verifier-venv/bin:/usr/local/cargo/bin:/usr/local/go/bin:$PATH
-ENV GOCACHE=/tmp/go-cache
-ENV GOPATH=/go
+# Agent-built binaries are installed to /app/bin/opsctl and /app/bin/opsd; /app/environment is a symlink to /app.
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    asciinema=2.2.0-1 \
-    ca-certificates=20230311+deb12u1 \
-    make=4.3-4.1 \
-    patch=2.7.6-7 \
-    python3=3.11.2-1+b1 \
-    python3-venv=3.11.2-1+b1 \
-    tmux=3.3a-3 \
-    && mkdir -p /var/tmp/tmux /app/bin /app/output /app/var /logs/verifier /tmp/go-cache \
-    && chmod 1777 /var/tmp/tmux \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3=3.11.2-1+b1 python-is-python3=3.11.2-1+deb12u1 \
+        asciinema=2.2.0-1 \
+        bash=5.2.15-2+b13 \
+        ca-certificates=20230311+deb12u1 \
+        curl=7.88.1-10+deb12u15 \
+        jq=1.6-2.1+deb12u2 \
+        libsqlite3-dev=3.40.1-2+deb12u2 \
+        patch=2.7.6-7 \
+        pkg-config=1.8.1-1 \
+        procps=2:4.0.2-3 \
+        python3-pip=23.0.1+dfsg-1 \
+        sqlite3=3.40.1-2+deb12u2 \
+        tmux=3.3a-3 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5
+COPY requirements.lock /tmp/requirements.txt
+RUN pip3 install --break-system-packages --no-cache-dir --require-hashes \
+        --timeout 120 \
+        -r /tmp/requirements.txt
 
-COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
-COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
-COPY runtime/tmux.conf /etc/tmux.conf
-COPY . /app/environment/
+RUN groupadd --gid 1000 agent \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash agent \
+    && mkdir -p /logs/verifier /logs/agent \
+    && chmod 777 /logs/verifier /logs/agent
 
-RUN cd /app/environment \
-    && cargo build --release --manifest-path k7/Cargo.toml \
-    && cargo build --release --manifest-path m3/Cargo.toml \
-    && install -m 0755 k7/target/release/k7 /app/bin/k7 \
-    && install -m 0755 m3/target/release/m3 /app/bin/m3 \
-    && go build -o /app/bin/chironymctl ./cmd/chironymctl
+COPY . /app/
 
-WORKDIR /app
+RUN cd /app \
+    && cargo build --release --locked \
+    && mkdir -p /app/bin /app/state \
+    && cp /app/target/release/opsctl /app/bin/opsctl \
+    && cp /app/target/release/opsd /app/bin/opsd \
+    && ln -sfn /app /app/environment \
+    && chmod +x /app/scripts/*.sh \
+    && /app/scripts/build-fixtures.sh \
+    && ln -sfn /usr/local/cargo/bin/cargo /usr/local/bin/cargo \
+    && ln -sfn /usr/local/cargo/bin/rustc /usr/local/bin/rustc \
+    && ln -sfn /app/bin/opsctl /usr/local/bin/opsctl \
+    && ln -sfn /app/bin/opsd /usr/local/bin/opsd \
+    && printf '%s\n' \
+        'export PATH="/usr/local/bin:/usr/local/cargo/bin:/app/bin:${PATH}"' \
+        > /etc/profile.d/kseal-path.sh \
+    && chmod 0644 /etc/profile.d/kseal-path.sh \
+    && chown -R agent:agent /app \
+    && bash -lc 'command -v cargo && command -v rustc && command -v opsctl && command -v opsd'
+
+ENV RUST_BACKTRACE=1 \
+    KSEAL_CONFIG=/app/config/service.toml \
+    KSEAL_DB=/app/state/store.db \
+    KSEAL_AUDIT=/app/state/store.audit.jsonl \
+    CARGO_NET_OFFLINE=true \
+    PATH="/app/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Keep default root for Harbor /logs mounts; /app is owned by agent for edits.
+CMD ["sleep", "infinity"]

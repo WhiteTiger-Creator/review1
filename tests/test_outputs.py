@@ -1,455 +1,1034 @@
-#!/usr/bin/env python3
-"""Verifier: chironym selective-risk evaluation final artifacts and digests."""
+"""Behavioral verifier for recover-online-schema-swap-with-reader-pins."""
+
 from __future__ import annotations
 
-import hashlib
 import json
-import math
-import os
-import shutil
-import subprocess
+import socket
+import sqlite3
 from pathlib import Path
 
 import pytest
+from db_factory import (
+    AUDIT_FIELDS,
+    FAILPOINT_EXIT,
+    STATUS_FIELDS,
+    active_upgrade_id,
+    build_legacy_v1_db,
+    build_legacy_v2_db,
+    build_malformed_legacy_db,
+    build_unsupported_legacy_db,
+    committed_nonce_keys,
+    database_mutable_paths,
+    encrypt_payload_via_put,
+    file_digest_map,
+    get_payload,
+    http_json,
+    init_db,
+    init_empty_db,
+    journal_source_target,
+    logical_payloads_via_generations,
+    make_malformed_journal_db,
+    read_canonical_occurrences,
+    read_catalog_snapshot,
+    read_journal_snapshot,
+    read_nonce_reservations,
+    read_records_snapshot,
+    read_reservations_snapshot,
+    reader_get_payload,
+    reader_open_json,
+    recover_one_partial_copy,
+    recover_twice,
+    recover_until_complete_through_partial_copy,
+    restart_opsd,
+    run_opsctl,
+    run_upgrade_with_failpoint,
+    set_batch_size,
+    set_copy_cursor,
+    start_opsd,
+    status_json,
+    stop_opsd,
+    validate_reservation_row_correspondence,
+    wait_for_http,
+)
+from model import (
+    LogicalRecord,
+    RecordVersion,
+    expected_logical_state,
+    expected_logical_state_after_writes,
+    expected_published_generation_after_rotations,
+    expected_published_generation_after_upgrade,
+    expected_source_occurrence_count,
+    generations_required_for_pins_and_journal,
+)
 
-ENV = Path("/app/environment")
-OUT = Path("/app/output")
-VAR = Path("/app/var")
-BIN = Path("/tmp/chironym_vbin")
-CTL = BIN / "chironymctl"
-EMBED = BIN / "k7"
-ALIGN = BIN / "m3"
-STUDIO_A = ENV / "data/campaigns/studio_a"
-STUDIO_B = ENV / "fixtures/studio_b"
+FAILPOINTS = [
+    "after-reservation",
+    "after-partial-copy",
+    "after-copy-complete",
+    "after-target-validation",
+    "after-publication",
+    "after-pin-reconciliation",
+    "during-cleanup",
+]
 
 
-def sha256_bytes(b: bytes) -> str:
-    return hashlib.sha256(b).hexdigest()
+def _source_records() -> list[LogicalRecord]:
+    return [
+        LogicalRecord("cred-alpha", "alpha-payload", RecordVersion(0, 1)),
+        LogicalRecord("cred-beta", "beta-payload", RecordVersion(0, 1)),
+        LogicalRecord("cred-gamma", "gamma-payload", RecordVersion(0, 1)),
+        LogicalRecord("cred-delta", "delta-payload", RecordVersion(0, 1)),
+        LogicalRecord("cred-epsilon", "epsilon-payload", RecordVersion(0, 1)),
+    ]
 
 
-def fnv1a32(s: str) -> int:
-    h = 2166136261
-    for ch in s.encode():
-        h ^= ch
-        h = (h * 16777619) & 0xFFFFFFFF
-    return h
+def _published_gen(status: dict) -> int:
+    pub = status.get("published_generation")
+    if isinstance(pub, dict):
+        return int(pub["0"])
+    if isinstance(pub, list):
+        return int(pub[0])
+    return int(pub)
 
 
-def l2_normalize(v: list[float]) -> list[float]:
-    n = math.sqrt(sum(x * x for x in v))
-    if n == 0:
-        return v
-    return [x / n for x in v]
+def _assert_status_schema(status: dict) -> None:
+    for key in STATUS_FIELDS:
+        assert key in status, f"missing status field {key}"
+    assert "phase" not in status
+    assert "generation_id" not in status
+    assert "reader_count" not in status
 
 
-def cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(x * x for x in b))
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
+def _ephemeral_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
-def sigmoid(x: float) -> float:
-    return 1.0 / (1.0 + math.exp(-x))
+def test_uninterrupted_upgrade_matches_logical_model(tmp_path):
+    """An uninterrupted upgrade publishes the next generation with the same logical records."""
+    db, cfg = init_db(tmp_path, batch_size=3)
+    run_opsctl(db, cfg, "upgrade")
+    status = status_json(db, cfg)
+    assert status["upgrade_phase"] in {"complete", "Complete", "idle", "Idle"}
+    pub = _published_gen(status)
+    assert pub == expected_published_generation_after_upgrade()
+    expected = expected_logical_state(_source_records())
+    actual = logical_payloads_via_generations(db, cfg, pub)
+    assert actual == {k: v.payload for k, v in expected.items()}
 
 
-def match_rate(hyp: list[str], ref: list[str]) -> float:
-    n, m = len(hyp), len(ref)
-    lim = min(n, m)
-    eq = sum(1 for i in range(lim) if hyp[i] == ref[i])
-    return (eq / lim) * (lim / max(n, m))
+@pytest.mark.parametrize("failpoint", FAILPOINTS)
+def test_each_documented_rotation_barrier_converges(tmp_path, failpoint: str):
+    """Every documented failpoint recovers to the same logical state as an uninterrupted upgrade."""
+    db, cfg = init_db(tmp_path, batch_size=3)
+    proc = run_upgrade_with_failpoint(db, cfg, failpoint)
+    if failpoint == "during-cleanup":
+        run_opsctl(db, cfg, "upgrade")
+        proc = run_opsctl(db, cfg, "cleanup", env={"KSEAL_FAILPOINT": failpoint}, allow_fail=True)
+    assert proc.returncode in {0, FAILPOINT_EXIT}
+    recover_twice(db, cfg)
+    pub = _published_gen(status_json(db, cfg))
+    expected = expected_logical_state(_source_records())
+    actual = logical_payloads_via_generations(db, cfg, pub)
+    assert actual == {k: v.payload for k, v in expected.items()}
 
 
-def softmin(gamma: float, x: float, y: float, z: float) -> float:
-    return -gamma * math.log(math.exp(-x / gamma) + math.exp(-y / gamma) + math.exp(-z / gamma))
+def test_partial_batch_recovery_never_reuses_nonce_key_pair(tmp_path):
+    """Partial-copy recovery must not reuse a committed nonce pair within a generation."""
+    db, cfg = init_db(tmp_path, batch_size=2)
+    proc = run_upgrade_with_failpoint(db, cfg, "after-partial-copy")
+    assert proc.returncode == FAILPOINT_EXIT
+    recover_twice(db, cfg)
+    keys = committed_nonce_keys(db)
+    assert len(keys) == len(set(keys)), (
+        "committed (key_id, nonce) pairs must be unique within each generation"
+    )
 
 
-def fit_embeddings(pack: dict, pol: dict) -> dict[str, list[float]]:
-    vocab = sorted(
-        {
-            t
-            for u in pack["utterances"]
-            for t in list(u["hyp"]) + list(u["ref"])
+def test_new_readers_never_observe_mixed_generation(tmp_path):
+    """New readers must read every record from the published generation only."""
+    db, cfg = init_db(tmp_path, batch_size=2)
+    proc = run_upgrade_with_failpoint(db, cfg, "after-publication")
+    assert proc.returncode == FAILPOINT_EXIT
+    recover_twice(db, cfg)
+    pub = _published_gen(status_json(db, cfg))
+    expected = logical_payloads_via_generations(db, cfg, pub)
+    for record_id in expected:
+        assert get_payload(db, cfg, record_id) == expected[record_id]
+
+
+def test_existing_reader_snapshot_survives_restart_and_retirement(tmp_path):
+    """Durable reader tokens keep the pinned generation across recovery and cleanup."""
+    db, cfg = init_db(tmp_path, batch_size=3)
+    snap = reader_open_json(db, cfg)
+    token = snap["token"]
+    pinned_gen = snap["generation_id"]
+    original = reader_get_payload(db, cfg, token, "cred-alpha")
+    proc = run_upgrade_with_failpoint(db, cfg, "after-publication")
+    assert proc.returncode == FAILPOINT_EXIT
+    recover_twice(db, cfg)
+    run_opsctl(db, cfg, "cleanup")
+    after = reader_get_payload(db, cfg, token, "cred-alpha")
+    assert after == original
+    conn = sqlite3.connect(db)
+    try:
+        exists = conn.execute(
+            "SELECT COUNT(*) FROM generation_catalog WHERE generation_id = ?",
+            (pinned_gen,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert exists == 1
+
+
+def test_multi_snapshot_retention_across_generations(tmp_path):
+    """Cleanup removes only generations without active durable snapshots."""
+    db, cfg = init_db(tmp_path, batch_size=3)
+    first = reader_open_json(db, cfg)
+    run_opsctl(db, cfg, "upgrade")
+    second = reader_open_json(db, cfg)
+    run_opsctl(db, cfg, "reader-close", first["token"])
+    run_opsctl(db, cfg, "cleanup")
+    conn = sqlite3.connect(db)
+    try:
+        gens = {row[0] for row in conn.execute("SELECT generation_id FROM generation_catalog").fetchall()}
+    finally:
+        conn.close()
+    assert first["generation_id"] not in gens or first["generation_id"] == second["generation_id"]
+    assert second["generation_id"] in gens
+
+
+def test_invalid_resume_is_database_immutable(tmp_path):
+    """Malformed resume input is rejected without mutating database or audit files."""
+    db, cfg = make_malformed_journal_db(tmp_path)
+    audit = tmp_path / "store.audit.jsonl"
+    paths = [db, audit, Path(str(db) + "-wal"), Path(str(db) + "-shm")]
+    before = file_digest_map(paths)
+    proc = run_opsctl(db, cfg, "recover", allow_fail=True)
+    assert proc.returncode != 0
+    after = file_digest_map(paths)
+    assert before == after
+
+
+def test_resume_order_is_idempotent(tmp_path):
+    """Repeated recover and cleanup sequences converge without changing logical state."""
+    db, cfg = init_db(tmp_path, batch_size=2)
+    run_upgrade_with_failpoint(db, cfg, "after-partial-copy")
+    recover_twice(db, cfg)
+    pub = _published_gen(status_json(db, cfg))
+    baseline = logical_payloads_via_generations(db, cfg, pub)
+    run_opsctl(db, cfg, "recover")
+    run_opsctl(db, cfg, "cleanup")
+    run_opsctl(db, cfg, "recover")
+    status = status_json(db, cfg)
+    pub = _published_gen(status)
+    final = logical_payloads_via_generations(db, cfg, pub)
+    assert final == baseline
+
+
+def test_ordinary_reads_writes_and_api_schema_are_preserved(tmp_path):
+    """CLI put/get and status keep the documented response field set."""
+    db, cfg = init_db(tmp_path, records=[("api-cred", "plain")], batch_size=3)
+    proc = run_opsctl(db, cfg, "put", "cli-cred", "cli-value")
+    assert proc.returncode == 0
+    payload = get_payload(db, cfg, "cli-cred")
+    assert payload == "cli-value"
+    status = status_json(db, cfg)
+    assert json.loads(json.dumps(status))
+    _assert_status_schema(status)
+
+
+def test_generated_scenarios_match_independent_model(tmp_path):
+    """Seeded generated cases match the independent logical model after upgrade recovery."""
+    seeds = [0xA17E2026, 0xBADC0FFE, 0x51A7E000]
+    for seed in seeds:
+        records = []
+        for i in range(3 + (seed % 3)):
+            rid = f"gen-{seed % 10000}-{i}"
+            records.append((rid, f"payload-{seed}-{i}"))
+        db, cfg = init_db(tmp_path / str(seed), records=records, batch_size=2 + (seed % 2))
+        run_upgrade_with_failpoint(db, cfg, "after-partial-copy")
+        recover_twice(db, cfg)
+        pub = _published_gen(status_json(db, cfg))
+        logical = [
+            LogicalRecord(rid, payload, RecordVersion(0, 1)) for rid, payload in records
+        ]
+        expected = expected_logical_state(logical)
+        actual = logical_payloads_via_generations(db, cfg, pub)
+        assert actual == {k: v.payload for k, v in expected.items()}
+
+
+def test_status_and_audit_remain_structurally_compatible(tmp_path):
+    """Status JSON and audit JSONL retain required operator fields."""
+    db, cfg = init_db(tmp_path)
+    run_opsctl(db, cfg, "upgrade")
+    status = status_json(db, cfg)
+    _assert_status_schema(status)
+    assert isinstance(status["generation_states"], list)
+    assert status["upgrade_phase"] in {"complete", "Complete", "idle", "Idle"}
+    audit_path = tmp_path / "store.audit.jsonl"
+    assert audit_path.exists()
+    line = audit_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+    entry = json.loads(line)
+    for key in AUDIT_FIELDS:
+        assert key in entry
+
+
+def test_nonce_uniqueness_after_uninterrupted_upgrade(tmp_path):
+    """A clean upgrade keeps committed nonce pairs unique within each generation."""
+    db, cfg = init_db(tmp_path, batch_size=3)
+    run_opsctl(db, cfg, "upgrade")
+    keys = committed_nonce_keys(db)
+    assert len(keys) == len(set(keys)), (
+        "committed (key_id, nonce) pairs must be unique within each generation"
+    )
+
+
+def test_published_reads_do_not_fall_back_to_older_generations(tmp_path):
+    """Current reads must reject records that exist only in an older generation."""
+    db, cfg = init_db(tmp_path, records=[("shared", "published-value")], batch_size=2)
+    run_opsctl(db, cfg, "upgrade")
+    pub = _published_gen(status_json(db, cfg))
+    assert pub == 2
+    conn = sqlite3.connect(db)
+    try:
+        row = conn.execute(
+            """
+            SELECT key_id, nonce, ciphertext, version_epoch, version_counter
+            FROM records WHERE record_id = 'shared' AND generation_id = 1
+            ORDER BY version_epoch DESC, version_counter DESC LIMIT 1
+            """
+        ).fetchone()
+        assert row is not None
+        # Leave published generation intact; plant an orphan only in the older generation.
+        conn.execute(
+            """
+            INSERT INTO records
+            (record_id, generation_id, key_id, nonce, ciphertext, version_epoch, version_counter)
+            VALUES ('orphan-only', 1, ?, ?, ?, ?, ?)
+            """,
+            row,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    proc = run_opsctl(db, cfg, "get", "orphan-only", "--json", allow_fail=True)
+    assert proc.returncode != 0
+    assert get_payload(db, cfg, "shared") == "published-value"
+
+
+def test_invalid_copied_target_is_not_published_by_recovery(tmp_path):
+    """Recovery must fail validation on a corrupted copy without publishing the target."""
+    db, cfg = init_db(tmp_path, batch_size=2)
+    proc = run_upgrade_with_failpoint(db, cfg, "after-copy-complete")
+    assert proc.returncode == FAILPOINT_EXIT
+    before = status_json(db, cfg)
+    published_before = _published_gen(before)
+    conn = sqlite3.connect(db)
+    try:
+        target = conn.execute(
+            "SELECT target_generation_id FROM upgrade_journal ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()[0]
+        deleted = conn.execute(
+            "DELETE FROM records WHERE generation_id = ? AND record_id = 'cred-alpha'",
+            (target,),
+        ).rowcount
+        assert deleted == 1
+        conn.commit()
+        journal_before = conn.execute(
+            "SELECT upgrade_id, phase, source_generation_id, target_generation_id, copy_cursor, reservation_batch FROM upgrade_journal"
+        ).fetchall()
+        catalog_before = conn.execute(
+            "SELECT generation_id, state FROM generation_catalog ORDER BY generation_id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    recover = run_opsctl(db, cfg, "recover", allow_fail=True)
+    assert recover.returncode != 0
+    after = status_json(db, cfg)
+    assert _published_gen(after) == published_before
+    conn = sqlite3.connect(db)
+    try:
+        journal_after = conn.execute(
+            "SELECT upgrade_id, phase, source_generation_id, target_generation_id, copy_cursor, reservation_batch FROM upgrade_journal"
+        ).fetchall()
+        catalog_after = conn.execute(
+            "SELECT generation_id, state FROM generation_catalog ORDER BY generation_id"
+        ).fetchall()
+        target_state = conn.execute(
+            "SELECT state FROM generation_catalog WHERE generation_id = ?",
+            (target,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert journal_after == journal_before
+    assert catalog_after == catalog_before
+    assert target_state != "published"
+    missing = run_opsctl(db, cfg, "get", "cred-alpha", "--json", allow_fail=True)
+    # Prior published generation remains authoritative and still has the record.
+    assert missing.returncode == 0
+
+
+def test_cleanup_retains_journal_dependent_generation(tmp_path):
+    """Cleanup must retain generations referenced by an unfinished upgrade journal."""
+    db, cfg = init_db(tmp_path, batch_size=2)
+    proc = run_upgrade_with_failpoint(db, cfg, "after-copy-complete")
+    assert proc.returncode == FAILPOINT_EXIT
+    conn = sqlite3.connect(db)
+    try:
+        source, target = conn.execute(
+            "SELECT source_generation_id, target_generation_id FROM upgrade_journal ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        conn.execute(
+            "UPDATE generation_catalog SET state = 'complete' WHERE generation_id = ?",
+            (source,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    run_opsctl(db, cfg, "cleanup")
+    conn = sqlite3.connect(db)
+    try:
+        gens = {
+            row[0]
+            for row in conn.execute("SELECT generation_id FROM generation_catalog").fetchall()
         }
-    )
-    dim = pol["embed_dim"]
-    emb: dict[str, list[float]] = {}
-    for t in vocab:
-        h = (fnv1a32(t) % 10007) + 1
-        v = [math.sin(h * (k + 1) * 1e-3) for k in range(dim)]
-        emb[t] = l2_normalize(v)
-    pairs = []
-    for u in pack["utterances"]:
-        if u["fold"] != "train":
-            continue
-        for i in range(min(len(u["hyp"]), len(u["ref"]))):
-            pairs.append((u["hyp"][i], u["ref"][i]))
-    lr = pol["infonce_lr"]
-    for _ in range(pol["infonce_steps"]):
-        for a_tok, p_tok in pairs:
-            a = emb[a_tok][:]
-            p = emb[p_tok][:]
-            mid = l2_normalize([a[k] + p[k] for k in range(dim)])
-            na = l2_normalize([(1 - lr) * a[k] + lr * mid[k] for k in range(dim)])
-            np = l2_normalize([(1 - lr) * p[k] + lr * mid[k] for k in range(dim)])
-            emb[a_tok] = na
-            emb[p_tok] = np
-    return emb
+    finally:
+        conn.close()
+    assert source in gens
+    assert target in gens
 
 
-def soft_dtw_score(hyp, ref, emb, gamma, gap) -> float:
-    n, m = len(hyp), len(ref)
-    c = [[1.0 - cosine(emb[hyp[i]], emb[ref[j]]) for j in range(m)] for i in range(n)]
-    r = [[0.0] * m for _ in range(n)]
-    r[0][0] = c[0][0]
-    for i in range(1, n):
-        r[i][0] = c[i][0] + r[i - 1][0] + gap
-    for j in range(1, m):
-        r[0][j] = c[0][j] + r[0][j - 1] + gap
-    for i in range(1, n):
-        for j in range(1, m):
-            r[i][j] = c[i][j] + softmin(gamma, r[i - 1][j], r[i][j - 1], r[i - 1][j - 1])
-    raw = r[n - 1][m - 1]
-    return 1.0 / (1.0 + raw / max(n, m))
-
-
-def embed_digest(emb: dict[str, list[float]]) -> str:
-    parts = []
-    for k in sorted(emb):
-        parts.append(k)
-        parts.append(",".join(f"{x:.6f}" for x in emb[k]))
-    blob = "\n".join(parts) + "\n"
-    return sha256_bytes(blob.encode())
-
-
-def expected_bundle(camp_dir: Path) -> dict:
-    pack_bytes = (camp_dir / "pack.json").read_bytes()
-    pol_bytes = (camp_dir / "policy.json").read_bytes()
-    pack = json.loads(pack_bytes)
-    pol = json.loads(pol_bytes)
-    emb = fit_embeddings(pack, pol)
-    ed = embed_digest(emb)
+def _legacy_rows_for_payloads(tmp_path: Path, payloads: list[tuple[str, str, int, int]]):
     rows = []
-    for u in pack["utterances"]:
-        score = soft_dtw_score(u["hyp"], u["ref"], emb, pol["soft_dtw_gamma"], pol["gap_cost"])
-        mr = match_rate(u["hyp"], u["ref"])
-        y = 1 if mr >= 0.75 else 0
-        rows.append({"utt": u, "score": score, "y": y})
-    best_t = pol["temp_grid"][0]
-    best_nll = float("inf")
-    for T in pol["temp_grid"]:
-        nll = 0.0
-        n = 0
-        for r in rows:
-            if r["utt"]["fold"] != "calib":
-                continue
-            p = sigmoid(r["score"] / T)
-            y = r["y"]
-            nll += -(y * math.log(p + 1e-12) + (1 - y) * math.log(1 - p + 1e-12))
-            n += 1
-        nll /= max(n, 1)
-        if nll < best_nll or (nll == best_nll and T < best_t):
-            best_nll = nll
-            best_t = T
-    for r in rows:
-        r["conf"] = sigmoid(r["score"] / best_t)
-    calib = [r for r in rows if r["utt"]["fold"] == "calib"]
-    best_thr = pol["thr_grid"][-1]
-    best_cov = -1.0
-    found = False
-    for thr in pol["thr_grid"]:
-        accepted = [r for r in calib if r["conf"] >= thr]
-        if not accepted:
-            continue
-        cov = len(accepted) / len(calib)
-        risk = sum(1 - r["y"] for r in accepted) / len(accepted)
-        if risk <= pol["risk_target"]:
-            if not found or cov > best_cov or (cov == best_cov and thr < best_thr):
-                found = True
-                best_cov = cov
-                best_thr = thr
-    for r in rows:
-        r["accepted"] = r["conf"] >= best_thr
+    for idx, (record_id, payload, epoch, counter) in enumerate(payloads):
+        key_id, nonce, ciphertext, _, _ = encrypt_payload_via_put(
+            tmp_path / f"cipher-{idx}",
+            f"seed-{idx}",
+            payload,
+        )
+        rows.append((record_id, key_id, nonce, ciphertext, epoch, counter))
+    return rows
 
-    def cov_risk(fold: str):
-        xs = [r for r in rows if r["utt"]["fold"] == fold]
-        if not xs:
-            return 0.0, 0.0
-        acc = [r for r in xs if r["accepted"]]
-        cov = len(acc) / len(xs)
-        risk = (sum(1 - r["y"] for r in acc) / len(acc)) if acc else 0.0
-        return cov, risk
 
-    calib_cov, calib_risk = cov_risk("calib")
-    eval_cov, eval_risk = cov_risk("eval")
-    pd, pold = sha256_bytes(pack_bytes), sha256_bytes(pol_bytes)
-    bd = sha256_bytes(
-        f"{pd}:{pold}:{ed}:{best_thr:.4f}:{best_t:.4f}".encode()
+@pytest.mark.parametrize("target_mode", ["fresh", "initialized_empty"])
+@pytest.mark.parametrize("legacy_version", [1, 2])
+def test_legacy_import_into_fresh_or_empty_target(tmp_path, target_mode: str, legacy_version: int):
+    """Legacy v1/v2 import succeeds for fresh and initialized-empty current-schema targets."""
+    rows = _legacy_rows_for_payloads(
+        tmp_path,
+        [
+            ("legacy-a", "payload-a", 0, 1),
+            ("legacy-b", "payload-b", 0, 2),
+        ],
     )
-    utt_sorted = sorted(rows, key=lambda r: r["utt"]["utt_id"])
-    return {
-        "campaign_id": pack["campaign_id"],
-        "pack_digest": pd,
-        "policy_digest": pold,
-        "embed_digest": ed,
-        "bundle_digest": bd,
-        "temperature": best_t,
-        "threshold": best_thr,
-        "calib_coverage": calib_cov,
-        "calib_risk": calib_risk,
-        "eval_coverage": eval_cov,
-        "eval_risk": eval_risk,
-        "rows": utt_sorted,
+    source = tmp_path / f"legacy-v{legacy_version}.db"
+    if legacy_version == 1:
+        build_legacy_v1_db(source, rows)
+    else:
+        build_legacy_v2_db(source, rows)
+
+    if target_mode == "fresh":
+        db = tmp_path / "target.db"
+        cfg = (tmp_path / "service.toml")
+        from db_factory import write_config
+
+        cfg = write_config(tmp_path, db, batch_size=3)
+    else:
+        db, cfg = init_empty_db(tmp_path / "empty")
+
+    proc = run_opsctl(db, cfg, "import-legacy", "--source", str(source))
+    assert proc.returncode == 0
+    assert get_payload(db, cfg, "legacy-a") == "payload-a"
+    assert get_payload(db, cfg, "legacy-b") == "payload-b"
+
+
+@pytest.mark.parametrize("insertion_order", ["old_first", "new_first"])
+def test_legacy_v1_selects_lexicographic_newest_version(tmp_path, insertion_order: str):
+    """Import prefers (1,1) over (0,5) regardless of source row insertion order."""
+    older = encrypt_payload_via_put(tmp_path / "old", "seed-old", "counter-wins-wrong")
+    newer = encrypt_payload_via_put(tmp_path / "new", "seed-new", "epoch-wins-correct")
+    old_row = ("r1", older[0], older[1], older[2], 0, 5)
+    new_row = ("r1", newer[0], newer[1], newer[2], 1, 1)
+    ordered = [old_row, new_row] if insertion_order == "old_first" else [new_row, old_row]
+    source = tmp_path / "legacy-order.db"
+    build_legacy_v1_db(source, ordered)
+    db, cfg = init_empty_db(tmp_path / "target")
+    run_opsctl(db, cfg, "import-legacy", "--source", str(source))
+    assert get_payload(db, cfg, "r1") == "epoch-wins-correct"
+
+
+def test_legacy_unsupported_version_leaves_target_immutable(tmp_path):
+    """Unsupported legacy schema versions are rejected without mutating the target."""
+    source = tmp_path / "legacy-unsupported.db"
+    build_unsupported_legacy_db(source)
+    db, cfg = init_empty_db(tmp_path / "target")
+    audit = tmp_path / "target" / "store.audit.jsonl"
+    before = file_digest_map([db, audit])
+    proc = run_opsctl(db, cfg, "import-legacy", "--source", str(source), allow_fail=True)
+    assert proc.returncode != 0
+    after = file_digest_map([db, audit])
+    assert before == after
+
+
+def test_legacy_malformed_schema_leaves_target_immutable(tmp_path):
+    """Malformed legacy sources are rejected without partially modifying the target."""
+    source = tmp_path / "legacy-malformed.db"
+    build_malformed_legacy_db(source)
+    db, cfg = init_empty_db(tmp_path / "target")
+    before = file_digest_map([db])
+    proc = run_opsctl(db, cfg, "import-legacy", "--source", str(source), allow_fail=True)
+    assert proc.returncode != 0
+    after = file_digest_map([db])
+    assert before == after
+
+
+def test_legacy_rejects_non_empty_target_atomically(tmp_path):
+    """Import into a non-empty target is rejected and leaves existing rows intact."""
+    rows = _legacy_rows_for_payloads(tmp_path, [("incoming", "new-payload", 0, 1)])
+    source = tmp_path / "legacy-nonempty.db"
+    build_legacy_v1_db(source, rows)
+    db, cfg = init_db(tmp_path / "target", records=[("existing", "keep-me")], batch_size=2)
+    before = file_digest_map([db])
+    proc = run_opsctl(db, cfg, "import-legacy", "--source", str(source), allow_fail=True)
+    assert proc.returncode != 0
+    after = file_digest_map([db])
+    assert before == after
+    assert get_payload(db, cfg, "existing") == "keep-me"
+
+
+def test_http_api_lifecycle_survives_daemon_restart(tmp_path):
+    """Real opsd HTTP lifecycle covers documented endpoints across restart and cleanup."""
+    _, cfg = init_db(tmp_path, records=[], batch_size=2)
+    port = _ephemeral_port()
+    listen = f"127.0.0.1:{port}"
+    base = f"http://{listen}"
+    proc = start_opsd(cfg, listen)
+    try:
+        wait_for_http(f"{base}/v1/status")
+
+        code, body = http_json("POST", f"{base}/v1/records", {"payload": "initial-value"})
+        assert code == 200
+        record_id = body["record_id"]
+
+        code, reader = http_json("POST", f"{base}/v1/readers")
+        assert code == 200
+        token = reader["token"]
+
+        code, pinned = http_json("GET", f"{base}/v1/readers/{token}/records/{record_id}")
+        assert code == 200
+        assert pinned["payload"] == "initial-value"
+
+        code, _ = http_json("POST", f"{base}/v1/upgrade/start")
+        assert code == 200
+
+        code, _ = http_json("POST", f"{base}/v1/records", {"payload": "newer-value"})
+        assert code == 200
+
+        stop_opsd(proc)
+        proc = start_opsd(cfg, listen)
+        wait_for_http(f"{base}/v1/status")
+
+        code, pinned_after = http_json("GET", f"{base}/v1/readers/{token}/records/{record_id}")
+        assert code == 200
+        assert pinned_after["payload"] == "initial-value"
+
+        code, current = http_json("GET", f"{base}/v1/records/{record_id}")
+        assert code == 200
+        assert current["payload"] == "newer-value"
+
+        code, status = http_json("GET", f"{base}/v1/status")
+        assert code == 200
+        _assert_status_schema(status)
+
+        code, _ = http_json("DELETE", f"{base}/v1/readers/{token}")
+        assert code == 200
+        code, _ = http_json("POST", f"{base}/v1/upgrade/cleanup")
+        assert code == 200
+
+        code, err = http_json("GET", f"{base}/v1/records/missing-record-xyz")
+        assert code == 400
+        assert "error" in err and "code" in err
+        assert err["code"] == "not_found"
+
+        code, _ = http_json("POST", f"{base}/v1/upgrade/recover")
+        assert code == 200
+    finally:
+        stop_opsd(proc)
+
+
+def _records_for_count(count: int, prefix: str = "cred") -> list[tuple[str, str]]:
+    return [(f"{prefix}-{i}", f"payload-{i}") for i in range(count)]
+
+
+def _logical_from_tuples(records: list[tuple[str, str]]) -> list[LogicalRecord]:
+    return [
+        LogicalRecord(rid, payload, RecordVersion(0, 1)) for rid, payload in records
+    ]
+
+
+def test_repeated_partial_copy_crashes_cross_multiple_nonce_batches(tmp_path):
+    """Repeated one-occurrence recoveries across many nonce batches converge like a clean upgrade."""
+    record_count = 9
+    batch_size = 2
+    records = _records_for_count(record_count)
+    db, cfg = init_db(tmp_path, records=records, batch_size=batch_size)
+    expected = expected_logical_state(_logical_from_tuples(records))
+
+    proc = run_upgrade_with_failpoint(db, cfg, "after-partial-copy")
+    assert proc.returncode == FAILPOINT_EXIT
+
+    iterations = recover_until_complete_through_partial_copy(db, cfg)
+    assert iterations >= record_count
+
+    status = status_json(db, cfg)
+    pub = _published_gen(status)
+    assert pub == expected_published_generation_after_upgrade()
+    assert status["upgrade_phase"] in {"complete", "Complete", "idle", "Idle"}
+
+    conn = sqlite3.connect(db)
+    try:
+        row = conn.execute(
+            """
+            SELECT upgrade_id, source_generation_id, target_generation_id
+            FROM upgrade_journal ORDER BY updated_at DESC LIMIT 1
+            """
+        ).fetchone()
+        upgrade_id = str(row[0])
+        source = int(row[1])
+        target = int(row[2])
+        source_occ = read_canonical_occurrences(db, source)
+        target_occ = read_canonical_occurrences(db, target)
+        batches = {
+            batch
+            for (batch,) in conn.execute(
+                "SELECT DISTINCT batch_number FROM nonce_reservations WHERE upgrade_id = ?",
+                (upgrade_id,),
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+    assert len(source_occ) == expected_source_occurrence_count(_logical_from_tuples(records))
+    assert len(target_occ) == len(source_occ)
+    assert {(r, e, c) for r, e, c, *_ in target_occ} == {(r, e, c) for r, e, c, *_ in source_occ}
+
+    actual = logical_payloads_via_generations(db, cfg, pub)
+    assert actual == {k: v.payload for k, v in expected.items()}
+
+    keys = committed_nonce_keys(db)
+    assert len(keys) == len(set(keys))
+
+    assert len(batches) >= 5, "upgrade must cross multiple reservation batches"
+
+    validate_reservation_row_correspondence(db, upgrade_id, target)
+
+    baseline = logical_payloads_via_generations(db, cfg, pub)
+    run_opsctl(db, cfg, "recover")
+    run_opsctl(db, cfg, "cleanup")
+    after = logical_payloads_via_generations(db, cfg, _published_gen(status_json(db, cfg)))
+    assert after == baseline
+
+
+def test_lagging_cursor_preserves_committed_target_row_and_reservation(tmp_path):
+    """Recovery must not re-encrypt or re-reserve when the cursor lags behind committed work."""
+    records = _records_for_count(5)
+    db, cfg = init_db(tmp_path, records=records, batch_size=2)
+    expected = expected_logical_state(_logical_from_tuples(records))
+
+    proc = run_upgrade_with_failpoint(db, cfg, "after-partial-copy")
+    assert proc.returncode == FAILPOINT_EXIT
+
+    _, target = journal_source_target(db)
+    target_occ = read_canonical_occurrences(db, target)
+    assert len(target_occ) >= 1
+    committed = target_occ[0]
+    record_id, epoch, counter, key_id, nonce, ciphertext = committed
+
+    upgrade_id = active_upgrade_id(db)
+    reservations = read_nonce_reservations(db, upgrade_id)
+    consumed = [r for r in reservations if r[5] == 1 and r[4] == record_id]
+    assert len(consumed) == 1
+    res_batch, res_slot, _, _, _, _ = consumed[0]
+    identity = {
+        "record_id": record_id,
+        "version_epoch": epoch,
+        "version_counter": counter,
+        "key_id": key_id,
+        "nonce": nonce,
+        "ciphertext": ciphertext,
+        "reservation_batch": res_batch,
+        "reservation_slot": res_slot,
     }
 
+    set_copy_cursor(db, upgrade_id, 0)
 
-def rebuild():
-    if BIN.exists():
-        shutil.rmtree(BIN)
-    BIN.mkdir(parents=True)
-    env = os.environ.copy()
-    env["CARGO_TARGET_DIR"] = str(BIN / "target_k7")
-    subprocess.check_call(
-        ["cargo", "build", "--release", "--manifest-path", str(ENV / "k7/Cargo.toml")],
-        cwd=str(ENV),
-        env=env,
-    )
-    env["CARGO_TARGET_DIR"] = str(BIN / "target_m3")
-    subprocess.check_call(
-        ["cargo", "build", "--release", "--manifest-path", str(ENV / "m3/Cargo.toml")],
-        cwd=str(ENV),
-        env=env,
-    )
-    shutil.copy(BIN / "target_k7/release/k7", EMBED)
-    shutil.copy(BIN / "target_m3/release/m3", ALIGN)
-    EMBED.chmod(0o755)
-    ALIGN.chmod(0o755)
-    subprocess.check_call(["go", "build", "-o", str(CTL), "./cmd/chironymctl"], cwd=str(ENV))
-    # also refresh /app/bin for process defaults
-    shutil.copy(EMBED, "/app/bin/k7")
-    shutil.copy(ALIGN, "/app/bin/m3")
-    shutil.copy(CTL, "/app/bin/chironymctl")
+    recover_twice(db, cfg)
+    pub = _published_gen(status_json(db, cfg))
+    assert pub == expected_published_generation_after_upgrade()
 
+    after_occ = read_canonical_occurrences(db, target)
+    matching = [
+        row for row in after_occ
+        if row[0] == identity["record_id"]
+        and row[1] == identity["version_epoch"]
+        and row[2] == identity["version_counter"]
+    ]
+    assert len(matching) == 1
+    _, _, _, after_key, after_nonce, after_ct = matching[0]
+    assert after_key == identity["key_id"]
+    assert after_nonce == identity["nonce"]
+    assert after_ct == identity["ciphertext"]
 
-def reset_io():
-    if OUT.exists():
-        shutil.rmtree(OUT)
-    if VAR.exists():
-        shutil.rmtree(VAR)
-    OUT.mkdir(parents=True)
-    VAR.mkdir(parents=True)
-    memo = VAR / "chironym_align_memo.json"
-    if memo.exists():
-        memo.unlink()
+    after_res = read_nonce_reservations(db, upgrade_id)
+    naming = [
+        r for r in after_res
+        if r[5] == 1 and r[4] == record_id
+    ]
+    assert len(naming) == 1
+    assert naming[0][0] == identity["reservation_batch"]
+    assert naming[0][1] == identity["reservation_slot"]
+
+    actual = logical_payloads_via_generations(db, cfg, pub)
+    assert actual == {k: v.payload for k, v in expected.items()}
+
+    keys = committed_nonce_keys(db)
+    assert len(keys) == len(set(keys))
+
+    baseline = logical_payloads_via_generations(db, cfg, pub)
+    run_opsctl(db, cfg, "recover")
+    assert logical_payloads_via_generations(db, cfg, pub) == baseline
 
 
-def run_eval(campaign: Path, out: Path = OUT):
-    env = os.environ.copy()
-    env["CHIRONYM_EMBED_BIN"] = str(EMBED)
-    env["CHIRONYM_ALIGN_BIN"] = str(ALIGN)
-    subprocess.check_call([str(CTL), "prepare", "--output", str(out)], env=env)
-    return subprocess.run(
-        [str(CTL), "evaluate", "--campaign", str(campaign), "--output", str(out)],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+@pytest.mark.parametrize(
+    "corruption_kind",
+    [
+        "duplicate_nonce",
+        "wrong_reservation_record",
+        "row_reservation_mismatch",
+        "orphaned_reservation",
+        "cursor_skips_occurrence",
+    ],
+)
+def test_malformed_target_reservation_accounting_is_rejected_atomically(
+    tmp_path, corruption_kind: str
+):
+    """Malformed reservation or copy state is rejected without mutating durable files."""
+    records = _records_for_count(5)
+    db, cfg = init_db(tmp_path, records=records, batch_size=2)
+    proc = run_upgrade_with_failpoint(db, cfg, "after-copy-complete")
+    assert proc.returncode == FAILPOINT_EXIT
 
+    source, target = journal_source_target(db)
+    upgrade_id = active_upgrade_id(db)
+    audit = tmp_path / "store.audit.jsonl"
+    paths = database_mutable_paths(db, audit)
 
-@pytest.fixture(scope="session", autouse=True)
-def _build_once():
-    rebuild()
+    conn = sqlite3.connect(db)
+    try:
+        if corruption_kind == "duplicate_nonce":
+            rows = conn.execute(
+                """
+                SELECT record_id, key_id, nonce FROM records
+                WHERE generation_id = ? ORDER BY record_id LIMIT 2
+                """,
+                (target,),
+            ).fetchall()
+            dup_key, dup_nonce = rows[0][1], rows[0][2]
+            victim = rows[1][0]
+            conn.execute(
+                "UPDATE records SET key_id = ?, nonce = ? WHERE generation_id = ? AND record_id = ?",
+                (dup_key, dup_nonce, target, victim),
+            )
+        elif corruption_kind == "wrong_reservation_record":
+            conn.execute(
+                """
+                UPDATE nonce_reservations SET record_id = 'nonexistent-record'
+                WHERE upgrade_id = ? AND consumed = 1 LIMIT 1
+                """,
+                (upgrade_id,),
+            )
+        elif corruption_kind == "row_reservation_mismatch":
+            conn.execute(
+                """
+                UPDATE nonce_reservations SET nonce = 'mismatched-nonce-value'
+                WHERE upgrade_id = ? AND consumed = 1 LIMIT 1
+                """,
+                (upgrade_id,),
+            )
+        elif corruption_kind == "orphaned_reservation":
+            conn.execute(
+                """
+                UPDATE nonce_reservations SET record_id = 'orphan-only-row'
+                WHERE upgrade_id = ? AND consumed = 1 LIMIT 1
+                """,
+                (upgrade_id,),
+            )
+        elif corruption_kind == "cursor_skips_occurrence":
+            first = conn.execute(
+                """
+                SELECT record_id, version_epoch, version_counter FROM records
+                WHERE generation_id = ? ORDER BY record_id, version_epoch, version_counter LIMIT 1
+                """,
+                (source,),
+            ).fetchone()
+            conn.execute(
+                """
+                DELETE FROM records
+                WHERE generation_id = ? AND record_id = ? AND version_epoch = ? AND version_counter = ?
+                """,
+                (target, first[0], first[1], first[2]),
+            )
+            conn.execute(
+                "UPDATE upgrade_journal SET copy_cursor = copy_cursor + 1 WHERE upgrade_id = ?",
+                (upgrade_id,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
+    before_digests = file_digest_map(paths)
+    journal_before = read_journal_snapshot(db)
+    catalog_before = read_catalog_snapshot(db)
+    records_before = read_records_snapshot(db)
+    reservations_before = read_reservations_snapshot(db)
+    published_before = _published_gen(status_json(db, cfg))
 
-def assert_matches_expected(camp: Path, out: Path, stdout: str):
-    exp = expected_bundle(camp)
-    report = json.loads((out / "align_report.json").read_text())
-    state = json.loads((out / "campaign_state.json").read_text())
-    log = (out / "eval_summary.log").read_text().splitlines()
-    csv_lines = (out / "utterance_scores.csv").read_text().splitlines()
-    assert report["campaign_id"] == exp["campaign_id"]
-    assert report["pack_digest"] == exp["pack_digest"]
-    assert report["policy_digest"] == exp["policy_digest"]
-    assert report["embed_digest"] == exp["embed_digest"]
-    assert report["bundle_digest"] == exp["bundle_digest"]
-    assert abs(report["temperature"] - exp["temperature"]) < 1e-9
-    assert abs(report["threshold"] - exp["threshold"]) < 1e-9
-    assert abs(report["eval_coverage"] - exp["eval_coverage"]) < 1e-6
-    assert abs(report["eval_risk"] - exp["eval_risk"]) < 1e-6
-    assert abs(report["calib_coverage"] - exp["calib_coverage"]) < 1e-6
-    assert abs(report["calib_risk"] - exp["calib_risk"]) < 1e-6
-    assert state["bundle_digest"] == exp["bundle_digest"]
-    assert state["epoch"] >= 1
-    assert f"BUNDLE_DIGEST={exp['bundle_digest']}" in stdout
-    assert f"TOP_ACCEPT_RATE={exp['eval_coverage']:.6f}" in stdout
-    assert f"EPOCH={state['epoch']}" in stdout
-    assert log[0] == f"CAMPAIGN={exp['campaign_id']}"
-    assert log[5] == f"BUNDLE_DIGEST={exp['bundle_digest']}"
-    assert csv_lines[0] == "utt_id,fold,score,conf,accepted,y"
-    by_id = {r["utt_id"]: r for r in report["utterances"]}
-    for er in exp["rows"]:
-        uid = er["utt"]["utt_id"]
-        got = by_id[uid]
-        assert abs(got["score"] - er["score"]) < 1e-5
-        assert abs(got["conf"] - er["conf"]) < 1e-5
-        assert got["accepted"] == er["accepted"]
-        assert got["y"] == er["y"]
-    # csv agreement
-    for line in csv_lines[1:]:
-        utt_id, fold, score, conf, accepted, y = line.split(",")
-        got = by_id[utt_id]
-        assert fold == got["fold"]
-        assert abs(float(score) - got["score"]) < 1e-6
-        assert abs(float(conf) - got["conf"]) < 1e-6
-        assert int(accepted) == (1 if got["accepted"] else 0)
-        assert int(y) == got["y"]
-    ledger = json.loads((VAR / "chironym_ledger.json").read_text())
-    assert ledger[-1]["bundle_digest"] == exp["bundle_digest"]
-    hist = (out / "risk_history.jsonl").read_text().strip().splitlines()
-    last = json.loads(hist[-1])
-    assert last["bundle_digest"] == exp["bundle_digest"]
-    mirror = json.loads((VAR / "chironym_state.json").read_text())
-    assert mirror["bundle_digest"] == state["bundle_digest"]
-    assert mirror["epoch"] == state["epoch"]
-
-
-def test_studio_a_contract_bundle():
-    reset_io()
-    proc = run_eval(STUDIO_A)
-    assert proc.returncode == 0, proc.stderr
-    assert_matches_expected(STUDIO_A, OUT, proc.stdout)
-
-
-def test_studio_b_fixture_bundle():
-    reset_io()
-    proc = run_eval(STUDIO_B)
-    assert proc.returncode == 0, proc.stderr
-    assert_matches_expected(STUDIO_B, OUT, proc.stdout)
-
-
-def test_unarmed_fails_closed():
-    reset_io()
-    env = os.environ.copy()
-    env["CHIRONYM_EMBED_BIN"] = str(EMBED)
-    env["CHIRONYM_ALIGN_BIN"] = str(ALIGN)
-    proc = subprocess.run(
-        [str(CTL), "evaluate", "--campaign", str(STUDIO_A), "--output", str(OUT)],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+    proc = run_opsctl(db, cfg, "recover", allow_fail=True)
     assert proc.returncode != 0
-    assert proc.stderr.startswith("chironym output not armed:")
-    assert not (VAR / "chironym_ledger.json").exists()
+
+    assert file_digest_map(paths) == before_digests
+    assert read_journal_snapshot(db) == journal_before
+    assert read_catalog_snapshot(db) == catalog_before
+    assert read_records_snapshot(db) == records_before
+    assert read_reservations_snapshot(db) == reservations_before
+    assert _published_gen(status_json(db, cfg)) == published_before
+
+    conn = sqlite3.connect(db)
+    try:
+        target_state = conn.execute(
+            "SELECT state FROM generation_catalog WHERE generation_id = ?",
+            (target,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert target_state != "published"
+    assert get_payload(db, cfg, records[0][0]) == records[0][1]
 
 
-def test_invalid_campaign_fails_closed():
-    reset_io()
-    bad = OUT / "scratch_bad"
-    bad.mkdir(parents=True)
-    (bad / "pack.json").write_text("{}")
-    # missing policy
-    env = os.environ.copy()
-    env["CHIRONYM_EMBED_BIN"] = str(EMBED)
-    env["CHIRONYM_ALIGN_BIN"] = str(ALIGN)
-    subprocess.check_call([str(CTL), "prepare", "--output", str(OUT)], env=env)
-    proc = subprocess.run(
-        [str(CTL), "evaluate", "--campaign", str(bad), "--output", str(OUT)],
-        env=env,
-        capture_output=True,
-        text=True,
+def test_final_short_nonce_batch_allows_unused_capacity(tmp_path):
+    """A final short reservation batch with unused slots still validates and publishes."""
+    batch_size = 2
+    record_count = 7
+    records = _records_for_count(record_count)
+    db, cfg = init_db(tmp_path, records=records, batch_size=batch_size)
+    expected = expected_logical_state(_logical_from_tuples(records))
+
+    proc = run_upgrade_with_failpoint(db, cfg, "after-partial-copy")
+    assert proc.returncode == FAILPOINT_EXIT
+    recover_until_complete_through_partial_copy(db, cfg, max_iterations=32)
+    recover_twice(db, cfg)
+
+    status = status_json(db, cfg)
+    pub = _published_gen(status)
+    assert pub == expected_published_generation_after_upgrade()
+
+    conn = sqlite3.connect(db)
+    try:
+        row = conn.execute(
+            """
+            SELECT upgrade_id, target_generation_id FROM upgrade_journal
+            ORDER BY updated_at DESC LIMIT 1
+            """
+        ).fetchone()
+        upgrade_id = str(row[0])
+        target = int(row[1])
+    finally:
+        conn.close()
+
+    validate_reservation_row_correspondence(db, upgrade_id, target)
+    reservations = read_nonce_reservations(db, upgrade_id)
+    unused = [r for r in reservations if r[5] == 0]
+    if unused:
+        for _, _, _, _, record_id, _ in unused:
+            assert record_id is None
+
+    keys = committed_nonce_keys(db)
+    assert len(keys) == len(set(keys))
+
+    actual = logical_payloads_via_generations(db, cfg, pub)
+    assert actual == {k: v.payload for k, v in expected.items()}
+
+    baseline = dict(actual)
+    run_opsctl(db, cfg, "recover")
+    run_opsctl(db, cfg, "cleanup")
+    run_opsctl(db, cfg, "recover")
+    assert logical_payloads_via_generations(db, cfg, _published_gen(status_json(db, cfg))) == baseline
+
+
+def test_successive_recovered_rotations_preserve_each_reader_generation(tmp_path):
+    """Two recovered rotations with pinned readers and intervening writes stay generation-isolated."""
+    initial_records = _records_for_count(7)
+    db, cfg = init_db(tmp_path, records=initial_records, batch_size=2)
+
+    reader_a = reader_open_json(db, cfg)
+    gen_a = reader_a["generation_id"]
+
+    run_upgrade_with_failpoint(db, cfg, "after-partial-copy")
+    recover_until_complete_through_partial_copy(db, cfg)
+    recover_twice(db, cfg)
+
+    reader_b = reader_open_json(db, cfg)
+    gen_b = reader_b["generation_id"]
+    assert gen_b == expected_published_generation_after_rotations(1)
+
+    run_opsctl(db, cfg, "put", "cred-0", "updated-after-rotation-1")
+    run_opsctl(db, cfg, "put", "new-after-rotation-1", "brand-new-value")
+
+    base_logical = _logical_from_tuples(initial_records)
+    expected_gen2 = expected_logical_state_after_writes(
+        list(base_logical),
+        [LogicalRecord("cred-0", "updated-after-rotation-1", RecordVersion(0, 2))],
+        [LogicalRecord("new-after-rotation-1", "brand-new-value", RecordVersion(0, 1))],
     )
-    assert proc.returncode != 0
-    assert proc.stderr.startswith("invalid chironym campaign:")
-    assert not (VAR / "chironym_ledger.json").exists()
 
+    set_batch_size(cfg, 3)
 
-def test_repeat_stable_under_unchanged_inputs():
-    reset_io()
-    p1 = run_eval(STUDIO_A)
-    assert p1.returncode == 0
-    r1 = (OUT / "align_report.json").read_bytes()
-    c1 = (OUT / "utterance_scores.csv").read_bytes()
-    e1 = json.loads((OUT / "campaign_state.json").read_text())["epoch"]
-    p2 = run_eval(STUDIO_A)
-    assert p2.returncode == 0
-    r2 = (OUT / "align_report.json").read_bytes()
-    c2 = (OUT / "utterance_scores.csv").read_bytes()
-    e2 = json.loads((OUT / "campaign_state.json").read_text())["epoch"]
-    assert r1 == r2
-    assert c1 == c2
-    assert e2 == e1 + 1
+    run_upgrade_with_failpoint(db, cfg, "after-partial-copy")
+    recover_one_partial_copy(db, cfg)
+    recover_one_partial_copy(db, cfg)
+    recover_twice(db, cfg)
 
+    port = _ephemeral_port()
+    listen = f"127.0.0.1:{port}"
+    proc = restart_opsd(cfg, listen)
+    try:
+        wait_for_http(f"http://{listen}/v1/status")
+    finally:
+        stop_opsd(proc)
 
-def test_policy_gamma_mutation_refreshes_bundle():
-    reset_io()
-    scratch = OUT / "scratch_mut"
-    shutil.copytree(STUDIO_A, scratch)
-    p1 = run_eval(scratch)
-    assert p1.returncode == 0
-    d1 = json.loads((OUT / "align_report.json").read_text())["bundle_digest"]
-    pol = json.loads((scratch / "policy.json").read_text())
-    pol["soft_dtw_gamma"] = round(pol["soft_dtw_gamma"] + 0.17, 4)
-    (scratch / "policy.json").write_text(json.dumps(pol, indent=2) + "\n")
-    # new output dir to avoid history confusion; still same process memo
-    out2 = OUT / "scratch_b"
-    out2.mkdir()
-    env = os.environ.copy()
-    env["CHIRONYM_EMBED_BIN"] = str(EMBED)
-    env["CHIRONYM_ALIGN_BIN"] = str(ALIGN)
-    subprocess.check_call([str(CTL), "prepare", "--output", str(out2)], env=env)
-    p2 = subprocess.run(
-        [str(CTL), "evaluate", "--campaign", str(scratch), "--output", str(out2)],
-        env=env,
-        capture_output=True,
-        text=True,
+    gen_c = expected_published_generation_after_rotations(2)
+    status = status_json(db, cfg)
+    assert _published_gen(status) == gen_c
+
+    snap_a = {rid: reader_get_payload(db, cfg, reader_a["token"], rid) for rid, _ in initial_records}
+    snap_b_records = list(initial_records) + [("new-after-rotation-1", "brand-new-value")]
+    snap_b = {
+        rid: reader_get_payload(db, cfg, reader_b["token"], rid)
+        for rid, _ in snap_b_records
+        if rid != "cred-0"
+    }
+    snap_b["cred-0"] = reader_get_payload(db, cfg, reader_b["token"], "cred-0")
+
+    current = {
+        rid: get_payload(db, cfg, rid)
+        for rid in expected_gen2
+    }
+    assert current == {k: v.payload for k, v in expected_gen2.items()}
+
+    for rid, payload in initial_records:
+        assert reader_get_payload(db, cfg, reader_a["token"], rid) == snap_a[rid]
+    assert reader_get_payload(db, cfg, reader_b["token"], "cred-0") == "updated-after-rotation-1"
+    assert reader_get_payload(db, cfg, reader_b["token"], "new-after-rotation-1") == "brand-new-value"
+
+    new_reader = reader_open_json(db, cfg)
+    assert new_reader["generation_id"] == gen_c
+    for rid in expected_gen2:
+        assert reader_get_payload(db, cfg, new_reader["token"], rid) == expected_gen2[rid].payload
+
+    conn = sqlite3.connect(db)
+    try:
+        catalog_gens = {
+            row[0] for row in conn.execute("SELECT generation_id FROM generation_catalog").fetchall()
+        }
+        pin_gens = {
+            int(row[0])
+            for row in conn.execute(
+                "SELECT generation_id FROM reader_pins WHERE released = 0"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    required = generations_required_for_pins_and_journal(
+        pin_gens,
+        {gen_a, gen_b, gen_c},
+        gen_c,
+        catalog_gens,
     )
-    assert p2.returncode == 0, p2.stderr
-    d2 = json.loads((out2 / "align_report.json").read_text())["bundle_digest"]
-    assert d1 != d2
-    assert_matches_expected(scratch, out2, p2.stdout)
+    run_opsctl(db, cfg, "cleanup")
+    conn = sqlite3.connect(db)
+    try:
+        after_cleanup = {
+            row[0] for row in conn.execute("SELECT generation_id FROM generation_catalog").fetchall()
+        }
+    finally:
+        conn.close()
+    for gen in required:
+        if gen in pin_gens or gen == gen_c:
+            assert gen in after_cleanup
+
+    keys = committed_nonce_keys(db)
+    gen_keys = [k for k in keys if k[0] in {gen_b, gen_c}]
+    assert len(gen_keys) == len(set(gen_keys))
+
+    run_opsctl(db, cfg, "reader-close", reader_a["token"])
+    run_opsctl(db, cfg, "cleanup")
+    assert reader_get_payload(db, cfg, reader_b["token"], "cred-0") == "updated-after-rotation-1"
+
+    run_opsctl(db, cfg, "reader-close", reader_b["token"])
+    run_opsctl(db, cfg, "cleanup")
+
+    run_opsctl(db, cfg, "recover")
+    run_opsctl(db, cfg, "cleanup")
+    final = logical_payloads_via_generations(db, cfg, gen_c)
+    assert final == {k: v.payload for k, v in expected_gen2.items()}
 
 
-def test_pack_token_mutation_refreshes_scores():
-    reset_io()
-    scratch = OUT / "scratch_a"
-    shutil.copytree(STUDIO_A, scratch)
-    p1 = run_eval(scratch)
-    assert p1.returncode == 0
-    s1 = json.loads((OUT / "align_report.json").read_text())["utterances"][0]["score"]
-    pack = json.loads((scratch / "pack.json").read_text())
-    # mutate an eval hyp token
-    for u in pack["utterances"]:
-        if u["fold"] == "eval":
-            u["hyp"][0] = u["hyp"][0] + "X"
-            break
-    (scratch / "pack.json").write_text(json.dumps(pack, indent=2) + "\n")
-    out2 = OUT / "scratch_b"
-    out2.mkdir()
-    env = os.environ.copy()
-    env["CHIRONYM_EMBED_BIN"] = str(EMBED)
-    env["CHIRONYM_ALIGN_BIN"] = str(ALIGN)
-    subprocess.check_call([str(CTL), "prepare", "--output", str(out2)], env=env)
-    p2 = subprocess.run(
-        [str(CTL), "evaluate", "--campaign", str(scratch), "--output", str(out2)],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert p2.returncode == 0, p2.stderr
-    assert_matches_expected(scratch, out2, p2.stdout)
-    s2 = json.loads((out2 / "align_report.json").read_text())["utterances"][0]["score"]
-    # not asserting s1!=s2 always, but digests must differ
-    d1 = json.loads((OUT / "align_report.json").read_text())["bundle_digest"]
-    d2 = json.loads((out2 / "align_report.json").read_text())["bundle_digest"]
-    assert d1 != d2
-    _ = s1, s2
+def test_generated_multi_batch_recovery_matrix(tmp_path):
+    """Deterministic batch/record matrix cases recover to the independent logical model."""
+    matrix = [
+        (1, 4),
+        (2, 7),
+        (3, 10),
+        (4, 13),
+    ]
+    for batch_size, record_count in matrix:
+        records = _records_for_count(record_count, prefix=f"b{batch_size}")
+        case_dir = tmp_path / f"bs{batch_size}-rc{record_count}"
+        db, cfg = init_db(case_dir, records=records, batch_size=batch_size)
+        expected = expected_logical_state(_logical_from_tuples(records))
 
+        run_upgrade_with_failpoint(db, cfg, "after-partial-copy")
+        extra_failures = batch_size % 3
+        for _ in range(extra_failures):
+            proc = recover_one_partial_copy(db, cfg)
+            assert proc.returncode == FAILPOINT_EXIT
+        recover_twice(db, cfg)
 
-def test_cross_artifact_cli_agreement():
-    reset_io()
-    proc = run_eval(STUDIO_A)
-    assert proc.returncode == 0
-    assert_matches_expected(STUDIO_A, OUT, proc.stdout)
+        pub = _published_gen(status_json(db, cfg))
+        actual = logical_payloads_via_generations(db, cfg, pub)
+        assert actual == {k: v.payload for k, v in expected.items()}
+
+        target = pub
+        conn = sqlite3.connect(db)
+        try:
+            upgrade_id = conn.execute(
+                "SELECT upgrade_id FROM upgrade_journal ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()[0]
+            phase = conn.execute(
+                "SELECT phase FROM upgrade_journal WHERE upgrade_id = ?",
+                (upgrade_id,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert phase in {"complete", "idle"}
+
+        validate_reservation_row_correspondence(db, str(upgrade_id), target)
+        keys = committed_nonce_keys(db)
+        assert len(keys) == len(set(keys))
+
+        baseline = dict(actual)
+        run_opsctl(db, cfg, "recover")
+        assert logical_payloads_via_generations(db, cfg, pub) == baseline

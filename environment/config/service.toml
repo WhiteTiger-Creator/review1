@@ -1,0 +1,5 @@
+database_path = "/app/state/store.db"
+audit_path = "/app/state/store.audit.jsonl"
+batch_size = 3
+active_key_id = "key-current"
+supported_legacy_versions = [1, 2]
