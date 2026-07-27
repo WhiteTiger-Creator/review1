@@ -1,0 +1,119 @@
+{
+  "campaign_id": "studio_b",
+  "utterances": [
+    {
+      "utt_id": "b01",
+      "fold": "train",
+      "hyp": [
+        "CAT",
+        "SLEEP",
+        "SOFA"
+      ],
+      "ref": [
+        "CAT",
+        "SLEEP",
+        "ON",
+        "SOFA"
+      ],
+      "kin": [
+        0.3,
+        0.4,
+        0.2
+      ]
+    },
+    {
+      "utt_id": "b02",
+      "fold": "train",
+      "hyp": [
+        "I",
+        "LOVE",
+        "COFFEE"
+      ],
+      "ref": [
+        "I",
+        "LOVE",
+        "COFFEE"
+      ],
+      "kin": [
+        0.1,
+        0.2,
+        0.1
+      ]
+    },
+    {
+      "utt_id": "b03",
+      "fold": "calib",
+      "hyp": [
+        "WHERE",
+        "BOOK"
+      ],
+      "ref": [
+        "WHERE",
+        "IS",
+        "BOOK"
+      ],
+      "kin": [
+        0.4,
+        0.3
+      ]
+    },
+    {
+      "utt_id": "b04",
+      "fold": "calib",
+      "hyp": [
+        "GOOD",
+        "MORNING",
+        "TEACHER"
+      ],
+      "ref": [
+        "GOOD",
+        "MORNING",
+        "TEACHER"
+      ],
+      "kin": [
+        0.2,
+        0.2,
+        0.2
+      ]
+    },
+    {
+      "utt_id": "b05",
+      "fold": "eval",
+      "hyp": [
+        "RAIN",
+        "TODAY",
+        "HEAVY"
+      ],
+      "ref": [
+        "RAIN",
+        "TODAY",
+        "VERY",
+        "HEAVY"
+      ],
+      "kin": [
+        0.5,
+        0.4,
+        0.5
+      ]
+    },
+    {
+      "utt_id": "b06",
+      "fold": "eval",
+      "hyp": [
+        "SEE",
+        "YOU",
+        "LATER"
+      ],
+      "ref": [
+        "SEE",
+        "YOU",
+        "LATER"
+      ],
+      "kin": [
+        0.2,
+        0.2,
+        0.2
+      ]
+    }
+  ]
+}

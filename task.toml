@@ -3,37 +3,25 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "medium"
-category = "security"
-tags = ["security", "authorization", "prototype-pollution", "privilege-escalation", "go"]
-languages = ["go"]
-codebase_size = "small"
-number_of_milestones = 0
+difficulty = "hard"
+category = "machine-learning"
 subcategories = []
-expert_time_estimate_min = 210
-junior_time_estimate_min = 480
-
-[category_profile]
-challenge_family = "nested merge privilege serializability"
-profile_name = "security_authority_split_go"
-allowed_instruction_disclosures = "drvx synth/certify commands, go rebuild note, transcript/certificate output paths, zero privilege-escalation closed-algebra obligation, reliability band home, schema homes, scratch/latch/shadow non-authority, canonical digest rule, big-endian annex bounds, nested quarantine"
-forbidden_instruction_leaks = "internal package loci, sentinel quarantine formula as patch recipe, endian bug, shadow-preference bug, local-witness routing, oracle transcript"
-category_specific_hardness_bar = "encode/decode/enforce authorities must reconcile across changing principals, nested pollution sentinels, scratch false clocks, residual latch generations, shadow dashboard caches, and independent-replay freshness of privilege deltas"
-category_specific_verifier_risks = "toy denylist checklist, local-witness false green, boolean verdict fields, golden transcript leak"
-coverage_role = "adds Go constrained_build security coverage for nested-merge privilege serializability with independent-replay certificates over WAV annex markers, residual latch false clocks, and shadow-band poisoning"
-
-[reference_pattern]
-justification_if_none = "No promoted reference matches Go security constrained_build of nested-merge privilege serializability with independent-replay certificates over WAV annex markers, scratch false clocks, residual generation latches, and shadow dashboard caches."
-
-[agent]
-timeout_sec = 1800
+number_of_milestones = 0
+codebase_size = "small"
+languages = ["go", "rust"]
+tags = ["contrastive-learning", "soft-dtw", "selective-prediction", "gloss-alignment", "go", "rust"]
+expert_time_estimate_min = 150
+junior_time_estimate_min = 300
 
 [verifier]
-timeout_sec = 1800
+timeout_sec = 450.0
+
+[agent]
+timeout_sec = 1200.0
 
 [environment]
 allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 900.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240

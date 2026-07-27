@@ -1,1 +1,0 @@
-{"lane":"L0","actors":[0,1,2],"root":{"role":"user","mask":1,"meta":{"a":1,"nested":{"keep":1}}},"patch":{"__proto__":{"admin":true},"mask":15,"meta":{"b":2,"nested":{"__proto__":{"x":1},"c":3}},"tag":"L0"},"deltas":[1,2,4]}
