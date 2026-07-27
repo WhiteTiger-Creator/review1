@@ -1,8 +1,0 @@
-CS-9 CAROUSEL FEEDER -- applications note (vendor sheet, p.4 extract)
-
-Each CS-9 unit feeds one pod. Delivery confirmation integrates with the
-yard scheduler per minute of drive. Fault behaviour: CS-9 degradation
-faults are latching. A unit that enters degraded drive delivers no
-qualifying load until it is power-cycled; there is no in-place recovery
-and no partial re-arm. After a power cycle the unit re-arms cold and
-resumes confirmed delivery immediately. Scheduled service interval 400h.

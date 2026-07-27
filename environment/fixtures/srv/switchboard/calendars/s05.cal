@@ -1,8 +1,0 @@
-# calendar s05 (whole shifts; transitions at shift boundaries only)
-S1	racked-idle
-S2..S20	hold
-S21..S28	load
-S29..S44	hold
-S45..S46	load
-S47..S48	hold
-S49..S88	load

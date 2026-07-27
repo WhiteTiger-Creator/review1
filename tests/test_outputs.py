@@ -1,283 +1,760 @@
-"""Verifier for graduate-the-erased-cohort.
-
-Recomputes the whole ground truth independently from the pristine record
-copies bundled next to this file (never from agent-writable state), then
-checks the applied steward state against it. Grading is by outcome: any
-route that produced the correct applied state passes.
-"""
-
-import os
-import re
-import socket
+import hashlib
+import json
 import subprocess
-import time
-from collections import defaultdict
 from pathlib import Path
 
-PRISTINE = Path(__file__).resolve().parent / "pristine" / "srv"
-SRV_LIVE = Path(os.environ.get("GRAD_SRV", "/srv"))
-STATE = Path(os.environ.get("GRAD_STATE", "/opt/steward/state"))
-SOCK = os.environ.get("GRAD_SOCK", "/run/steward.sock")
+APP = Path('/app')
+OUT = APP / 'output' / 'build-plan.json'
+CMD = ['node', '/app/bin/repair-lock.js']
 
-SHIFTS, SHIFT_MIN, REQ, CAP_SHIFTS, PODCAP = 48, 480, 120, 54, 8
-CLASSES = ("hammer", "carousel", "flood")
-PODS = ("north", "mid", "south")
-
-
-# ---------------------------------------------------------------- recompute
-
-def _world():
-    pods, racked = {}, {}
-    with open(PRISTINE / "switchboard" / "roster.tsv") as f:
-        next(f)
-        for ln in f:
-            h, pod, _rack, rk = ln.split()
-            pods[h] = pod
-            racked[h] = int(rk[1:])
-    load = defaultdict(set)
-    fut_reim = defaultdict(set)
-    for fn in sorted((PRISTINE / "switchboard" / "calendars").iterdir()):
-        h = fn.name[:-4]
-        for ln in fn.read_text().splitlines():
-            ln = ln.strip()
-            if not ln or ln.startswith("#"):
-                continue
-            rng, kind = ln.split("\t")
-            m = re.match(r"S(\d+)(?:\.\.S(\d+))?$", rng)
-            a, b = int(m.group(1)), int(m.group(2) or m.group(1))
-            for s in range(a, b + 1):
-                if kind == "load":
-                    load[h].add(s)
-                elif kind == "reimage" and s > SHIFTS:
-                    fut_reim[h].add(s)
-    return pods, racked, load, fut_reim
+BASE_POLICY = {
+    'nodeVersion': '20.11.1',
+    'buildHost': 'linux',
+    'includeDevDependencies': False,
+    'includeOptionalDependencies': False,
+    'preferStable': True,
+    'licenseAllowlist': ['MIT'],
+    'blockedPackages': [],
+    'expectedIntegrityHost': 'mirror.local',
+    'overrides': {},
+    'resolutions': {},
+    'patches': {},
+}
 
 
-def _truth():
-    pods, racked, load, fut_reim = _world()
-    hosts = sorted(pods)
+def run_tool():
+    if OUT.exists():
+        OUT.unlink()
+    result = subprocess.run(
+        CMD, cwd='/app', text=True, capture_output=True, timeout=30, check=False
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert OUT.exists(), 'build-plan.json was not created'
+    raw = OUT.read_text()
+    return raw, json.loads(raw)
 
-    def present(pod, s):
-        return sum(1 for h in hosts if pods[h] == pod and s in load[h])
 
-    actual = {}
-    with open(PRISTINE / "metrics" / "exporter" / "loadfeed.tsv") as f:
-        next(f)
-        for ln in f:
-            sid, cls, mins = ln.split()
-            actual[(int(sid[1:]), cls)] = int(mins)
+def by_name(plan):
+    return {pkg['name']: pkg for pkg in plan['packages']}
 
-    short = {}
-    for s in range(1, SHIFTS + 1):
-        tot = sum(present(p, s) for p in PODS)
-        for cls in CLASSES:
-            short[(s, cls)] = tot * SHIFT_MIN - actual[(s, cls)]
 
-    # the all-class dip is the recorded yard bounce (incident note timing:
-    # stopped 4:23 into the shift, resumed 4:40 -> minutes 263..280)
-    dip = [s for s in range(1, SHIFTS + 1)
-           if all(short[(s, c)] > 0 for c in CLASSES)]
-    assert len(dip) == 1, f"bounce dip shifts {dip}"
-    bounce = (dip[0], 263, 280)
-    tot_b = sum(present(p, bounce[0]) for p in PODS)
-    assert short[(bounce[0], "hammer")] == tot_b * (bounce[2] - bounce[1])
-    blip = tot_b * (bounce[2] - bounce[1])
+def input_fingerprints(app_root=APP):
+    fingerprints = {}
+    for directory in ('workspace', 'registry', 'config', 'docs'):
+        root = app_root / directory
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob('*')):
+            if path.is_file():
+                rel = path.relative_to(app_root).as_posix()
+                fingerprints[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return fingerprints
 
-    deg = sorted(s for s in range(1, SHIFTS + 1)
-                 if short[(s, "carousel")] - (blip if s == bounce[0] else 0) > 0)
-    for s in deg[1:-1]:
-        fit = [p for p in PODS
-               if short[(s, "carousel")] == present(p, s) * SHIFT_MIN]
-        assert fit == ["mid"], f"S{s} pod fit {fit}"
-    degp = "mid"
-    s0, sN = deg[0], deg[-1]
-    lost0 = short[(s0, "carousel")] // present(degp, s0)
-    deg_start = (s0, SHIFT_MIN - lost0)
-    lostN = (short[(sN, "carousel")] - blip) // present(degp, sN)
-    assert sN == bounce[0] and lostN == bounce[1]
 
-    def qhours(pod, s):
-        q = 0
-        for hh in range(8):
-            lo, hi = hh * 60, (hh + 1) * 60
-            bad = False
-            if s == bounce[0] and not (hi <= bounce[1] or lo >= bounce[2]):
-                bad = True
-            if pod == degp and deg_start[0] <= s <= bounce[0]:
-                dlo = deg_start[1] if s == deg_start[0] else 0
-                dhi = bounce[1] if s == bounce[0] else SHIFT_MIN
-                if not (hi <= dlo or lo >= dhi):
-                    bad = True
-            if not bad:
-                q += 1
-        return q
+EXPECTED_INPUT_FINGERPRINTS = {
+    'workspace/package-lock.json': '83d758b7f6688af47c17c90945a19cbb6c79ea31ea6efc8ff78a3a4748cc3f12',
+    'workspace/package.json': 'e26b5b2f48c772b9d4cfc05397a06df53364710e1f59003de38c92a55c2d9545',
+    'workspace/packages/core/package.json': 'a34997a7c8f9e64f62a5e65f16600f79e96600b995b7a2d0140b47453e547156',
+    'workspace/packages/plugin-auth/package.json': 'ffbb4f5fb65aa591f968d79c763facf78a61c87930a7d9cf0d2502344edb37f7',
+    'workspace/packages/telemetry/package.json': '0cb4980f40a359404fe7b6a42e2a1b0033306cdd88722f42199f467f92d52e64',
+    'registry/packages.json': '6b6e4bc17dee211eb445a6671afde81abe4b2d6dfb564b1fa5ebca59dffa4b77',
+    'config/archive_policy.json': 'd5ffa1bf3361173802e3c49718c331727f3971df0bac3df133782d2108dae58d',
+    'config/policy.json': '4a29473c3e523781038e86eb41f950e1a7aec764b6372b4fe2e89d8698401c27',
+    'docs/mirror_contract.md': 'a766ccc859415e4e3d5cb91fa27fb2d8235085ce5c7a8f577860684eebdf0279',
+}
 
-    credit = {h: sum(qhours(pods[h], s)
-                     for s in range(1, SHIFTS + 1) if s in load[h])
-              for h in hosts}
-    grads = sorted(h for h in hosts if credit[h] >= REQ)
 
-    def assign(cands):
-        need = {h: REQ - credit[h] for h in cands}
-        slots = defaultdict(list)
-        s = SHIFTS + 1
-        while any(need[h] > 0 for h in cands) and s <= SHIFTS + 80:
-            used = defaultdict(int)
-            for h in sorted((x for x in cands if need[x] > 0),
-                            key=lambda x: (-need[x], x)):
-                if s in fut_reim[h] or used[pods[h]] >= PODCAP:
-                    continue
-                slots[h].append(s)
-                used[pods[h]] += 1
-                need[h] = max(0, need[h] - 8)
-            s += 1
-        return slots
+def test_bundled_inputs_remain_unchanged():
+    before = input_fingerprints()
+    assert before == EXPECTED_INPUT_FINGERPRINTS
+    run_tool()
+    after = input_fingerprints()
+    assert after == EXPECTED_INPUT_FINGERPRINTS
 
-    rest = [h for h in hosts if credit[h] < REQ]
-    sl1 = assign(rest)
-    restart = sorted(h for h in rest
-                     if not sl1[h] or sl1[h][-1] > racked[h] + CAP_SHIFTS - 1)
-    keep = sorted(h for h in rest if h not in restart)
-    slots = assign(keep)
 
-    # pool placement: per pod, graduates in rack order, positions 1..k
-    rack = {}
-    with open(PRISTINE / "switchboard" / "roster.tsv") as f:
-        next(f)
-        for ln in f:
-            h, _pod, rk, _r = ln.split()
-            rack[h] = rk
-    pools = {}
-    for pod in PODS:
-        sel = sorted((h for h in grads if pods[h] == pod), key=lambda h: rack[h])
-        for i, h in enumerate(sel, 1):
-            pools[h] = (f"{pod}-cell", i)
-    return {
-        "hosts": hosts, "credit": credit, "grads": grads,
-        "keep": keep, "restart": restart,
-        "slots": {h: slots[h] for h in keep}, "pools": pools,
+def test_top_level_schema_formatting_and_determinism():
+    raw1, plan1 = run_tool()
+    raw2, _ = run_tool()
+    assert raw1 == raw2
+    assert raw1 == json.dumps(plan1, indent=2)
+    assert '\t' not in raw1
+    assert list(plan1.keys()) == [
+        'root', 'nodeVersion', 'packages', 'unresolved', 'peerWarnings',
+        'policyViolations', 'mirrorWarnings', 'lockDrift', 'summary'
+    ]
+    assert plan1['root'] == 'ridge-ui'
+    assert plan1['nodeVersion'] == '20.11.1'
+    assert [p['name'] for p in plan1['packages']] == sorted(p['name'] for p in plan1['packages'])
+
+
+def test_package_entry_key_order_and_requested_by():
+    _, plan = run_tool()
+    for pkg in plan['packages']:
+        assert list(pkg.keys()) == [
+            'name', 'package', 'version', 'source', 'requestedBy',
+            'license', 'integrity', 'tarball', 'patched', 'yanked'
+        ]
+        assert pkg['requestedBy'] == sorted(set(pkg['requestedBy']))
+
+
+def test_resolution_overrides_aliases_workspaces_and_shared_versions():
+    _, plan = run_tool()
+    pkgs = by_name(plan)
+    expected_names = {
+        '@ridge/core', '@ridge/plugin-auth', '@types/node', 'ansi-regex', 'debug',
+        'jsonwebtoken', 'jwa', 'jws', 'left-pad', 'left-pad-safe',
+        'ms', 'rollup', 'undici-types'
     }
+    assert set(pkgs) == expected_names
+    assert '@ridge/telemetry' not in pkgs
+    assert 'source-map' not in pkgs
+    assert pkgs['@ridge/core']['source'] == 'workspace'
+    assert pkgs['debug']['version'] == '4.3.5'
+    assert pkgs['debug']['integrity'] == 'sha512-debug435-patched'
+    assert pkgs['ansi-regex']['version'] == '6.1.0'
+    assert pkgs['left-pad-safe']['package'] == 'left-pad'
+    assert pkgs['left-pad']['integrity'] == 'sha512-left130-patched'
+    assert pkgs['ms']['version'] == '2.1.3'
+    assert pkgs['ms']['requestedBy'] == ['@ridge/core', 'debug', 'root']
 
 
-def _applied():
-    out = {}
-    p = STATE / "applied.tsv"
-    if not p.exists():
-        return None
-    for ln in p.read_text().splitlines():
-        parts = ln.split("\t")
-        if len(parts) == 2:
-            out[parts[0]] = (parts[1], [])
-        elif len(parts) == 3:
-            sl = [int(x[1:]) for x in parts[2].split(",") if x]
-            out[parts[0]] = (parts[1], sl)
-    return out
+def test_resolutions_pins_and_transitive_chain():
+    _, plan = run_tool()
+    pkgs = by_name(plan)
+    assert pkgs['jsonwebtoken']['version'] == '9.0.0'
+    assert pkgs['jsonwebtoken']['integrity'] == 'sha512-jwt900'
+    assert pkgs['jws']['version'] == '3.2.2'
+    assert pkgs['jwa']['requestedBy'] == ['jws']
+    assert pkgs['undici-types']['requestedBy'] == ['@types/node']
 
 
-# ------------------------------------------------------------------- tests
-
-def test_records_untouched():
-    """The surviving records under /srv are read-only evidence; every byte
-    must match the pristine copies bundled with the verifier."""
-    for f in sorted(PRISTINE.rglob("*")):
-        if not f.is_file():
-            continue
-        live = SRV_LIVE / f.relative_to(PRISTINE)
-        assert live.exists(), f"missing record {live}"
-        assert live.read_bytes() == f.read_bytes(), f"modified record {live}"
-
-
-def test_every_host_disposed_exactly_once():
-    """The resume gate requires one applied disposition per rostered host;
-    the applied ledger must cover the roster exactly."""
-    t = _truth()
-    ap = _applied()
-    assert ap is not None, "no applied disposition state (resume never ran?)"
-    assert sorted(ap) == t["hosts"], (
-        f"applied ledger covers {sorted(ap)}; roster is {t['hosts']}")
+def test_transitive_dev_engine_blocked_and_patch_behavior():
+    _, plan = run_tool()
+    pkgs = by_name(plan)
+    assert pkgs['rollup']['version'] == '3.29.5'
+    assert 'fsevents' not in pkgs
+    assert pkgs['jwa']['version'] == '1.4.1'
+    assert pkgs['debug']['patched'] is True
+    assert pkgs['left-pad-safe']['patched'] is True
+    assert plan['unresolved'] == [{
+        'name': 'event-stream',
+        'range': '^4.0.0',
+        'requestedBy': 'root',
+        'reason': 'blocked by policy'
+    }]
 
 
-def test_no_unqualified_host_graduated():
-    """No host below the standard's 120 qualified hours may enter a
-    production cell: graduating one serves an unburned host."""
-    t = _truth()
-    ap = _applied() or {}
-    wrong = sorted(h for h, (v, _) in ap.items()
-                   if v == "graduate" and h not in t["grads"])
-    assert not wrong, (
-        f"hosts graduated below the standard: {wrong} "
-        f"(qualified hours: { {h: t['credit'][h] for h in wrong} })")
+def test_peer_optional_meta_and_mirror_warnings():
+    _, plan = run_tool()
+    peers = {(w['package'], w['peer']) for w in plan['peerWarnings']}
+    assert ('@ridge/plugin-auth', 'legacy-shim') not in peers
+    assert ('jsonwebtoken', 'crypto-helper') in peers
+    assert plan['policyViolations'] == []
+    assert plan['mirrorWarnings'] == [{
+        'package': 'ansi-regex',
+        'version': '6.1.0',
+        'tarball': 'https://cdn.badmirror.test/ansi-regex-6.1.0.tgz',
+        'expectedHost': 'mirror.local'
+    }]
 
 
-def test_every_qualified_host_graduated():
-    """Every host meeting the standard must graduate now; withholding a
-    qualified host breaches intake."""
-    t = _truth()
-    ap = _applied() or {}
-    missing = sorted(h for h in t["grads"]
-                     if ap.get(h, ("", []))[0] != "graduate")
-    assert not missing, f"qualified hosts not graduated: {missing}"
+def test_lock_drift_matches_stale_snapshot():
+    _, plan = run_tool()
+    assert plan['lockDrift'] == [
+        {
+            'package': 'ansi-regex',
+            'lockVersion': '5.0.1',
+            'plannedVersion': '6.1.0',
+            'lockIntegrity': 'sha512-oldansi',
+            'plannedIntegrity': 'sha512-ansi610'
+        },
+        {
+            'package': 'debug',
+            'lockVersion': '3.2.7',
+            'plannedVersion': '4.3.5',
+            'lockIntegrity': 'sha512-olddebug',
+            'plannedIntegrity': 'sha512-debug435-patched'
+        },
+        {
+            'package': 'left-pad',
+            'lockVersion': '1.1.3',
+            'plannedVersion': '1.3.0',
+            'lockIntegrity': 'sha512-oldleft',
+            'plannedIntegrity': 'sha512-left130-patched'
+        },
+        {
+            'package': 'ms',
+            'lockVersion': '2.1.1',
+            'plannedVersion': '2.1.3',
+            'lockIntegrity': 'sha512-oldms',
+            'plannedIntegrity': 'sha512-ms213'
+        }
+    ]
 
 
-def test_restart_set_exact():
-    """Exactly the hosts that cannot complete within the standard's yard
-    limit restart; restarting a feasible host discards banked burn-in."""
-    t = _truth()
-    ap = _applied() or {}
-    got = sorted(h for h, (v, _) in ap.items() if v == "restart")
-    assert got == t["restart"], (
-        f"restart set {got}; the standard's yard limit yields {t['restart']}")
+def test_warning_section_sort_orders():
+    _, plan = run_tool()
+    assert plan['unresolved'] == sorted(
+        plan['unresolved'], key=lambda e: (e['name'], e['requestedBy'], e['range'])
+    )
+    assert plan['peerWarnings'] == sorted(
+        plan['peerWarnings'], key=lambda e: (e['package'], e['peer'], e['requested'])
+    )
+    assert plan['mirrorWarnings'] == sorted(
+        plan['mirrorWarnings'], key=lambda e: (e['package'], e['version'])
+    )
+    assert plan['lockDrift'] == sorted(plan['lockDrift'], key=lambda e: e['package'])
 
 
-def test_continue_slots_exact():
-    """Continuation slots must follow the standard's assignment rule
-    (earliest future shifts, reimage skips, pod capacity 8, larger
-    remainders first, host id on ties)."""
-    t = _truth()
-    ap = _applied() or {}
-    bad = {}
-    for h in t["keep"]:
-        verb, sl = ap.get(h, ("", []))
-        if verb != "continue" or sl != t["slots"][h]:
-            bad[h] = {"applied": (verb, sl), "rule": t["slots"][h]}
-    assert not bad, f"continuation slots diverge from the standard: {bad}"
+def test_summary_matches_report_sections():
+    _, plan = run_tool()
+    packages = plan['packages']
+    summary = plan['summary']
+    assert summary == {
+        'packageCount': len(packages),
+        'workspaceCount': sum(1 for p in packages if p['source'] == 'workspace'),
+        'registryCount': sum(1 for p in packages if p['source'] == 'registry'),
+        'patchedCount': sum(1 for p in packages if p['patched']),
+        'yankedSelectedCount': sum(1 for p in packages if p['yanked']),
+        'unresolvedCount': len(plan['unresolved']),
+        'peerWarningCount': len(plan['peerWarnings']),
+        'policyViolationCount': len(plan['policyViolations']),
+        'mirrorWarningCount': len(plan['mirrorWarnings']),
+        'lockDriftCount': len(plan['lockDrift'])
+    }
+    assert summary['packageCount'] == 13
+    assert summary['patchedCount'] == 3
+    assert summary['lockDriftCount'] == 4
+    assert summary['yankedSelectedCount'] == 0
 
 
-def test_pool_placement():
-    """Graduates enter their pod's production cell at the next free
-    position in rack order; the pools ledger must match the rule."""
-    t = _truth()
-    p = STATE / "pools.tsv"
-    assert p.exists(), "no pools ledger"
-    got = {}
-    for ln in p.read_text().splitlines():
-        if not ln.strip():
-            continue
-        h, cell, pos = ln.split("\t")
-        got[h] = (cell, int(pos))
-    assert got == t["pools"], f"pools {got}; rule gives {t['pools']}"
+def _write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + '\n')
 
 
-def test_intake_serving():
-    """The gate must be open and the steward daemon serving; the verifier
-    speaks the daemon socket directly."""
-    gate = (STATE / "gate").read_text().split()
-    assert gate and gate[0] == "open", f"gate state {gate}"
-    if not os.path.exists(SOCK):
-        subprocess.Popen(["/usr/local/bin/stewd"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 15
-    reply = ""
-    while time.time() < deadline:
-        try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.settimeout(2)
-            s.connect(SOCK)
-            s.sendall(b"STATUS\n")
-            reply = s.recv(4096).decode()
-            s.close()
-            break
-        except OSError:
-            time.sleep(0.25)
-    assert "gate=open" in reply and "serving=yes" in reply, (
-        f"steward status reply: {reply!r}")
+def _swap_app_files(overrides):
+    backups = {}
+    for rel, content in overrides.items():
+        target = APP / rel
+        backups[target] = target.read_text() if target.exists() else None
+        if content is None:
+            if target.exists():
+                target.unlink()
+        elif rel.endswith('.json'):
+            _write_json(target, content)
+        else:
+            target.write_text(content)
+    return backups
+
+
+def _restore_app_files(backups):
+    for target, original in backups.items():
+        if original is None:
+            if target.exists():
+                target.unlink()
+        else:
+            target.write_text(original)
+
+
+def _minimal_workspace(deps=None, dev_deps=None, optional_deps=None):
+    pkg = {
+        'name': 'ridge-ui',
+        'version': '1.0.0',
+        'private': True,
+        'workspaces': ['packages/*'],
+        'dependencies': deps or {}
+    }
+    if dev_deps is not None:
+        pkg['devDependencies'] = dev_deps
+    if optional_deps is not None:
+        pkg['optionalDependencies'] = optional_deps
+    return pkg
+
+
+def test_license_violation_synthetic():
+    policy = dict(BASE_POLICY)
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'bad-license-lib': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'bad-license-lib': {
+                    '1.0.0': {
+                        'license': 'GPL-3.0',
+                        'integrity': 'sha512-gpl',
+                        'tarball': 'https://mirror.local/bad-license-lib-1.0.0.tgz',
+                        'dependencies': {}
+                    }
+                }
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['policyViolations'] == [{
+            'package': 'bad-license-lib',
+            'version': '1.0.0',
+            'rule': 'license',
+            'message': 'license GPL-3.0 is not allowed'
+        }]
+    finally:
+        _restore_app_files(backups)
+
+
+def test_deprecated_only_unresolved_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'legacy-only': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'legacy-only': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'a', 'tarball': 'https://mirror.local/a.tgz', 'deprecated': True, 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'b', 'tarball': 'https://mirror.local/b.tgz', 'deprecated': True, 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['packages'] == []
+        assert plan['unresolved'][0]['reason'] == 'no compatible version'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_resolution_out_of_range_synthetic():
+    policy = dict(BASE_POLICY, resolutions={'widget': '2.0.0'})
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['unresolved'] == [{
+            'name': 'widget',
+            'range': '^1.0.0',
+            'requestedBy': 'root',
+            'reason': 'resolution out of range'
+        }]
+    finally:
+        _restore_app_files(backups)
+
+
+def test_version_conflict_suffix_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({
+            'widget': '^1.0.0',
+            'widget-alt': 'npm:widget@^2.0.0'
+        }),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['version'] == '1.0.0'
+        assert pkgs['widget-alt']['version'] == '2.0.0'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_version_conflict_hash_suffix_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({
+            '@ridge/core': 'workspace:*',
+            'widget': '^1.0.0'
+        }),
+        'workspace/packages/core/package.json': {
+            'name': '@ridge/core',
+            'version': '1.0.0',
+            'dependencies': {'widget': '^2.0.0'}
+        },
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['version'] == '1.0.0'
+        assert pkgs['widget#2']['version'] == '2.0.0'
+        assert pkgs['widget#2']['package'] == 'widget'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_workspace_missing_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'@ridge/missing': 'workspace:*'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {'packages': {}},
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['unresolved'][0]['reason'] == 'workspace package missing'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_peer_range_mismatch_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'host': '1.0.0', 'peer-lib': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'host': {
+                    '1.0.0': {
+                        'license': 'MIT',
+                        'integrity': 'host',
+                        'tarball': 'https://mirror.local/host.tgz',
+                        'peerDependencies': {'peer-lib': '^2.0.0'},
+                        'dependencies': {}
+                    }
+                },
+                'peer-lib': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'peer', 'tarball': 'https://mirror.local/peer.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['peerWarnings'][0]['reason'] == 'peer range mismatch'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_patch_integrity_only_on_matching_version():
+    policy = dict(BASE_POLICY, patches={'widget': {'version': '1.0.0', 'file': 'p.patch', 'integrity': 'sha512-patched'}})
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['version'] == '1.1.0'
+        assert pkgs['widget']['patched'] is False
+        assert pkgs['widget']['integrity'] == 'w110'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_prefer_stable_skips_prerelease_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '1.1.0-rc.1': {'license': 'MIT', 'integrity': 'w110rc', 'tarball': 'https://mirror.local/w110rc.tgz', 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY, preferStable=True)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert by_name(plan)['widget']['version'] == '1.1.0'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_yanked_fallback_when_only_option_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'yanked': True, 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['yanked'] is True
+        assert plan['summary']['yankedSelectedCount'] == 1
+    finally:
+        _restore_app_files(backups)
+
+
+def test_yanked_deprioritized_when_stable_exists_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'yanked': True, 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert by_name(plan)['widget']['version'] == '1.0.0'
+        assert plan['summary']['yankedSelectedCount'] == 0
+    finally:
+        _restore_app_files(backups)
+
+
+def test_optional_dependencies_respect_policy_flag():
+    overrides = {
+        'workspace/package.json': _minimal_workspace(
+            {},
+            optional_deps={'opt-root': '^1.0.0'}
+        ),
+        'workspace/packages/core/package.json': {
+            'name': '@ridge/core',
+            'version': '1.0.0',
+            'dependencies': {},
+            'optionalDependencies': {'opt-ws': '^1.0.0'}
+        },
+        'registry/packages.json': {
+            'packages': {
+                'opt-root': {'1.0.0': {'license': 'MIT', 'integrity': 'or', 'tarball': 'https://mirror.local/or.tgz', 'dependencies': {}}},
+                'opt-ws': {'1.0.0': {'license': 'MIT', 'integrity': 'ow', 'tarball': 'https://mirror.local/ow.tgz', 'dependencies': {}}},
+                'host': {
+                    '1.0.0': {
+                        'license': 'MIT',
+                        'integrity': 'host',
+                        'tarball': 'https://mirror.local/host.tgz',
+                        'dependencies': {},
+                        'optionalDependencies': {'opt-reg': '^1.0.0'}
+                    }
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY, includeOptionalDependencies=False)
+    }
+    overrides['workspace/package.json']['dependencies'] = {'host': '1.0.0'}
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        names = set(by_name(plan))
+        assert names == {'host'}
+    finally:
+        _restore_app_files(backups)
+
+
+def test_optional_dependencies_install_when_enabled():
+    policy = dict(BASE_POLICY, includeOptionalDependencies=True)
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'host': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'host': {
+                    '1.0.0': {
+                        'license': 'MIT',
+                        'integrity': 'host',
+                        'tarball': 'https://mirror.local/host.tgz',
+                        'dependencies': {},
+                        'optionalDependencies': {'opt-reg': '1.0.0'}
+                    }
+                },
+                'opt-reg': {'1.0.0': {'license': 'MIT', 'integrity': 'or', 'tarball': 'https://mirror.local/or.tgz', 'dependencies': {}}}
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert 'opt-reg' in by_name(plan)
+    finally:
+        _restore_app_files(backups)
+
+
+def test_workspace_semver_prefers_local_package():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'@ridge/lib': '^1.2.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'workspace/packages/lib/package.json': {'name': '@ridge/lib', 'version': '1.4.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                '@ridge/lib': {
+                    '1.9.0': {'license': 'MIT', 'integrity': 'lib190', 'tarball': 'https://mirror.local/lib190.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['@ridge/lib']['source'] == 'workspace'
+        assert pkgs['@ridge/lib']['version'] == '1.4.0'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_x_range_hyphen_and_union_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({
+            'x-lib': '1.2.x',
+            'range-lib': '1.0.0 - 1.2.0',
+            'union-lib': '^1.0.0 || ^2.0.0'
+        }),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'x-lib': {
+                    '1.1.0': {'license': 'MIT', 'integrity': 'x110', 'tarball': 'https://mirror.local/x110.tgz', 'dependencies': {}},
+                    '1.2.7': {'license': 'MIT', 'integrity': 'x127', 'tarball': 'https://mirror.local/x127.tgz', 'dependencies': {}},
+                    '1.3.0': {'license': 'MIT', 'integrity': 'x130', 'tarball': 'https://mirror.local/x130.tgz', 'dependencies': {}}
+                },
+                'range-lib': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'r100', 'tarball': 'https://mirror.local/r100.tgz', 'dependencies': {}},
+                    '1.2.0': {'license': 'MIT', 'integrity': 'r120', 'tarball': 'https://mirror.local/r120.tgz', 'dependencies': {}},
+                    '1.3.0': {'license': 'MIT', 'integrity': 'r130', 'tarball': 'https://mirror.local/r130.tgz', 'dependencies': {}}
+                },
+                'union-lib': {
+                    '1.5.0': {'license': 'MIT', 'integrity': 'u150', 'tarball': 'https://mirror.local/u150.tgz', 'dependencies': {}},
+                    '2.1.0': {'license': 'MIT', 'integrity': 'u210', 'tarball': 'https://mirror.local/u210.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['x-lib']['version'] == '1.2.7'
+        assert pkgs['range-lib']['version'] == '1.2.0'
+        assert pkgs['union-lib']['version'] == '2.1.0'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_lock_drift_ignores_workspace_and_missing_entries():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'workspace/package-lock.json': {
+            'name': 'ridge-ui',
+            'lockfileVersion': 3,
+            'packages': {
+                '': {'dependencies': {'widget': '1.0.0'}},
+                'node_modules/widget': {'version': '0.9.0', 'integrity': 'old'},
+                'node_modules/@ridge/core': {'version': '1.0.0', 'integrity': 'ws'}
+            }
+        },
+        'registry/packages.json': {
+            'packages': {
+                'widget': {'1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}}}
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['lockDrift'] == [{
+            'package': 'widget',
+            'lockVersion': '0.9.0',
+            'plannedVersion': '1.0.0',
+            'lockIntegrity': 'old',
+            'plannedIntegrity': 'w100'
+        }]
+    finally:
+        _restore_app_files(backups)
+
+
+def test_lock_drift_includes_scoped_registry_entries():
+    policy = dict(BASE_POLICY, includeDevDependencies=True)
+    overrides = {
+        'workspace/package.json': _minimal_workspace({}, dev_deps={'@types/node': '^20.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'workspace/package-lock.json': {
+            'name': 'ridge-ui',
+            'lockfileVersion': 3,
+            'packages': {
+                '': {'devDependencies': {'@types/node': '^20.0.0'}},
+                'node_modules/@types/node': {'version': '20.0.0', 'integrity': 'old-types'}
+            }
+        },
+        'registry/packages.json': {
+            'packages': {
+                '@types/node': {
+                    '20.11.30': {
+                        'license': 'MIT',
+                        'integrity': 'sha512-types201130',
+                        'tarball': 'https://mirror.local/@types/node/-/node-20.11.30.tgz',
+                        'dependencies': {}
+                    }
+                }
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['lockDrift'] == [{
+            'package': '@types/node',
+            'lockVersion': '20.0.0',
+            'plannedVersion': '20.11.30',
+            'lockIntegrity': 'old-types',
+            'plannedIntegrity': 'sha512-types201130'
+        }]
+    finally:
+        _restore_app_files(backups)

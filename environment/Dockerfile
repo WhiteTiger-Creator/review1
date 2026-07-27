@@ -1,21 +1,18 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb AS builder
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
-    && rm -rf /var/lib/apt/lists/*
-COPY src /build/src
-RUN gcc -O2 -s -o /build/stewd /build/src/stewd.c \
-    && gcc -O2 -s -o /build/steward /build/src/steward.c
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383
 
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux asciinema procps \
-    && rm -rf /var/lib/apt/lists/*
-COPY requirements.lock /tmp/requirements.lock
-RUN pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock \
-    && rm /tmp/requirements.lock
-COPY --from=builder /build/stewd /build/steward /usr/local/bin/
-COPY fixtures/srv /srv
-COPY fixtures/opt /opt
-RUN chmod 755 /usr/local/bin/stewd /usr/local/bin/steward \
-    && find /srv /opt -exec touch -d '2026-07-26 08:00:00' {} + \
-    && mkdir -p /app
 WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3=3.11.2-1+b1 \
+        python3-pip=23.0.1+dfsg-1 \
+        ca-certificates=20230311+deb12u1 \
+        tmux=3.3a-3 \
+        asciinema=2.2.0-1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install --break-system-packages --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.txt
+
+COPY app/ /app/
+RUN mkdir -p /app/output

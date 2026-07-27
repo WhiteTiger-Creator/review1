@@ -1,6 +1,0 @@
-# calendar m03 (whole shifts; transitions at shift boundaries only)
-S1..S27	racked-idle
-S28..S48	load
-S49..S51	load
-S52	reimage
-S53..S88	load

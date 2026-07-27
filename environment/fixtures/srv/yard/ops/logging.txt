@@ -1,6 +1,0 @@
-yard ops note 31 -- logging (2026-05 revision)
-
-All yard service logs (generators, feeders, switchboard sync, steward)
-forward to the steward controller and are retained there. Local units
-keep no persistent logs; ring buffers only, cleared on power events.
-Exporter accounting files are the exception and stay on the collector.

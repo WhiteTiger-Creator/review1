@@ -1,0 +1,13 @@
+{
+  "nodeVersion": "22.0.0",
+  "buildHost": "darwin",
+  "includeDevDependencies": true,
+  "includeOptionalDependencies": true,
+  "preferStable": false,
+  "licenseAllowlist": ["*"],
+  "blockedPackages": [],
+  "expectedIntegrityHost": "cdn.example.test",
+  "overrides": {},
+  "resolutions": {},
+  "patches": {}
+}
