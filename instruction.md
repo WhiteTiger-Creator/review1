@@ -1,7 +1,9 @@
-Harden the offline kernel lockdown fortify gate against kptr leaks, soft Yama ptrace, unrestricted dmesg, and unprivileged BPF. Contract: `/app/ground-canon/ground-lockdown-ledger-v1.json` - ignore `/app/docs` and `/app/control/last-fortify.json`. Inputs: `/app/config/sysctl-module-catalog.json`, `/app/control/policy.json`, `/app/control/station-manifest.json`, `/app/traces/station-probe.jsonl`.
+Provide /app/estimate.R as an offline evaluator of bank policies.
 
-One-time deploy: promote catalog `revision`/`baseline`/`features` to the ledger contract and set `hard_deny` to exactly `immutable_floor` in ledger order; set policy `station_channel` to the ledger required channel. After that, every compile reads the live catalog on disk for baseline/features - do not re-copy the ledger each run. Still strip ledger floor sysctls if that catalog is later tampered (silent drop, not exit 77). Empty `features` is valid. Picking both sides of a ledger `feature_exclusion_pairs` entry is exit 65.
+For every case, infer importance-weighted transition support and learn edge utility responses from noisy, clustered observations. Tune one shared candidate by held-cluster prediction, then compare policies using downside-adjusted return, predictive calibration, and the minimum mean of every supported directed cycle.
 
-`/app/kernel-fortify`: `compile --policy/--manifest/--output` and `audit --profile/--trace/--report`. Absolute paths only; relative, unknown, or repeated flags are usage errors. Compile writes the lockdown profile plus `<output>.station` (`station_id` bytes, no trailing newline) and `<output_without_.json>.policy`. Audit writes `--report` and refreshes `/app/output/gate_summary.json`. Reason order: `not_fortified` then `leak_exceeded`. Scoring, sorts, endings (profile newline, report none, summary `0x1c`) are ledger-only.
+Produce the complete stability certificate obtained by refitting after all required cluster deletions.
 
-Empty traces pass zeros. Exit 64 usage, 65 bad docs, 66 missing, 77 only when `additional_sysctls` names a floor sysctl. Clean audit 0; violations write then exit 3. Don't replace outputs on failure. Compile/audit CLI is shell/jq only, no Python.
+/app/run.sh invokes the evaluator with an optional data directory and output path. The relational schemas, predictive model, validation loss, graph and cycle rules, policy ordering, deletion refits, exact output, numerical decisions, and audit signature are defined in /app/docs/OUTPUT-CONTRACT.md.
+
+All results must be derived at runtime. Inputs may reorder rows and headers, use opaque identifiers, omit empirical edges, include extreme importance ratios, or request one- and two-cluster deletions. Internet access is unavailable; only base R is guaranteed.

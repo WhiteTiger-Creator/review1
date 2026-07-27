@@ -1,678 +1,732 @@
-"""Behavioral verifier for the ground-station kernel lockdown fortify gate."""
+"""Validate covariance-coupled minimum-cycle policy safety."""
 
 from __future__ import annotations
 
-import json
+import csv
 import math
 import os
+import re
+import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-COMMAND = Path("/app/kernel-fortify")
-CATALOG = Path("/app/config/sysctl-module-catalog.json")
-POLICY = Path("/app/control/policy.json")
-LEDGER = Path("/app/ground-canon/ground-lockdown-ledger-v1.json")
-SUMMARY = Path("/app/output/gate_summary.json")
+SURFACES = (
+    "public",
+    "hidden-a",
+    "hidden-b",
+    "hidden-c",
+    "hidden-d",
+    "hidden-e",
+)
+INPUT_FILES = (
+    "cases.csv",
+    "states.csv",
+    "cluster_roster.csv",
+    "priors.csv",
+    "regularizers.csv",
+    "records.csv",
+)
+HEADER = (
+    "case_id",
+    "selected_candidate",
+    "selected_policy",
+    "feasible_count",
+    "policy_score",
+    "robust_policy_return",
+    "minimum_cycle_mean",
+    "critical_cycle",
+    "critical_cycle_length",
+    "cycle_covariance_penalty",
+    "predictive_calibration",
+    "crossfit_correction",
+    "effective_sample_size",
+    "support_edge_count",
+    "minimum_edge_support",
+    "cv_loss",
+    "deletion_code",
+    "deletion_change_count",
+    "worst_deletion_safety",
+    "worst_deletion_scenario_code",
+    "maximum_deletion_covariance",
+    "maximum_deletion_calibration",
+    "stability_checksum",
+    "audit_signature",
+)
+FLOAT_FIELDS = (
+    "policy_score",
+    "robust_policy_return",
+    "minimum_cycle_mean",
+    "cycle_covariance_penalty",
+    "predictive_calibration",
+    "crossfit_correction",
+    "effective_sample_size",
+    "minimum_edge_support",
+    "cv_loss",
+    "worst_deletion_safety",
+    "maximum_deletion_covariance",
+    "maximum_deletion_calibration",
+)
+INT_FIELDS = (
+    "feasible_count",
+    "critical_cycle_length",
+    "support_edge_count",
+    "deletion_change_count",
+    "worst_deletion_scenario_code",
+    "stability_checksum",
+)
+ABS_TOLERANCE = 3e-8
+CANDIDATE_UID = 65534
+CANDIDATE_GID = 65534
+CANDIDATE_ROOT = Path("/dev/shm/bank-cycle-candidate-runs")
+GENERATED_ROOT = Path("/tmp/bank-cycle-verifier-surfaces")
+LANDLOCK = Path("/tests/landlock_exec.py")
 
 
-def _ledger() -> dict:
-    return json.loads(LEDGER.read_text(encoding="utf-8"))
+@dataclass(frozen=True)
+class CandidateResult:
+    header: tuple[str, ...]
+    rows: tuple[dict[str, str], ...]
+    raw: bytes
 
 
-def _contract() -> dict:
-    return _ledger()["catalog_contract"]
+def surface_root(surface: str) -> Path:
+    if surface == "public":
+        return Path("/app/data")
+    return Path("/tests/fixtures") / surface
 
 
-def _write_json(path: Path, value: object) -> Path:
-    path.write_text(json.dumps(value), encoding="utf-8")
-    return path
+def read_csv(path: Path) -> tuple[tuple[str, ...], list[dict[str, str]]]:
+    with path.open(newline="", encoding="utf-8-sig") as stream:
+        reader = csv.DictReader(stream)
+        return tuple(reader.fieldnames or ()), list(reader)
 
 
-def _policy(**overrides: object) -> dict:
-    value = {
-        "version": 1,
-        "default_action": "LOCK_ACT_ERRNO",
-        "errno": 1,
-        "station_channel": "ground-v2",
-        "lockdown_modes": ["LOCKDOWN_CONFIDENTIALITY", "LOCKDOWN_INTEGRITY"],
-        "blocked_sysctls": [],
-        "allowed_bands": ["uplink", "telemetry", "ranging"],
-        "allow_feature_stacking": True,
-        "band_allowlist": ["band-alpha", "band-beta"],
-        "leak_score_ceiling": 40,
-    }
-    value.update(overrides)
-    return value
+def write_csv(
+    path: Path,
+    header: tuple[str, ...],
+    rows: list[dict[str, str]],
+) -> None:
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=header,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
 
 
-def _manifest(**overrides: object) -> dict:
-    value = {
-        "station_id": "uplink-north",
-        "band_id": "uplink",
-        "band": "band-alpha",
-        "features": [],
-        "additional_sysctls": [],
-    }
-    value.update(overrides)
-    return value
+def expected_rows(surface: str) -> tuple[dict[str, str], ...]:
+    header, rows = read_csv(Path("/tests/golden") / f"{surface}.csv")
+    assert header == HEADER
+    return tuple(rows)
 
 
-def _run_compile(
-    tmp_path: Path,
-    policy: dict | None = None,
-    manifest: dict | None = None,
+EXPECTED = {surface: expected_rows(surface) for surface in SURFACES}
+METAMORPHIC_EXPECTED = EXPECTED["public"][:2]
+METAMORPHIC_CASE_IDS = frozenset(row["case_id"] for row in METAMORPHIC_EXPECTED)
+CASE_PARAMETERS = tuple(
+    (surface, row["case_id"]) for surface in SURFACES for row in EXPECTED[surface]
+)
+RUN_CACHE: dict[str, CandidateResult] = {}
+
+
+def make_writable(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    os.chown(path, CANDIDATE_UID, CANDIDATE_GID)
+    path.chmod(0o700)
+
+
+def sandbox_command(
+    write_root: Path,
+    command: list[str],
     *,
-    env: dict[str, str] | None = None,
-) -> tuple[subprocess.CompletedProcess[str], Path]:
-    policy_path = _write_json(tmp_path / "policy.json", policy or _policy())
-    manifest_path = _write_json(tmp_path / "manifest.json", manifest or _manifest())
-    output = tmp_path / "profile.json"
-    result = subprocess.run(
+    timeout: int = 600,
+) -> subprocess.CompletedProcess[str]:
+    temporary = write_root / "tmp"
+    make_writable(temporary)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "HOME": str(write_root),
+            "TMPDIR": str(temporary),
+            "LC_ALL": "C",
+        }
+    )
+    return subprocess.run(
         [
-            str(COMMAND),
-            "compile",
-            "--manifest",
-            str(manifest_path),
-            "--output",
-            str(output),
-            "--policy",
-            str(policy_path),
+            "python3",
+            str(LANDLOCK),
+            "--write",
+            str(write_root),
+            "--uid",
+            str(CANDIDATE_UID),
+            "--gid",
+            str(CANDIDATE_GID),
+            "--",
+            *command,
         ],
-        capture_output=True,
+        cwd="/app",
+        env=environment,
         text=True,
-        env=env,
+        capture_output=True,
+        timeout=timeout,
         check=False,
     )
-    return result, output
 
 
-def _run_audit(
-    tmp_path: Path,
-    profile: Path,
-    trace_text: str,
-) -> tuple[subprocess.CompletedProcess[str], Path]:
-    trace = tmp_path / "trace.jsonl"
-    trace.write_text(trace_text, encoding="utf-8")
-    report = tmp_path / "report.json"
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "audit",
-            "--report",
-            str(report),
-            "--trace",
-            str(trace),
-            "--profile",
-            str(profile),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+def run_candidate(data_root: Path, cache_key: str) -> CandidateResult:
+    cached = RUN_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    run_root = CANDIDATE_ROOT / cache_key
+    if run_root.exists():
+        shutil.rmtree(run_root)
+    make_writable(run_root)
+    copied_data = run_root / "data"
+    shutil.copytree(data_root, copied_data)
+    output = run_root / "results.csv"
+    completed = sandbox_command(
+        run_root,
+        ["/app/run.sh", str(copied_data), str(output)],
     )
-    return result, report
-
-
-def _severity(seq: int, sysctl: str) -> int:
-    return math.floor((len(sysctl) * 37 + seq * 11) / 5)
-
-
-def _fortify_not_fortified(seq: int, sysctl: str) -> int:
-    sev = _severity(seq, sysctl)
-    return math.floor((sev * 43 + seq * 17) / 4)
-
-
-def _fortify_leak(seq: int, sysctl: str, leak_score: int) -> int:
-    sev = _severity(seq, sysctl)
-    return math.floor((sev * 23 + leak_score + seq * 5) / 3)
-
-
-def _pressure(
-    violation_events: int, unique_denied: int, leak_violations: int, events_total: int
-) -> int:
-    return math.floor(
-        (violation_events * 100 + unique_denied * 31 + leak_violations * 13)
-        / max(events_total, 1)
+    assert completed.returncode == 0, (
+        f"candidate failed on {cache_key}: "
+        f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
     )
-
-
-def _dump_indent2(obj: object) -> bytes:
-    """Ledger serialization: indent-2 JSON with ensure_ascii."""
-    return json.dumps(obj, indent=2, ensure_ascii=True).encode("utf-8")
-
-
-def _assert_profile_indent2(raw: bytes, profile: dict) -> None:
-    assert raw == _dump_indent2(profile) + b"\n"
-
-
-def _assert_report_indent2(raw: bytes, report: dict) -> None:
-    assert raw == _dump_indent2(report)
-
-
-def _assert_summary_indent2(raw: bytes, summary: dict) -> None:
-    assert raw == _dump_indent2(summary) + b"\x1c"
-
-
-def test_authoritative_ledger_overrides_decoy_documents():
-    """The lockdown ledger must declare itself authoritative and list every decoy path."""
-    ledger = _ledger()
-    assert ledger["authoritative"] is True
-    assert ledger["contains_precomputed_outputs"] is False
-    for decoy in ledger["override_decoy_documents"]:
-        assert Path(decoy).exists()
-
-
-def test_deployed_catalog_matches_revision_nine_security_contract():
-    """The live catalog must exactly expose the ledger revision-9 sysctl sets."""
-    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
-    contract = _contract()
-    assert list(catalog.keys()) == contract["top_level_key_order"]
-    assert catalog == {
-        "revision": contract["required_revision"],
-        "baseline": contract["baseline"],
-        "features": contract["features"],
-        "hard_deny": contract["immutable_floor"],
-    }
-    assert contract["required_revision"] == 9
-    assert catalog["hard_deny"] == [
-        "kernel.sysrq",
-        "kernel.core_uses_pid",
-        "net.ipv4.conf.all.accept_source_route",
-        "net.ipv4.conf.default.accept_source_route",
-    ]
-    assert "fs.protected_hardlinks" in catalog["features"]["leak-shield"]
-    assert "kernel.perf_event_paranoid" in catalog["features"]["ptrace-lock"]
-
-
-def test_live_policy_station_channel_matches_promotion_contract():
-    """The deployed policy must advertise the required ground-v2 station channel."""
-    policy = json.loads(POLICY.read_text(encoding="utf-8"))
-    assert policy["station_channel"] == _ledger()["policy_promotion"]["required_station_channel"]
-    assert policy["station_channel"] == "ground-v2"
-
-
-def test_compile_merges_deduplicates_blocks_and_sorts_sysctls(tmp_path: Path):
-    """Compilation must deterministically merge baseline, features, and additions."""
-    contract = _contract()
-    policy = _policy(blocked_sysctls=["kernel.perf_event_paranoid"])
-    manifest = _manifest(
-        features=["leak-shield", "ptrace-lock"],
-        additional_sysctls=["vm.mmap_min_addr", "kernel.kptr_restrict"],
-    )
-    result, output = _run_compile(tmp_path, policy, manifest)
-    assert result.returncode == 0, result.stderr
+    assert output.is_file(), f"candidate did not create output for {cache_key}"
     raw = output.read_bytes()
-    assert raw.endswith(b"\n")
-    assert not raw.endswith(b"\n\n")
-    profile = json.loads(raw.decode("utf-8"))
-    _assert_profile_indent2(raw, profile)
-    expected = sorted(
-        (
-            set(contract["baseline"])
-            | set(contract["features"]["leak-shield"])
-            | set(contract["features"]["ptrace-lock"])
-            | {"vm.mmap_min_addr"}
+    header, rows = read_csv(output)
+    result = CandidateResult(header, tuple(rows), raw)
+    RUN_CACHE[cache_key] = result
+    return result
+
+
+def assert_scalar(actual: str, expected: str, field: str) -> None:
+    if field in FLOAT_FIELDS:
+        value = float(actual)
+        target = float(expected)
+        assert math.isfinite(value), f"{field} must be finite"
+        assert value == pytest.approx(
+            target,
+            abs=ABS_TOLERANCE,
+            rel=0,
         )
-        - {"kernel.perf_event_paranoid"}
-    )
-    assert list(profile.keys()) == _ledger()["profile.json"]["top_level_key_order_errno"]
-    assert profile["lockdownModes"] == ["LOCKDOWN_CONFIDENTIALITY", "LOCKDOWN_INTEGRITY"]
-    assert list(profile["sysctls"][0].keys()) == ["names", "action"]
-    assert profile["sysctls"][0]["names"] == expected
-    assert (tmp_path / "profile.json.station").read_text(encoding="utf-8") == "uplink-north"
-    stamped = json.loads((tmp_path / "profile.policy").read_text(encoding="utf-8"))
-    assert stamped == policy
-    assert (tmp_path / "profile.policy").read_bytes() == (
-        tmp_path / "policy.json"
-    ).read_bytes()
+    elif field in INT_FIELDS:
+        assert re.fullmatch(r"-?[0-9]+", actual), f"{field} must be a base-10 integer"
+        assert int(actual) == int(expected)
+    else:
+        assert actual == expected
 
 
-def test_kill_action_profile_omits_errno_and_accepts_boundary_manifest(tmp_path: Path):
-    """A no-feature kill-action profile must omit errno and keep ledger key order."""
-    policy = _policy(default_action="LOCK_ACT_KILL")
-    del policy["errno"]
-    manifest = _manifest(station_id="abc", additional_sysctls=["z" * 64])
-    result, output = _run_compile(tmp_path, policy, manifest)
-    assert result.returncode == 0, result.stderr
-    profile = json.loads(output.read_text(encoding="utf-8"))
-    assert list(profile.keys()) == _ledger()["profile.json"]["top_level_key_order_kill"]
-    assert "defaultErrnoRet" not in profile
+def assert_semantic_rows(
+    actual: tuple[dict[str, str], ...],
+    expected: tuple[dict[str, str], ...],
+) -> None:
+    assert len(actual) == len(expected)
+    for actual_row, expected_row in zip(actual, expected, strict=True):
+        for field in HEADER:
+            assert_scalar(actual_row[field], expected_row[field], field)
 
 
-@pytest.mark.parametrize("errno_value", [1, 255])
-def test_errno_action_accepts_inclusive_lock_errno_boundaries(
-    tmp_path: Path, errno_value: int
-):
-    """Errno values at both documented boundaries must survive compilation."""
-    result, output = _run_compile(tmp_path, _policy(errno=errno_value))
-    assert result.returncode == 0, result.stderr
-    assert json.loads(output.read_text(encoding="utf-8"))["defaultErrnoRet"] == errno_value
+def copy_surface(
+    surface: str,
+    name: str,
+    case_ids: frozenset[str] | None = None,
+) -> Path:
+    destination = GENERATED_ROOT / name
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(surface_root(surface), destination)
+    if case_ids is not None:
+        for relation in INPUT_FILES:
+            header, rows = read_csv(destination / relation)
+            write_csv(
+                destination / relation,
+                header,
+                [row for row in rows if row["case_id"] in case_ids],
+            )
+    return destination
 
 
-@pytest.mark.parametrize("errno_value", [0, 256, 28.5, "28"])
-def test_errno_action_rejects_out_of_range_or_noninteger_values(
-    tmp_path: Path, errno_value: object
-):
-    """Out-of-range, fractional, and string errno values are schema failures."""
-    result, output = _run_compile(tmp_path, _policy(errno=errno_value))
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_unknown_feature_and_extra_document_fields_are_fatal(tmp_path: Path):
-    """Unknown capabilities and undeclared JSON keys must not be silently accepted."""
-    invalid_manifest = _manifest(features=["gpu-passthrough"])
-    invalid_manifest["notes"] = "not part of the contract"
-    result, output = _run_compile(tmp_path, manifest=invalid_manifest)
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_unknown_band_id_binding_is_schema_fatal(tmp_path: Path):
-    """A station band_id outside policy.allowed_bands must exit 65 without writing."""
-    result, output = _run_compile(tmp_path, manifest=_manifest(band_id="deep-space"))
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_unknown_band_allowlist_binding_is_schema_fatal(tmp_path: Path):
-    """A station band outside policy.band_allowlist must exit 65 without writing."""
-    result, output = _run_compile(tmp_path, manifest=_manifest(band="band-gamma"))
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_feature_stacking_disabled_rejects_multi_feature_manifest(tmp_path: Path):
-    """When allow_feature_stacking is false, more than one feature is schema-invalid."""
-    result, output = _run_compile(
-        tmp_path,
-        policy=_policy(allow_feature_stacking=False),
-        manifest=_manifest(features=["leak-shield", "ptrace-lock"]),
-    )
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_feature_exclusion_pair_leak_shield_and_module_seal_is_fatal(tmp_path: Path):
-    """Selecting both members of a ledger feature exclusion pair must exit 65."""
-    result, output = _run_compile(
-        tmp_path,
-        manifest=_manifest(features=["leak-shield", "module-seal"]),
-    )
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_immutable_floor_request_is_denied_without_replacing_output(tmp_path: Path):
-    """An explicit high-risk sysctl request must exit 77 and preserve prior output."""
-    output = tmp_path / "profile.json"
-    output.write_text('{"sentinel":"preserve"}', encoding="utf-8")
-    policy_path = _write_json(tmp_path / "policy.json", _policy())
-    manifest_path = _write_json(
-        tmp_path / "manifest.json", _manifest(additional_sysctls=["kernel.sysrq"])
-    )
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(policy_path),
-            "--manifest",
-            str(manifest_path),
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 77
-    assert json.loads(output.read_text(encoding="utf-8")) == {"sentinel": "preserve"}
-
-
-def test_compiler_enforces_floor_when_catalog_content_is_tampered(tmp_path: Path):
-    """Immutable-floor filtering must follow the ledger even if the catalog is rewritten."""
-    original = CATALOG.read_bytes()
-    catalog = json.loads(original)
-    catalog["baseline"].extend(["kernel.sysrq", "kernel.core_uses_pid"])
-    catalog["baseline"] = sorted(set(catalog["baseline"]))
-    catalog["hard_deny"] = [
-        name
-        for name in catalog["hard_deny"]
-        if name not in {"kernel.sysrq", "kernel.core_uses_pid"}
-    ]
-    try:
-        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
-        result, output = _run_compile(tmp_path)
-        assert result.returncode == 0, result.stderr
-        allowed = set(json.loads(output.read_text(encoding="utf-8"))["sysctls"][0]["names"])
-        assert allowed.isdisjoint(set(_contract()["immutable_floor"]))
-    finally:
-        CATALOG.write_bytes(original)
-
-
-def test_feature_sourced_floor_sysctls_are_silently_dropped(tmp_path: Path):
-    """Floor names injected through a tampered feature set must drop silently, not exit 77."""
-    original = CATALOG.read_bytes()
-    catalog = json.loads(original)
-    catalog["features"]["leak-shield"] = sorted(
-        set(catalog["features"]["leak-shield"])
-        | {"kernel.sysrq", "kernel.core_uses_pid"}
-    )
-    try:
-        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
-        result, output = _run_compile(
-            tmp_path, manifest=_manifest(features=["leak-shield"])
+def rewrite_relations(
+    destination: Path,
+    transform,
+) -> None:
+    for name in INPUT_FILES:
+        header, rows = read_csv(destination / name)
+        transformed_header, transformed_rows = transform(name, header, rows)
+        write_csv(
+            destination / name,
+            transformed_header,
+            transformed_rows,
         )
-        assert result.returncode == 0, result.stderr
-        allowed = set(json.loads(output.read_text(encoding="utf-8"))["sysctls"][0]["names"])
-        assert "kernel.sysrq" not in allowed
-        assert "kernel.core_uses_pid" not in allowed
-        assert "fs.protected_hardlinks" in allowed
-    finally:
-        CATALOG.write_bytes(original)
 
 
-def test_empty_and_malformed_compile_documents_exit_data_error(tmp_path: Path):
-    """Empty or syntactically malformed control documents must exit 65."""
-    policy = tmp_path / "empty-policy.json"
-    manifest = tmp_path / "bad-manifest.json"
-    output = tmp_path / "profile.json"
-    policy.write_text("", encoding="utf-8")
-    manifest.write_text("{", encoding="utf-8")
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(policy),
-            "--manifest",
-            str(manifest),
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+def build_row_header_permutation() -> Path:
+    destination = copy_surface(
+        "public",
+        "row-header-permutation",
+        METAMORPHIC_CASE_IDS,
     )
-    assert result.returncode == 65
-    assert not output.exists()
+
+    def transform(name, header, rows):
+        del name
+        return tuple(reversed(header)), list(reversed(rows))
+
+    rewrite_relations(destination, transform)
+    return destination
 
 
-def test_usage_relative_paths_and_missing_inputs_have_distinct_exit_codes(tmp_path: Path):
-    """Unknown, relative, and repeated options exit 64; missing inputs exit 66."""
-    unknown = subprocess.run(
-        [str(COMMAND), "compile", "--unknown", "x"],
-        capture_output=True,
-        text=True,
-        check=False,
+def build_ratio_affine_surface() -> Path:
+    destination = copy_surface(
+        "public",
+        "ratio-affine",
+        METAMORPHIC_CASE_IDS,
     )
-    relative = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            "policy.json",
-            "--manifest",
-            "manifest.json",
-            "--output",
-            "profile.json",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    repeated = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(tmp_path / "one.json"),
-            "--policy",
-            str(tmp_path / "two.json"),
-            "--manifest",
-            str(tmp_path / "manifest.json"),
-            "--output",
-            str(tmp_path / "profile.json"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    missing = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(tmp_path / "absent.json"),
-            "--manifest",
-            str(tmp_path / "also-absent.json"),
-            "--output",
-            str(tmp_path / "profile.json"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert unknown.returncode == 64
-    assert relative.returncode == 64
-    assert repeated.returncode == 64
-    assert missing.returncode == 66
+
+    def transform(name, header, rows):
+        if name == "records.csv":
+            for index, row in enumerate(rows):
+                scale = (0.0625, 0.25, 0.5, 1.0)[index % 4]
+                row["target_prob"] = format(
+                    float(row["target_prob"]) * scale,
+                    ".17g",
+                )
+                row["behavior_prob"] = format(
+                    float(row["behavior_prob"]) * scale,
+                    ".17g",
+                )
+                row["reward"] = format(
+                    float(row["reward"]) + 700.0,
+                    ".17g",
+                )
+                row["cost"] = format(
+                    float(row["cost"]) + 700.0,
+                    ".17g",
+                )
+                row["source_id"] = f"changed::{index:08d}"
+        return header, rows
+
+    rewrite_relations(destination, transform)
+    return destination
 
 
-def test_empty_trace_produces_passing_zero_count_report(tmp_path: Path):
-    """An empty JSON Lines trace is valid and must produce a zero-count pass."""
-    compile_result, profile = _run_compile(tmp_path)
-    assert compile_result.returncode == 0, compile_result.stderr
-    result, report = _run_audit(tmp_path, profile, "")
-    assert result.returncode == 0, result.stderr
-    payload = report.read_bytes()
-    assert not payload.endswith(b"\n")
-    body = json.loads(payload.decode("utf-8"))
-    _assert_report_indent2(payload, body)
-    assert list(body.keys()) == _ledger()["audit_report"]["top_level_key_order"]
-    assert body == _ledger()["audit_report"]["empty_trace"]
-    summary_raw = SUMMARY.read_bytes()
-    assert summary_raw.endswith(b"\x1c")
-    summary = json.loads(summary_raw[:-1].decode("utf-8"))
-    _assert_summary_indent2(summary_raw, summary)
-    assert list(summary.keys()) == _ledger()["gate_summary.json"]["top_level_key_order"]
-    assert summary["catalog_revision"] == json.loads(CATALOG.read_text(encoding="utf-8"))[
-        "revision"
-    ]
-    assert summary["station_id"] == "uplink-north"
-    assert summary["pressure_index"] == 0
-    assert summary["unique_denied"] == 0
-    assert summary["fortify_peak"] == 0
-    assert summary["leak_violations"] == 0
+def build_noise_reflection_surface() -> Path:
+    destination = copy_surface(
+        "public",
+        "noise-reflection",
+        METAMORPHIC_CASE_IDS,
+    )
+
+    def transform(name, header, rows):
+        if name == "records.csv":
+            for row in rows:
+                row["noise_a"] = format(
+                    -float(row["noise_a"]),
+                    ".17g",
+                )
+        return header, rows
+
+    rewrite_relations(destination, transform)
+    return destination
 
 
-def test_audit_precedence_sorts_mixed_not_fortified_and_leak_violations(
-    tmp_path: Path,
-):
-    """Audit must apply reason precedence, per-reason fortify math, and four-key sort."""
-    compile_result, profile = _run_compile(
-        tmp_path,
-        policy=_policy(leak_score_ceiling=50),
-        manifest=_manifest(features=["leak-shield"]),
+def build_noise_ablation_surface() -> Path:
+    destination = copy_surface(
+        "public",
+        "noise-ablation",
+        METAMORPHIC_CASE_IDS,
     )
-    assert compile_result.returncode == 0, compile_result.stderr
-    trace = (
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n'
-        '{"seq":2,"sysctl":"kernel.sysrq","leak_score":900}\n'
-        '{"seq":3,"sysctl":"fs.protected_hardlinks","leak_score":80}\n'
-        '{"seq":4,"sysctl":"kernel.core_uses_pid","leak_score":0}\n'
-        '{"seq":5,"sysctl":"fs.protected_hardlinks","leak_score":120}'
-    )
-    result, report = _run_audit(tmp_path, profile, trace)
-    assert result.returncode == 3
-    payload = report.read_bytes()
-    body = json.loads(payload.decode("utf-8"))
-    _assert_report_indent2(payload, body)
-    expected_rows = [
-        {
-            "seq": 2,
-            "sysctl": "kernel.sysrq",
-            "reason": "not_fortified",
-            "severity_weight": _severity(2, "kernel.sysrq"),
-            "fortify_score": _fortify_not_fortified(2, "kernel.sysrq"),
-            "leak_score": 900,
-        },
-        {
-            "seq": 4,
-            "sysctl": "kernel.core_uses_pid",
-            "reason": "not_fortified",
-            "severity_weight": _severity(4, "kernel.core_uses_pid"),
-            "fortify_score": _fortify_not_fortified(4, "kernel.core_uses_pid"),
-            "leak_score": 0,
-        },
-        {
-            "seq": 3,
-            "sysctl": "fs.protected_hardlinks",
-            "reason": "leak_exceeded",
-            "severity_weight": _severity(3, "fs.protected_hardlinks"),
-            "fortify_score": _fortify_leak(3, "fs.protected_hardlinks", 80),
-            "leak_score": 80,
-        },
-        {
-            "seq": 5,
-            "sysctl": "fs.protected_hardlinks",
-            "reason": "leak_exceeded",
-            "severity_weight": _severity(5, "fs.protected_hardlinks"),
-            "fortify_score": _fortify_leak(5, "fs.protected_hardlinks", 120),
-            "leak_score": 120,
-        },
-    ]
-    expected_rows.sort(
-        key=lambda row: (
-            -row["fortify_score"],
-            row["reason"],
-            row["sysctl"],
-            row["seq"],
-        )
-    )
-    assert body["status"] == "violation"
-    assert body["events_total"] == 5
-    assert body["allowed_events"] == 1
-    assert body["violation_events"] == 4
-    assert body["pressure_index"] == _pressure(4, 3, 2, 5)
-    assert body["violations"] == expected_rows
-    assert list(body["violations"][0].keys()) == _ledger()["audit_report"]["violation_key_order"]
-    summary_raw = SUMMARY.read_bytes()
-    summary = json.loads(summary_raw[:-1].decode("utf-8"))
-    _assert_summary_indent2(summary_raw, summary)
-    assert summary["catalog_revision"] == json.loads(CATALOG.read_text(encoding="utf-8"))[
-        "revision"
-    ]
-    assert summary["station_id"] == "uplink-north"
-    assert summary["unique_denied"] == 3
-    assert summary["leak_violations"] == 2
-    assert summary["fortify_peak"] == max(row["fortify_score"] for row in expected_rows)
-    assert summary["pressure_index"] == body["pressure_index"]
+
+    def transform(name, header, rows):
+        if name == "records.csv":
+            for row in rows:
+                row["noise_a"] = "0"
+        return header, rows
+
+    rewrite_relations(destination, transform)
+    return destination
 
 
-def test_allowlisted_sysctl_at_exact_leak_ceiling_is_not_a_violation(
-    tmp_path: Path,
-):
-    """leak_score equal to leak_score_ceiling must pass; only values above the ceiling violate."""
-    compile_result, profile = _run_compile(
-        tmp_path,
-        policy=_policy(leak_score_ceiling=100),
-        manifest=_manifest(features=["leak-shield"]),
+def build_cluster_translation_surface() -> Path:
+    destination = copy_surface(
+        "public",
+        "cluster-translation",
+        METAMORPHIC_CASE_IDS,
     )
-    assert compile_result.returncode == 0, compile_result.stderr
-    trace = (
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n'
-        '{"seq":2,"sysctl":"fs.protected_hardlinks","leak_score":100}'
+
+    def transform(name, header, rows):
+        if name in {"cluster_roster.csv", "records.csv"}:
+            for row in rows:
+                row["cluster"] = str(int(row["cluster"]) + 1000)
+        return header, rows
+
+    rewrite_relations(destination, transform)
+    return destination
+
+
+def build_exposure_scaled_surface() -> Path:
+    destination = copy_surface(
+        "public",
+        "exposure-scale",
+        METAMORPHIC_CASE_IDS,
     )
-    result, report = _run_audit(tmp_path, profile, trace)
-    assert result.returncode == 0, result.stderr
-    body = json.loads(report.read_text(encoding="utf-8"))
-    assert body["violation_events"] == 0
-    assert body["violations"] == []
+
+    def transform(name, header, rows):
+        if name == "cluster_roster.csv":
+            case_ids = sorted({row["case_id"] for row in rows})
+            factors = {
+                case_id: (0.125, 2.0, 16.0)[index % 3]
+                for index, case_id in enumerate(case_ids)
+            }
+            for row in rows:
+                row["exposure_weight"] = format(
+                    float(row["exposure_weight"]) * factors[row["case_id"]],
+                    ".17g",
+                )
+        return header, rows
+
+    rewrite_relations(destination, transform)
+    return destination
+
+
+def fnv1a(payload: str) -> str:
+    value = 2_166_136_261
+    for byte in payload.encode():
+        value ^= byte
+        value = (value * 16_777_619) & 0xFFFFFFFF
+    return f"{value:08x}"
+
+
+def decision_code(value: str) -> int:
+    return math.floor(10_000_000 * float(value) + 0.5)
+
+
+def signature_payload(row: dict[str, str]) -> str:
+    parts = (
+        row["case_id"],
+        row["selected_candidate"],
+        row["selected_policy"],
+        row["critical_cycle"],
+        row["deletion_code"],
+        str(decision_code(row["policy_score"])),
+        str(decision_code(row["robust_policy_return"])),
+        str(decision_code(row["minimum_cycle_mean"])),
+        str(decision_code(row["cycle_covariance_penalty"])),
+        str(decision_code(row["predictive_calibration"])),
+        str(decision_code(row["crossfit_correction"])),
+        str(decision_code(row["effective_sample_size"])),
+        str(int(row["support_edge_count"])),
+        str(decision_code(row["minimum_edge_support"])),
+        str(decision_code(row["cv_loss"])),
+        str(int(row["deletion_change_count"])),
+        str(int(row["worst_deletion_scenario_code"])),
+        str(decision_code(row["maximum_deletion_calibration"])),
+        str(int(row["stability_checksum"])),
+    )
+    return "|".join(parts)
+
+
+def build_case_translation_surface() -> tuple[Path, tuple[dict[str, str], ...]]:
+    destination = copy_surface(
+        "public",
+        "case-translation",
+        METAMORPHIC_CASE_IDS,
+    )
+    mapping = {
+        row["case_id"]: f"translated::{row['case_id']}" for row in METAMORPHIC_EXPECTED
+    }
+
+    def transform(name, header, rows):
+        del name
+        for row in rows:
+            row["case_id"] = mapping[row["case_id"]]
+        return header, rows
+
+    rewrite_relations(destination, transform)
+    expected = []
+    for original in METAMORPHIC_EXPECTED:
+        row = dict(original)
+        row["case_id"] = mapping[row["case_id"]]
+        row["audit_signature"] = fnv1a(signature_payload(row))
+        expected.append(row)
+    return destination, tuple(expected)
+
+
+def build_malformed(profile: str) -> Path:
+    destination = copy_surface("public", f"malformed-{profile}")
+    if profile == "missing-relation":
+        (destination / "cluster_roster.csv").unlink()
+        return destination
+    relations = {name: read_csv(destination / name) for name in INPUT_FILES}
+    target_case = min(row["case_id"] for row in relations["cases.csv"][1])
+    if profile == "duplicate-roster":
+        header, rows = relations["cluster_roster.csv"]
+        target = next(row for row in rows if row["case_id"] == target_case)
+        rows.append(dict(target))
+        write_csv(destination / "cluster_roster.csv", header, rows)
+    elif profile == "incomplete-prior":
+        header, rows = relations["priors.csv"]
+        removed = False
+        retained = []
+        for row in rows:
+            if row["case_id"] == target_case and not removed:
+                removed = True
+            else:
+                retained.append(row)
+        write_csv(destination / "priors.csv", header, retained)
+    elif profile == "nonpositive-prior":
+        header, rows = relations["priors.csv"]
+        target = next(row for row in rows if row["case_id"] == target_case)
+        target["prior_mass"] = "0"
+        write_csv(destination / "priors.csv", header, rows)
+    elif profile == "duplicate-candidate-rank":
+        header, rows = relations["regularizers.csv"]
+        same_case = [row for row in rows if row["case_id"] == target_case]
+        same_case[1]["candidate_rank"] = same_case[0]["candidate_rank"]
+        write_csv(destination / "regularizers.csv", header, rows)
+    elif profile == "unknown-cluster":
+        header, rows = relations["records.csv"]
+        target = next(row for row in rows if row["case_id"] == target_case)
+        target["cluster"] = "999999"
+        write_csv(destination / "records.csv", header, rows)
+    elif profile == "zero-behavior":
+        header, rows = relations["records.csv"]
+        target = next(row for row in rows if row["case_id"] == target_case)
+        target["behavior_prob"] = "0"
+        write_csv(destination / "records.csv", header, rows)
+    elif profile == "nonfinite-noise":
+        header, rows = relations["records.csv"]
+        target = next(row for row in rows if row["case_id"] == target_case)
+        target["noise_a"] = "NaN"
+        write_csv(destination / "records.csv", header, rows)
+    elif profile == "invalid-response-ridge":
+        header, rows = relations["regularizers.csv"]
+        target = next(row for row in rows if row["case_id"] == target_case)
+        target["response_ridge"] = "0"
+        write_csv(destination / "regularizers.csv", header, rows)
+    elif profile == "invalid-calibration-z":
+        header, rows = relations["regularizers.csv"]
+        target = next(row for row in rows if row["case_id"] == target_case)
+        target["calibration_z"] = "-1"
+        write_csv(destination / "regularizers.csv", header, rows)
+    elif profile == "incomplete-grid":
+        header, rows = relations["records.csv"]
+        first = next(row for row in rows if row["case_id"] == target_case)
+        rows = [
+            row
+            for row in rows
+            if not (
+                row["case_id"] == first["case_id"]
+                and row["policy_id"] == first["policy_id"]
+                and row["cluster"] == first["cluster"]
+            )
+        ]
+        write_csv(destination / "records.csv", header, rows)
+    else:
+        raise AssertionError(f"unknown malformed profile {profile}")
+    return destination
+
+
+@pytest.fixture(scope="session", autouse=True)
+def clean_candidate_area():
+    """Reset private writable areas before and after verifier execution."""
+    for root in (CANDIDATE_ROOT, GENERATED_ROOT):
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+    yield
+    for root in (CANDIDATE_ROOT, GENERATED_ROOT):
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.mark.parametrize("surface,case_id", CASE_PARAMETERS)
+def test_case_semantics(surface: str, case_id: str):
+    """Match every protected case field to its golden result."""
+    result = run_candidate(surface_root(surface), surface)
+    actual_by_id = {row["case_id"]: row for row in result.rows}
+    expected_by_id = {row["case_id"]: row for row in EXPECTED[surface]}
+    assert case_id in actual_by_id
+    actual = actual_by_id[case_id]
+    expected = expected_by_id[case_id]
+    assert set(actual) == set(HEADER)
+    for field in HEADER:
+        assert_scalar(actual[field], expected[field], field)
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_surface_schema_and_cardinality(surface: str):
+    """Require the exact unquoted schema and one row per case."""
+    result = run_candidate(surface_root(surface), surface)
+    assert result.header == HEADER
+    assert len(result.rows) == len(EXPECTED[surface])
+    assert b'"' not in result.raw
+    assert all(
+        re.fullmatch(r"[0-9a-f]{8}", row["audit_signature"]) for row in result.rows
+    )
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_case_order_is_canonical(surface: str):
+    """Require unique case rows in canonical identifier order."""
+    result = run_candidate(surface_root(surface), surface)
+    case_ids = [row["case_id"] for row in result.rows]
+    assert case_ids == sorted(case_ids)
+    assert len(case_ids) == len(set(case_ids))
+
+
+def test_row_and_header_order_invariance():
+    """Preserve all semantics when every relation is reversed."""
+    permuted = run_candidate(
+        build_row_header_permutation(),
+        "row-header-permutation",
+    )
+    assert permuted.header == HEADER
+    assert_semantic_rows(permuted.rows, METAMORPHIC_EXPECTED)
+
+
+def test_ratio_and_reward_cost_affine_invariance():
+    """Preserve results after ratio-preserving and utility-preserving edits."""
+    transformed = run_candidate(
+        build_ratio_affine_surface(),
+        "ratio-affine",
+    )
+    assert_semantic_rows(transformed.rows, METAMORPHIC_EXPECTED)
+
+
+def test_noise_reflection_invariance():
+    """Refitting preserves predictions under a sign change of noise features."""
+    transformed = run_candidate(
+        build_noise_reflection_surface(),
+        "noise-reflection",
+    )
+    assert_semantic_rows(transformed.rows, METAMORPHIC_EXPECTED)
+
+
+def test_noise_features_are_load_bearing():
+    """Removing observed noise structure must alter predictive certificates."""
+    transformed = run_candidate(
+        build_noise_ablation_surface(),
+        "noise-ablation",
+    )
+    expected = METAMORPHIC_EXPECTED
+    fields = (
+        "predictive_calibration",
+        "crossfit_correction",
+        "cv_loss",
+        "audit_signature",
+    )
+    assert any(
+        any(actual[field] != target[field] for field in fields)
+        for actual, target in zip(transformed.rows, expected, strict=True)
+    )
+
+
+def test_cluster_identifier_translation_invariance():
+    """Preserve rank-based certificates under monotone cluster relabeling."""
+    transformed = run_candidate(
+        build_cluster_translation_surface(),
+        "cluster-translation",
+    )
+    assert_semantic_rows(transformed.rows, METAMORPHIC_EXPECTED)
+
+
+def test_exposure_scale_invariance():
+    """Preserve outputs when all exposures in a case share one scale."""
+    transformed = run_candidate(
+        build_exposure_scaled_surface(),
+        "exposure-scale",
+    )
+    assert_semantic_rows(transformed.rows, METAMORPHIC_EXPECTED)
+
+
+def test_case_identifier_translation_updates_only_provenance():
+    """Translate case IDs while retaining metrics and recomputing signatures."""
+    data_root, expected = build_case_translation_surface()
+    transformed = run_candidate(data_root, "case-translation")
+    assert_semantic_rows(transformed.rows, expected)
+
+
+def test_default_invocation_is_byte_deterministic():
+    """Honor defaults and reproduce the public output byte for byte."""
+    explicit = run_candidate(surface_root("public"), "public")
+    output_root = Path("/app/outputs")
+    output_root.chmod(0o777)
+    output = output_root / "results.csv"
+    output.unlink(missing_ok=True)
+    completed = sandbox_command(output_root, ["/app/run.sh"])
+    assert completed.returncode == 0, completed.stderr
+    assert output.read_bytes() == explicit.raw
 
 
 @pytest.mark.parametrize(
-    "trace_text",
-    [
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n\n{"seq":2,"sysctl":"kernel.dmesg_restrict","leak_score":0}',
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n{"seq":3,"sysctl":"kernel.dmesg_restrict","leak_score":0}',
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0,"pid":9}',
-        '{"seq":1,"sysctl":"kernel.kptr_restrict"}',
-        '{"seq":1,"sysctl":',
-    ],
+    "profile",
+    (
+        "missing-relation",
+        "duplicate-roster",
+        "incomplete-prior",
+        "nonpositive-prior",
+        "duplicate-candidate-rank",
+        "unknown-cluster",
+        "zero-behavior",
+        "nonfinite-noise",
+        "invalid-response-ridge",
+        "invalid-calibration-z",
+        "incomplete-grid",
+    ),
 )
-def test_malformed_trace_never_replaces_existing_report(
-    tmp_path: Path, trace_text: str
-):
-    """Blank, noncontiguous, extra-field, missing leak, and broken traces are fatal."""
-    compile_result, profile = _run_compile(tmp_path)
-    assert compile_result.returncode == 0, compile_result.stderr
-    report = tmp_path / "report.json"
-    report.write_text('{"sentinel":"preserve"}', encoding="utf-8")
-    before_summary = SUMMARY.read_bytes() if SUMMARY.exists() else None
-    trace = tmp_path / "trace.jsonl"
-    trace.write_text(trace_text, encoding="utf-8")
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "audit",
-            "--profile",
-            str(profile),
-            "--trace",
-            str(trace),
-            "--report",
-            str(report),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+def test_malformed_bundle_is_rejected(profile: str):
+    """Reject malformed relational bundles without emitting a result."""
+    data_root = build_malformed(profile)
+    run_root = CANDIDATE_ROOT / f"failure-{profile}"
+    make_writable(run_root)
+    copied_data = run_root / "data"
+    shutil.copytree(data_root, copied_data)
+    output = run_root / "results.csv"
+    completed = sandbox_command(
+        run_root,
+        ["/app/run.sh", str(copied_data), str(output)],
+        timeout=120,
     )
-    assert result.returncode == 65
-    assert json.loads(report.read_text(encoding="utf-8")) == {"sentinel": "preserve"}
-    if before_summary is not None:
-        assert SUMMARY.read_bytes() == before_summary
+    assert completed.returncode != 0
+    assert not output.exists()
 
 
-def test_catalog_feature_mutation_forces_profile_update(tmp_path: Path):
-    """Mutating a catalog feature membership must change the compiled allowlist."""
-    original = CATALOG.read_bytes()
-    try:
-        first, profile = _run_compile(
-            tmp_path, manifest=_manifest(features=["leak-shield"])
-        )
-        assert first.returncode == 0, first.stderr
-        before = json.loads(profile.read_text(encoding="utf-8"))["sysctls"][0]["names"]
-
-        catalog = json.loads(original)
-        catalog["features"]["leak-shield"] = sorted(
-            set(catalog["features"]["leak-shield"]) | {"net.core.bpf_jit_harden"}
-        )
-        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
-
-        second, profile = _run_compile(
-            tmp_path, manifest=_manifest(features=["leak-shield"])
-        )
-        assert second.returncode == 0, second.stderr
-        after = json.loads(profile.read_text(encoding="utf-8"))["sysctls"][0]["names"]
-        assert after != before
-        assert "net.core.bpf_jit_harden" in after
-    finally:
-        CATALOG.write_bytes(original)
+def test_candidate_cannot_read_protected_verifier_paths():
+    """Deny access to goldens, verifier code, solution, and reward."""
+    write_root = CANDIDATE_ROOT / "sandbox-probe"
+    make_writable(write_root)
+    completed = sandbox_command(
+        write_root,
+        [
+            "/bin/sh",
+            "-c",
+            (
+                "! /bin/cat /tests/golden/public.csv >/dev/null 2>&1 && "
+                "! /bin/cat /tests/test_outputs.py >/dev/null 2>&1 && "
+                "! /bin/cat /solution/estimate.R >/dev/null 2>&1 && "
+                "! printf x >>/logs/verifier/reward.txt 2>/dev/null"
+            ),
+        ],
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
-def test_runtime_succeeds_when_python_commands_are_blocked(tmp_path: Path):
-    """Profile compilation must use shell utilities and never invoke Python."""
-    fake_bin = tmp_path / "blocked-python"
-    fake_bin.mkdir()
-    blocker = "#!/bin/sh\nexit 99\n"
-    for name in ("python", "python3", "pypy", "pypy3"):
-        executable = fake_bin / name
-        executable.write_text(blocker, encoding="utf-8")
-        executable.chmod(0o755)
-    env = os.environ.copy()
-    env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    result, output = _run_compile(tmp_path, env=env)
-    assert result.returncode == 0, result.stderr
-    assert output.exists()
+def test_protected_surfaces_are_load_bearing():
+    """Ensure the fixtures exercise tuning, fallback, cycles, and refits."""
+    rows = [row for surface in SURFACES for row in EXPECTED[surface]]
+    assert len(rows) == 60
+    assert len({row["selected_candidate"] for row in rows}) >= 6
+    assert len({row["selected_policy"] for row in rows}) >= 7
+    assert {int(row["critical_cycle_length"]) for row in rows} >= {1, 2, 3, 4}
+    assert sum(int(row["feasible_count"]) == 0 for row in rows) >= 20
+    assert sum(int(row["deletion_change_count"]) for row in rows) >= 240
+    assert len({decision_code(row["predictive_calibration"]) for row in rows}) >= 40
+    assert len({decision_code(row["crossfit_correction"]) for row in rows}) >= 40
+    assert len({row["audit_signature"] for row in rows}) == len(rows)
+    pair_rows = EXPECTED["hidden-e"]
+    assert sum(row["deletion_code"].count("|") >= 30 for row in pair_rows) >= 2

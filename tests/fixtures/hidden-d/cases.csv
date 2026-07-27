@@ -1,0 +1,11 @@
+case_id,edge_probability_floor,safety_floor,ess_floor,safety_weight,robustness_scale,cv_penalty,cycle_instability_penalty,prediction_penalty,calibration_ceiling,max_deleted_clusters
+support-boundary-010,0.102,0.29,1.2,0.35,0.2,0.25,0.65,0.7,0.42,1
+support-boundary-009,0.098,-0.03,2.6,1.2,0.95,0,0.2,0.35,0.32,1
+support-boundary-008,0.146,0.4,1.9,0.75,0.55,0.95,2,1.55,0.68,1
+support-boundary-007,0.12,0.34,1.2,0.35,0.2,0.6,1.25,1.1,0.54,1
+support-boundary-005,0.092,-0.03,1.9,0.75,0.55,0,0.2,0.35,0.32,1
+support-boundary-002,0.11,0.29,1.9,0.75,0.55,0.25,0.65,0.7,0.42,1
+support-boundary-003,0.134,0.34,2.6,1.2,0.95,0.6,1.25,1.1,0.54,1
+support-boundary-004,0.138,0.4,1.2,0.35,0.2,0.95,2,1.55,0.68,1
+support-boundary-001,0.084,-0.03,1.2,0.35,0.2,0,0.2,0.35,0.32,1
+support-boundary-006,0.116,0.29,2.6,1.2,0.95,0.25,0.65,0.7,0.42,1

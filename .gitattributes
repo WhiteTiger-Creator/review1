@@ -1,3 +1,0 @@
-*.sh text eol=lf
-kernel-fortify text eol=lf
-*.jq text eol=lf

@@ -1,30 +1,27 @@
-# BASE_IMAGE_JUSTIFICATION: Canonical pinned public.ecr.aws/docker/library/python:3.13-slim-bookworm supplies a compact Debian base with pinned jq, tmux, and asciinema packages for an offline Bash kernel lockdown fortify gate and verifier.
-# TASK_INSPIRATION: Inspired by satellite ground-station fleets that must compile sysctl fortification profiles and score live kernel probe traces for kptr, Yama ptrace, and unprivileged BPF leaks before uplink windows open.
 version = "2.0"
 
 [metadata]
-name = "fortify-kernel-runtime-hardening"
 author_name = "anonymous"
 author_email = "anonymous"
+category = "machine-learning"
+subcategories = []
 difficulty = "hard"
-category = "security"
-subcategories = ["tool_specific"]
+codebase_size = "minimal"
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["bash"]
-tags = ["security", "kernel-lockdown", "sysctl-fortify", "yama-ptrace", "kptr-restrict", "attack-surface"]
-expert_time_estimate_min = 150
-junior_time_estimate_min = 270
+languages = ["r"]
+tags = ["graph-safety", "nested-cross-validation", "off-policy-evaluation", "predictive-calibration", "ridge-regression"]
+expert_time_estimate_min = 480
+junior_time_estimate_min = 1440
 
 [verifier]
-timeout_sec = 600.0
+timeout_sec = 1800
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
 
 [environment]
-allow_internet = false
-build_timeout_sec = 600.0
+build_timeout_sec = 1200
 cpus = 2
-memory_mb = 4096
-storage_mb = 10240
+memory_mb = 2048
+storage_mb = 4096
+allow_internet = false

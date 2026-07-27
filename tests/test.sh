@@ -1,21 +1,25 @@
-#!/bin/bash
-set -uo pipefail
-
-TEST_DIR="${TEST_DIR:-/tests}"
-
+#!/usr/bin/env bash
 mkdir -p /logs/verifier
+rm -f /logs/verifier/ctrf.json
+printf '%s\n' '{"results":{"tool":{"name":"precondition"},"summary":{"tests":1,"passed":0,"failed":1,"pending":0,"skipped":0,"other":0},"tests":[{"name":"verifier-precondition","status":"failed","duration":0}]}}' > /logs/verifier/ctrf.json
 
 if [ "$PWD" = "/" ]; then
-  echo "Error: No working directory set. Please set a WORKDIR in the Dockerfile before running this script."
-  exit 1
-fi
-
-# pytest + pytest-json-ctrf are pre-installed in the Dockerfile (no apt/pip at runtime).
-set +e
-python3 -m pytest --ctrf /logs/verifier/ctrf.json "${TEST_DIR}/test_outputs.py" -rA
-
-if [ $? -eq 0 ]; then
-  echo 1 > /logs/verifier/reward.txt
+    echo "Error: No working directory set."
+    printf '%s\n' '{"results":{"tool":{"name":"precondition"},"summary":{"tests":1,"passed":0,"failed":1,"pending":0,"skipped":0,"other":0},"tests":[{"name":"verifier-precondition","status":"failed","duration":0}]}}' > /logs/verifier/ctrf.json
+    false
 else
-  echo 0 > /logs/verifier/reward.txt
+    cd /tests && python3 -m pytest -rA -p no:cacheprovider \
+      --confcutdir=/tests -c /tests/pytest.ini \
+      --maxfail=1 --ctrf /logs/verifier/ctrf.json test_outputs.py
+    pytest_status=$?
+    if [ ! -s /logs/verifier/ctrf.json ]; then
+        printf '%s\n' '{"results":{"tool":{"name":"precondition"},"summary":{"tests":1,"passed":0,"failed":1,"pending":0,"skipped":0,"other":0},"tests":[{"name":"verifier-precondition","status":"failed","duration":0}]}}' > /logs/verifier/ctrf.json
+    fi
+    test "$pytest_status" -eq 0
+fi
+status=$?
+if [ "$status" -eq 0 ]; then
+    echo 1 > /logs/verifier/reward.txt
+else
+    echo 0 > /logs/verifier/reward.txt
 fi
