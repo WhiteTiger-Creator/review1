@@ -3,25 +3,28 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-category = "machine-learning"
-subcategories = []
 difficulty = "hard"
-codebase_size = "minimal"
+category = "system-administration"
+subcategories = [ "tool_specific" ]
+codebase_size = "small"
+languages = [ "bash" ]
+tags = [ "frrouting", "ripestat", "bgp", "route-maps", "change-control" ]
+expert_time_estimate_min = 360
+junior_time_estimate_min = 900
 number_of_milestones = 0
-languages = ["r"]
-tags = ["graph-safety", "nested-cross-validation", "off-policy-evaluation", "predictive-calibration", "ridge-regression"]
-expert_time_estimate_min = 480
-junior_time_estimate_min = 1440
-
-[verifier]
-timeout_sec = 1800
 
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
+
+[verifier]
+timeout_sec = 450.0
 
 [environment]
-build_timeout_sec = 1200
+build_timeout_sec = 1800.0
+docker_flags = []
 cpus = 2
-memory_mb = 2048
-storage_mb = 4096
-allow_internet = false
+memory_mb = 4096
+storage_mb = 10240
+gpus = 0
+gpu_types = []
+allow_internet = true
