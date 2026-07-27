@@ -1,0 +1,23 @@
+{
+  "revision": 5,
+  "baseline": [
+    "kernel.kptr_restrict",
+    "kernel.dmesg_restrict"
+  ],
+  "features": {
+    "leak-shield": [
+      "fs.protected_hardlinks"
+    ],
+    "ptrace-lock": [
+      "kernel.yama.ptrace_scope"
+    ],
+    "module-seal": [
+      "kernel.modules_disabled"
+    ]
+  },
+  "hard_deny": [
+    "floppy",
+    "pcspkr",
+    "thunderbolt"
+  ]
+}

@@ -1,447 +1,678 @@
+"""Behavioral verifier for the ground-station kernel lockdown fortify gate."""
+
 from __future__ import annotations
 
 import json
+import math
 import os
-import re
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-from helpers.wakeclock_reference import reconcile
 
-APP_DIR = Path(os.environ.get("APP_DIR", "/app"))
-TESTS_DIR = Path(__file__).resolve().parent
-PUBLIC_FIXTURE_ROOT = TESTS_DIR / "fixtures" / "public_case"
-CANONICAL_OCCURRENCE_ID = re.compile(
-    r"^[^|]+\|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\|-?\d+\|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
-)
+COMMAND = Path("/app/kernel-fortify")
+CATALOG = Path("/app/config/sysctl-module-catalog.json")
+POLICY = Path("/app/control/policy.json")
+LEDGER = Path("/app/ground-canon/ground-lockdown-ledger-v1.json")
+SUMMARY = Path("/app/output/gate_summary.json")
 
 
-def iter_fixture_occurrence_ids(fixture_root: Path) -> list[str]:
-    occurrence_ids: list[str] = []
-    snapshot = json.loads((fixture_root / "state" / "snapshot.json").read_text())
-    for item in snapshot.get("pending", []):
-        occurrence_ids.append(str(item["occurrence_id"]))
-    for cursor in snapshot.get("cursors", {}).values():
-        if cursor:
-            occurrence_ids.append(str(cursor))
-    journal_path = fixture_root / "state" / "journal.jsonl"
-    if journal_path.exists():
-        for line in journal_path.read_text().splitlines():
-            if line.strip():
-                record = json.loads(line)
-                occurrence_ids.extend(str(value) for value in record.get("occurrence_ids", []))
-    spool_dir = fixture_root / "state" / "spool"
-    if spool_dir.is_dir():
-        for path in spool_dir.glob("*.json"):
-            record = json.loads(path.read_text())
-            occurrence_ids.extend(str(value) for value in record.get("occurrence_ids", []))
-    return occurrence_ids
+def _ledger() -> dict:
+    return json.loads(LEDGER.read_text(encoding="utf-8"))
 
 
-def assert_fixture_occurrence_ids_are_canonical(fixture_root: Path) -> None:
-    for occurrence_id in iter_fixture_occurrence_ids(fixture_root):
-        assert occurrence_id.count("|") == 3, occurrence_id
-        assert CANONICAL_OCCURRENCE_ID.match(occurrence_id), occurrence_id
+def _contract() -> dict:
+    return _ledger()["catalog_contract"]
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _validate_public_fixture_occurrence_ids() -> None:
-    assert_fixture_occurrence_ids_are_canonical(PUBLIC_FIXTURE_ROOT)
+def _write_json(path: Path, value: object) -> Path:
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
 
 
-@pytest.fixture(scope="session")
-def binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    destination = tmp_path_factory.mktemp("bin") / "wakeclock"
-    subprocess.run(
-        ["go", "build", "-o", str(destination), "./cmd/wakeclock"],
-        cwd=APP_DIR,
-        check=True,
+def _policy(**overrides: object) -> dict:
+    value = {
+        "version": 1,
+        "default_action": "LOCK_ACT_ERRNO",
+        "errno": 1,
+        "station_channel": "ground-v2",
+        "lockdown_modes": ["LOCKDOWN_CONFIDENTIALITY", "LOCKDOWN_INTEGRITY"],
+        "blocked_sysctls": [],
+        "allowed_bands": ["uplink", "telemetry", "ranging"],
+        "allow_feature_stacking": True,
+        "band_allowlist": ["band-alpha", "band-beta"],
+        "leak_score_ceiling": 40,
+    }
+    value.update(overrides)
+    return value
+
+
+def _manifest(**overrides: object) -> dict:
+    value = {
+        "station_id": "uplink-north",
+        "band_id": "uplink",
+        "band": "band-alpha",
+        "features": [],
+        "additional_sysctls": [],
+    }
+    value.update(overrides)
+    return value
+
+
+def _run_compile(
+    tmp_path: Path,
+    policy: dict | None = None,
+    manifest: dict | None = None,
+    *,
+    env: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    policy_path = _write_json(tmp_path / "policy.json", policy or _policy())
+    manifest_path = _write_json(tmp_path / "manifest.json", manifest or _manifest())
+    output = tmp_path / "profile.json"
+    result = subprocess.run(
+        [
+            str(COMMAND),
+            "compile",
+            "--manifest",
+            str(manifest_path),
+            "--output",
+            str(output),
+            "--policy",
+            str(policy_path),
+        ],
         capture_output=True,
         text=True,
+        env=env,
+        check=False,
     )
-    return destination
+    return result, output
 
 
-def copy_case(tmp_path: Path) -> tuple[Path, Path, Path]:
-    units = tmp_path / "units"
-    state = tmp_path / "state"
-    clock = tmp_path / "clock.jsonl"
-    shutil.copytree(PUBLIC_FIXTURE_ROOT / "units", units)
-    shutil.copytree(PUBLIC_FIXTURE_ROOT / "state", state)
-    (state / "spool").mkdir(exist_ok=True)
-    shutil.copy2(PUBLIC_FIXTURE_ROOT / "clock" / "trace.jsonl", clock)
-    return units, state, clock
-
-
-def run_candidate(
-    binary: Path,
-    units: Path,
-    state: Path,
-    clock: Path,
-    output: Path,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+def _run_audit(
+    tmp_path: Path,
+    profile: Path,
+    trace_text: str,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(trace_text, encoding="utf-8")
+    report = tmp_path / "report.json"
+    result = subprocess.run(
         [
-            str(binary),
-            "reconcile",
-            "--units",
-            str(units),
-            "--state",
-            str(state),
-            "--clock",
-            str(clock),
+            str(COMMAND),
+            "audit",
+            "--report",
+            str(report),
+            "--trace",
+            str(trace),
+            "--profile",
+            str(profile),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result, report
+
+
+def _severity(seq: int, sysctl: str) -> int:
+    return math.floor((len(sysctl) * 37 + seq * 11) / 5)
+
+
+def _fortify_not_fortified(seq: int, sysctl: str) -> int:
+    sev = _severity(seq, sysctl)
+    return math.floor((sev * 43 + seq * 17) / 4)
+
+
+def _fortify_leak(seq: int, sysctl: str, leak_score: int) -> int:
+    sev = _severity(seq, sysctl)
+    return math.floor((sev * 23 + leak_score + seq * 5) / 3)
+
+
+def _pressure(
+    violation_events: int, unique_denied: int, leak_violations: int, events_total: int
+) -> int:
+    return math.floor(
+        (violation_events * 100 + unique_denied * 31 + leak_violations * 13)
+        / max(events_total, 1)
+    )
+
+
+def _dump_indent2(obj: object) -> bytes:
+    """Ledger serialization: indent-2 JSON with ensure_ascii."""
+    return json.dumps(obj, indent=2, ensure_ascii=True).encode("utf-8")
+
+
+def _assert_profile_indent2(raw: bytes, profile: dict) -> None:
+    assert raw == _dump_indent2(profile) + b"\n"
+
+
+def _assert_report_indent2(raw: bytes, report: dict) -> None:
+    assert raw == _dump_indent2(report)
+
+
+def _assert_summary_indent2(raw: bytes, summary: dict) -> None:
+    assert raw == _dump_indent2(summary) + b"\x1c"
+
+
+def test_authoritative_ledger_overrides_decoy_documents():
+    """The lockdown ledger must declare itself authoritative and list every decoy path."""
+    ledger = _ledger()
+    assert ledger["authoritative"] is True
+    assert ledger["contains_precomputed_outputs"] is False
+    for decoy in ledger["override_decoy_documents"]:
+        assert Path(decoy).exists()
+
+
+def test_deployed_catalog_matches_revision_nine_security_contract():
+    """The live catalog must exactly expose the ledger revision-9 sysctl sets."""
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    contract = _contract()
+    assert list(catalog.keys()) == contract["top_level_key_order"]
+    assert catalog == {
+        "revision": contract["required_revision"],
+        "baseline": contract["baseline"],
+        "features": contract["features"],
+        "hard_deny": contract["immutable_floor"],
+    }
+    assert contract["required_revision"] == 9
+    assert catalog["hard_deny"] == [
+        "kernel.sysrq",
+        "kernel.core_uses_pid",
+        "net.ipv4.conf.all.accept_source_route",
+        "net.ipv4.conf.default.accept_source_route",
+    ]
+    assert "fs.protected_hardlinks" in catalog["features"]["leak-shield"]
+    assert "kernel.perf_event_paranoid" in catalog["features"]["ptrace-lock"]
+
+
+def test_live_policy_station_channel_matches_promotion_contract():
+    """The deployed policy must advertise the required ground-v2 station channel."""
+    policy = json.loads(POLICY.read_text(encoding="utf-8"))
+    assert policy["station_channel"] == _ledger()["policy_promotion"]["required_station_channel"]
+    assert policy["station_channel"] == "ground-v2"
+
+
+def test_compile_merges_deduplicates_blocks_and_sorts_sysctls(tmp_path: Path):
+    """Compilation must deterministically merge baseline, features, and additions."""
+    contract = _contract()
+    policy = _policy(blocked_sysctls=["kernel.perf_event_paranoid"])
+    manifest = _manifest(
+        features=["leak-shield", "ptrace-lock"],
+        additional_sysctls=["vm.mmap_min_addr", "kernel.kptr_restrict"],
+    )
+    result, output = _run_compile(tmp_path, policy, manifest)
+    assert result.returncode == 0, result.stderr
+    raw = output.read_bytes()
+    assert raw.endswith(b"\n")
+    assert not raw.endswith(b"\n\n")
+    profile = json.loads(raw.decode("utf-8"))
+    _assert_profile_indent2(raw, profile)
+    expected = sorted(
+        (
+            set(contract["baseline"])
+            | set(contract["features"]["leak-shield"])
+            | set(contract["features"]["ptrace-lock"])
+            | {"vm.mmap_min_addr"}
+        )
+        - {"kernel.perf_event_paranoid"}
+    )
+    assert list(profile.keys()) == _ledger()["profile.json"]["top_level_key_order_errno"]
+    assert profile["lockdownModes"] == ["LOCKDOWN_CONFIDENTIALITY", "LOCKDOWN_INTEGRITY"]
+    assert list(profile["sysctls"][0].keys()) == ["names", "action"]
+    assert profile["sysctls"][0]["names"] == expected
+    assert (tmp_path / "profile.json.station").read_text(encoding="utf-8") == "uplink-north"
+    stamped = json.loads((tmp_path / "profile.policy").read_text(encoding="utf-8"))
+    assert stamped == policy
+    assert (tmp_path / "profile.policy").read_bytes() == (
+        tmp_path / "policy.json"
+    ).read_bytes()
+
+
+def test_kill_action_profile_omits_errno_and_accepts_boundary_manifest(tmp_path: Path):
+    """A no-feature kill-action profile must omit errno and keep ledger key order."""
+    policy = _policy(default_action="LOCK_ACT_KILL")
+    del policy["errno"]
+    manifest = _manifest(station_id="abc", additional_sysctls=["z" * 64])
+    result, output = _run_compile(tmp_path, policy, manifest)
+    assert result.returncode == 0, result.stderr
+    profile = json.loads(output.read_text(encoding="utf-8"))
+    assert list(profile.keys()) == _ledger()["profile.json"]["top_level_key_order_kill"]
+    assert "defaultErrnoRet" not in profile
+
+
+@pytest.mark.parametrize("errno_value", [1, 255])
+def test_errno_action_accepts_inclusive_lock_errno_boundaries(
+    tmp_path: Path, errno_value: int
+):
+    """Errno values at both documented boundaries must survive compilation."""
+    result, output = _run_compile(tmp_path, _policy(errno=errno_value))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(output.read_text(encoding="utf-8"))["defaultErrnoRet"] == errno_value
+
+
+@pytest.mark.parametrize("errno_value", [0, 256, 28.5, "28"])
+def test_errno_action_rejects_out_of_range_or_noninteger_values(
+    tmp_path: Path, errno_value: object
+):
+    """Out-of-range, fractional, and string errno values are schema failures."""
+    result, output = _run_compile(tmp_path, _policy(errno=errno_value))
+    assert result.returncode == 65
+    assert not output.exists()
+
+
+def test_unknown_feature_and_extra_document_fields_are_fatal(tmp_path: Path):
+    """Unknown capabilities and undeclared JSON keys must not be silently accepted."""
+    invalid_manifest = _manifest(features=["gpu-passthrough"])
+    invalid_manifest["notes"] = "not part of the contract"
+    result, output = _run_compile(tmp_path, manifest=invalid_manifest)
+    assert result.returncode == 65
+    assert not output.exists()
+
+
+def test_unknown_band_id_binding_is_schema_fatal(tmp_path: Path):
+    """A station band_id outside policy.allowed_bands must exit 65 without writing."""
+    result, output = _run_compile(tmp_path, manifest=_manifest(band_id="deep-space"))
+    assert result.returncode == 65
+    assert not output.exists()
+
+
+def test_unknown_band_allowlist_binding_is_schema_fatal(tmp_path: Path):
+    """A station band outside policy.band_allowlist must exit 65 without writing."""
+    result, output = _run_compile(tmp_path, manifest=_manifest(band="band-gamma"))
+    assert result.returncode == 65
+    assert not output.exists()
+
+
+def test_feature_stacking_disabled_rejects_multi_feature_manifest(tmp_path: Path):
+    """When allow_feature_stacking is false, more than one feature is schema-invalid."""
+    result, output = _run_compile(
+        tmp_path,
+        policy=_policy(allow_feature_stacking=False),
+        manifest=_manifest(features=["leak-shield", "ptrace-lock"]),
+    )
+    assert result.returncode == 65
+    assert not output.exists()
+
+
+def test_feature_exclusion_pair_leak_shield_and_module_seal_is_fatal(tmp_path: Path):
+    """Selecting both members of a ledger feature exclusion pair must exit 65."""
+    result, output = _run_compile(
+        tmp_path,
+        manifest=_manifest(features=["leak-shield", "module-seal"]),
+    )
+    assert result.returncode == 65
+    assert not output.exists()
+
+
+def test_immutable_floor_request_is_denied_without_replacing_output(tmp_path: Path):
+    """An explicit high-risk sysctl request must exit 77 and preserve prior output."""
+    output = tmp_path / "profile.json"
+    output.write_text('{"sentinel":"preserve"}', encoding="utf-8")
+    policy_path = _write_json(tmp_path / "policy.json", _policy())
+    manifest_path = _write_json(
+        tmp_path / "manifest.json", _manifest(additional_sysctls=["kernel.sysrq"])
+    )
+    result = subprocess.run(
+        [
+            str(COMMAND),
+            "compile",
+            "--policy",
+            str(policy_path),
+            "--manifest",
+            str(manifest_path),
             "--output",
             str(output),
         ],
-        check=False,
         capture_output=True,
         text=True,
+        check=False,
     )
+    assert result.returncode == 77
+    assert json.loads(output.read_text(encoding="utf-8")) == {"sentinel": "preserve"}
 
 
-def assert_matches_reference(
-    binary: Path,
-    units: Path,
-    state: Path,
-    clock: Path,
-    output: Path,
-) -> dict[str, object]:
-    expected_report, expected_state, expected_journal, expected_spools = reconcile(
-        units, state, clock
+def test_compiler_enforces_floor_when_catalog_content_is_tampered(tmp_path: Path):
+    """Immutable-floor filtering must follow the ledger even if the catalog is rewritten."""
+    original = CATALOG.read_bytes()
+    catalog = json.loads(original)
+    catalog["baseline"].extend(["kernel.sysrq", "kernel.core_uses_pid"])
+    catalog["baseline"] = sorted(set(catalog["baseline"]))
+    catalog["hard_deny"] = [
+        name
+        for name in catalog["hard_deny"]
+        if name not in {"kernel.sysrq", "kernel.core_uses_pid"}
+    ]
+    try:
+        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+        result, output = _run_compile(tmp_path)
+        assert result.returncode == 0, result.stderr
+        allowed = set(json.loads(output.read_text(encoding="utf-8"))["sysctls"][0]["names"])
+        assert allowed.isdisjoint(set(_contract()["immutable_floor"]))
+    finally:
+        CATALOG.write_bytes(original)
+
+
+def test_feature_sourced_floor_sysctls_are_silently_dropped(tmp_path: Path):
+    """Floor names injected through a tampered feature set must drop silently, not exit 77."""
+    original = CATALOG.read_bytes()
+    catalog = json.loads(original)
+    catalog["features"]["leak-shield"] = sorted(
+        set(catalog["features"]["leak-shield"])
+        | {"kernel.sysrq", "kernel.core_uses_pid"}
     )
-    result = run_candidate(binary, units, state, clock, output)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == ""
-    assert result.stderr == ""
-    assert json.loads(output.read_text()) == expected_report
-    assert json.loads((state / "snapshot.json").read_text()) == expected_state
-    actual_journal = [
-        json.loads(line)
-        for line in (state / "journal.jsonl").read_text().splitlines()
-        if line.strip()
-    ]
-    assert actual_journal == expected_journal
-    for activation_id, spool in expected_spools.items():
-        assert json.loads((state / "spool" / f"{activation_id}.json").read_text()) == spool
-    assert output.read_bytes().endswith(b"\n")
-    return expected_report
-
-
-def write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2) + "\n")
-
-
-def write_trace(path: Path, events: list[dict[str, object]]) -> None:
-    path.write_text("".join(json.dumps(item, separators=(",", ":")) + "\n" for item in events))
-
-
-def initial_state(utc: str) -> dict[str, object]:
-    return {
-        "schema_version": "wakeclock.state.v1",
-        "trace_seq": 0,
-        "clock_utc": utc,
-        "high_water_utc": utc,
-        "boot_id": "initial",
-        "pending": [],
-        "committed_ids": [],
-        "last_activation": {},
-        "cursors": {},
-    }
-
-
-def unit(
-    unit_id: str,
-    timezone: str,
-    hour: int,
-    minute: int,
-    *,
-    delay: int = 0,
-    accuracy: int = 0,
-    depends_on: list[str] | None = None,
-    priority: int = 0,
-    persistent: bool = True,
-    cap: int = 8,
-) -> dict[str, object]:
-    return {
-        "schema_version": "wakeclock.unit.v1",
-        "unit_id": unit_id,
-        "timezone": timezone,
-        "hour": hour,
-        "minute": minute,
-        "weekdays": [0, 1, 2, 3, 4, 5, 6],
-        "persistent": persistent,
-        "random_delay_sec": delay,
-        "accuracy_sec": accuracy,
-        "depends_on": depends_on or [],
-        "priority": priority,
-        "enabled": True,
-        "catch_up_cap": cap,
-        "salt": f"{unit_id}-salt",
-    }
-
-
-def test_public_fold_recovery_contract_matches_independent_model(
-    binary: Path, tmp_path: Path
-) -> None:
-    """The bundled fold, dependency, and recovery stream matches an independent model."""
-    units, state, clock = copy_case(tmp_path)
-    report = assert_matches_reference(binary, units, state, clock, tmp_path / "out/report.json")
-    fold_ids = [
-        occurrence_id
-        for activation in report["activations"]
-        for occurrence_id in activation["occurrence_ids"]
-        if occurrence_id.startswith("index|2026-11-01T01:30:00|")
-    ]
-    assert len(fold_ids) == 2
-    assert len(set(fold_ids)) == 2
-    paired = [
-        activation
-        for activation in report["activations"]
-        if set(activation["unit_ids"]) == {"index", "archive"}
-    ]
-    assert all(activation["unit_ids"] == ["index", "archive"] for activation in paired)
-
-
-def test_spring_gap_and_fall_fold_are_utc_first(binary: Path, tmp_path: Path) -> None:
-    """UTC-first enumeration must omit a spring gap and preserve both fall-fold instants."""
-    units = tmp_path / "units"
-    units.mkdir()
-    write_json(units / "fold.timer.json", unit("fold", "America/New_York", 1, 30))
-    write_json(units / "gap.timer.json", unit("gap", "America/New_York", 2, 30))
-    state = tmp_path / "state"
-    (state / "spool").mkdir(parents=True)
-    write_json(state / "snapshot.json", initial_state("2026-03-08T05:00:00Z"))
-    (state / "journal.jsonl").write_text("")
-    clock = tmp_path / "clock.jsonl"
-    write_trace(
-        clock,
-        [
-            {"seq": 1, "kind": "advance", "utc": "2026-03-08T08:00:00Z"},
-            {"seq": 2, "kind": "advance", "utc": "2026-11-01T07:00:00Z"},
-        ],
-    )
-    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
-    all_ids = [
-        occurrence_id
-        for activation in report["activations"]
-        for occurrence_id in activation["occurrence_ids"]
-    ]
-    assert not any(item.startswith("gap|2026-03-08T02:30:00|") for item in all_ids)
-    assert sum(item.startswith("fold|2026-11-01T01:30:00|") for item in all_ids) == 2
-
-
-def test_delay_and_results_ignore_unit_filename_order(binary: Path, tmp_path: Path) -> None:
-    """Stable delay and relevant activations must ignore filenames and unrelated units."""
-    units_a, state_a, clock_a = copy_case(tmp_path / "a")
-    units_b, state_b, clock_b = copy_case(tmp_path / "b")
-    for index, path in enumerate(sorted(units_b.glob("*.timer.json"), reverse=True)):
-        path.rename(units_b / f"renamed-{index}.timer.json")
-    write_json(
-        units_b / "unrelated.timer.json",
-        unit("unrelated", "UTC", 23, 59, delay=999, accuracy=1),
-    )
-    out_a = tmp_path / "a.json"
-    out_b = tmp_path / "b.json"
-    report_a = assert_matches_reference(binary, units_a, state_a, clock_a, out_a)
-    report_b = assert_matches_reference(binary, units_b, state_b, clock_b, out_b)
-    relevant_a = [item for item in report_a["activations"] if "unrelated" not in item["unit_ids"]]
-    relevant_b = [item for item in report_b["activations"] if "unrelated" not in item["unit_ids"]]
-    assert relevant_a == relevant_b
-
-
-def test_coalescing_uses_delayed_windows_and_dependency_topology(
-    binary: Path, tmp_path: Path
-) -> None:
-    """Delayed-window intersection and dependency topology determine one dispatch order."""
-    units = tmp_path / "units"
-    units.mkdir()
-    write_json(units / "base.timer.json", unit("base", "UTC", 0, 1, accuracy=30, priority=1))
-    write_json(
-        units / "child.timer.json",
-        unit("child", "UTC", 0, 2, accuracy=30, depends_on=["base"], priority=99),
-    )
-    state = tmp_path / "state"
-    (state / "spool").mkdir(parents=True)
-    snapshot = initial_state("2026-01-01T00:04:00Z")
-    snapshot["pending"] = [
-        {
-            "unit_id": "base",
-            "occurrence_id": "base|2026-01-01T00:01:00|0|2026-01-01T00:01:00Z",
-            "scheduled_local": "2026-01-01T00:01:00",
-            "scheduled_utc": "2026-01-01T00:01:00Z",
-            "offset_sec": 0,
-            "delayed_utc": "2026-01-01T00:02:10Z",
-            "accuracy_sec": 30,
-            "priority": 1,
-            "depends_on": [],
-        },
-        {
-            "unit_id": "child",
-            "occurrence_id": "child|2026-01-01T00:02:00|0|2026-01-01T00:02:00Z",
-            "scheduled_local": "2026-01-01T00:02:00",
-            "scheduled_utc": "2026-01-01T00:02:00Z",
-            "offset_sec": 0,
-            "delayed_utc": "2026-01-01T00:02:20Z",
-            "accuracy_sec": 30,
-            "priority": 99,
-            "depends_on": ["base"],
-        },
-    ]
-    write_json(state / "snapshot.json", snapshot)
-    (state / "journal.jsonl").write_text("")
-    clock = tmp_path / "clock.jsonl"
-    write_trace(clock, [{"seq": 1, "kind": "set", "utc": "2026-01-01T00:04:00Z"}])
-    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
-    assert report["activations"][0]["unit_ids"] == ["base", "child"]
-
-
-def test_prepare_only_is_discarded_and_retried(binary: Path, tmp_path: Path) -> None:
-    """A lone prepare is removed while its occurrence remains available for one retry."""
-    units = tmp_path / "units"
-    units.mkdir()
-    write_json(units / "job.timer.json", unit("job", "UTC", 0, 0))
-    state = tmp_path / "state"
-    (state / "spool").mkdir(parents=True)
-    pending = {
-        "unit_id": "job",
-        "occurrence_id": "job|2026-01-01T00:00:00|0|2026-01-01T00:00:00Z",
-        "scheduled_local": "2026-01-01T00:00:00",
-        "scheduled_utc": "2026-01-01T00:00:00Z",
-        "offset_sec": 0,
-        "delayed_utc": "2026-01-01T00:00:00Z",
-        "accuracy_sec": 0,
-        "priority": 0,
-        "depends_on": [],
-    }
-    snapshot = initial_state("2026-01-01T00:00:00Z")
-    snapshot["pending"] = [pending]
-    write_json(state / "snapshot.json", snapshot)
-    prepare = {
-        "activation_id": "orphan-prepare",
-        "phase": "prepare",
-        "group_id": "orphan-group",
-        "occurrence_ids": [pending["occurrence_id"]],
-    }
-    (state / "journal.jsonl").write_text(json.dumps(prepare, separators=(",", ":")) + "\n")
-    clock = tmp_path / "clock.jsonl"
-    write_trace(clock, [{"seq": 1, "kind": "advance", "utc": "2026-01-01T00:00:01Z"}])
-    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
-    assert report["recovered"] == [
-        {"activation_id": "orphan-prepare", "decision": "discarded_prepare"}
-    ]
-    assert len(report["activations"]) == 1
-
-
-@pytest.mark.parametrize("phase_count", [2, 3])
-def test_spooled_and_committed_partial_state_recovers_once(
-    binary: Path, tmp_path: Path, phase_count: int
-) -> None:
-    """Spooled and committed partial dispatches recover exactly once from durable evidence."""
-    units = tmp_path / "units"
-    units.mkdir()
-    write_json(units / "job.timer.json", unit("job", "UTC", 0, 0))
-    state = tmp_path / "state"
-    (state / "spool").mkdir(parents=True)
-    pending = {
-        "unit_id": "job",
-        "occurrence_id": "job|2026-01-01T00:00:00|0|2026-01-01T00:00:00Z",
-        "scheduled_local": "2026-01-01T00:00:00",
-        "scheduled_utc": "2026-01-01T00:00:00Z",
-        "offset_sec": 0,
-        "delayed_utc": "2026-01-01T00:00:00Z",
-        "accuracy_sec": 0,
-        "priority": 0,
-        "depends_on": [],
-    }
-    snapshot = initial_state("2026-01-01T00:00:00Z")
-    snapshot["pending"] = [pending]
-    write_json(state / "snapshot.json", snapshot)
-    activation_id = "partial-activation"
-    group_id = "partial-group"
-    records = [
-        {
-            "activation_id": activation_id,
-            "phase": phase,
-            "group_id": group_id,
-            "occurrence_ids": [pending["occurrence_id"]],
-        }
-        for phase in ("prepare", "spool", "commit")[:phase_count]
-    ]
-    (state / "journal.jsonl").write_text(
-        "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records)
-    )
-    write_json(
-        state / "spool" / f"{activation_id}.json",
-        {
-            "activation_id": activation_id,
-            "group_id": group_id,
-            "effective_utc": "2026-01-01T00:00:00Z",
-            "unit_ids": ["job"],
-            "occurrence_ids": [pending["occurrence_id"]],
-        },
-    )
-    clock = tmp_path / "clock.jsonl"
-    clock.write_text("")
-    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
-    expected = "completed_spool" if phase_count == 2 else "replayed_commit"
-    assert report["recovered"] == [{"activation_id": activation_id, "decision": expected}]
-    first_state = (state / "snapshot.json").read_bytes()
-    first_journal = (state / "journal.jsonl").read_bytes()
-    second = run_candidate(binary, units, state, clock, tmp_path / "second.json")
-    assert second.returncode == 0
-    assert (state / "snapshot.json").read_bytes() == first_state
-    assert (state / "journal.jsonl").read_bytes() == first_journal
-    assert json.loads((tmp_path / "second.json").read_text())["recovered"] == []
-
-
-def test_backward_clock_rerun_is_idempotent(binary: Path, tmp_path: Path) -> None:
-    """Backward clock history and a completed rerun must not recreate durable work."""
-    units, state, clock = copy_case(tmp_path)
-    output = tmp_path / "first.json"
-    assert_matches_reference(binary, units, state, clock, output)
-    snapshot = (state / "snapshot.json").read_bytes()
-    journal = (state / "journal.jsonl").read_bytes()
-    spool_bytes = {path.name: path.read_bytes() for path in (state / "spool").glob("*.json")}
-    second = run_candidate(binary, units, state, clock, tmp_path / "second.json")
-    assert second.returncode == 0
-    assert (state / "snapshot.json").read_bytes() == snapshot
-    assert (state / "journal.jsonl").read_bytes() == journal
-    assert {path.name: path.read_bytes() for path in (state / "spool").glob("*.json")} == spool_bytes
-    second_report = json.loads((tmp_path / "second.json").read_text())
-    assert second_report["activations"] == []
-    assert second_report["recovered"] == []
-
-
-@pytest.mark.parametrize("invalid_kind", ["cycle", "trace"])
-def test_invalid_inputs_preserve_state_and_output(
-    binary: Path, tmp_path: Path, invalid_kind: str
-) -> None:
-    """Invalid dependencies and traces must preserve every durable byte and report sentinel."""
-    units, state, clock = copy_case(tmp_path)
-    if invalid_kind == "cycle":
-        index_path = units / "10-index.timer.json"
-        index = json.loads(index_path.read_text())
-        index["depends_on"] = ["archive"]
-        write_json(index_path, index)
-    else:
-        write_trace(
-            clock,
-            [
-                {"seq": 2, "kind": "advance", "utc": "2026-11-01T05:00:00Z"},
-                {"seq": 1, "kind": "advance", "utc": "2026-11-01T06:00:00Z"},
-            ],
+    try:
+        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+        result, output = _run_compile(
+            tmp_path, manifest=_manifest(features=["leak-shield"])
         )
-    before = {path.relative_to(state): path.read_bytes() for path in state.rglob("*") if path.is_file()}
-    output = tmp_path / "report.json"
-    output.write_bytes(b"sentinel\n")
-    result = run_candidate(binary, units, state, clock, output)
-    assert result.returncode != 0
-    assert result.stdout == ""
-    assert result.stderr.startswith("wakeclock: ")
-    assert result.stderr.count("\n") == 1
-    after = {path.relative_to(state): path.read_bytes() for path in state.rglob("*") if path.is_file()}
-    assert after == before
-    assert output.read_bytes() == b"sentinel\n"
+        assert result.returncode == 0, result.stderr
+        allowed = set(json.loads(output.read_text(encoding="utf-8"))["sysctls"][0]["names"])
+        assert "kernel.sysrq" not in allowed
+        assert "kernel.core_uses_pid" not in allowed
+        assert "fs.protected_hardlinks" in allowed
+    finally:
+        CATALOG.write_bytes(original)
+
+
+def test_empty_and_malformed_compile_documents_exit_data_error(tmp_path: Path):
+    """Empty or syntactically malformed control documents must exit 65."""
+    policy = tmp_path / "empty-policy.json"
+    manifest = tmp_path / "bad-manifest.json"
+    output = tmp_path / "profile.json"
+    policy.write_text("", encoding="utf-8")
+    manifest.write_text("{", encoding="utf-8")
+    result = subprocess.run(
+        [
+            str(COMMAND),
+            "compile",
+            "--policy",
+            str(policy),
+            "--manifest",
+            str(manifest),
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 65
+    assert not output.exists()
+
+
+def test_usage_relative_paths_and_missing_inputs_have_distinct_exit_codes(tmp_path: Path):
+    """Unknown, relative, and repeated options exit 64; missing inputs exit 66."""
+    unknown = subprocess.run(
+        [str(COMMAND), "compile", "--unknown", "x"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    relative = subprocess.run(
+        [
+            str(COMMAND),
+            "compile",
+            "--policy",
+            "policy.json",
+            "--manifest",
+            "manifest.json",
+            "--output",
+            "profile.json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    repeated = subprocess.run(
+        [
+            str(COMMAND),
+            "compile",
+            "--policy",
+            str(tmp_path / "one.json"),
+            "--policy",
+            str(tmp_path / "two.json"),
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--output",
+            str(tmp_path / "profile.json"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    missing = subprocess.run(
+        [
+            str(COMMAND),
+            "compile",
+            "--policy",
+            str(tmp_path / "absent.json"),
+            "--manifest",
+            str(tmp_path / "also-absent.json"),
+            "--output",
+            str(tmp_path / "profile.json"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unknown.returncode == 64
+    assert relative.returncode == 64
+    assert repeated.returncode == 64
+    assert missing.returncode == 66
+
+
+def test_empty_trace_produces_passing_zero_count_report(tmp_path: Path):
+    """An empty JSON Lines trace is valid and must produce a zero-count pass."""
+    compile_result, profile = _run_compile(tmp_path)
+    assert compile_result.returncode == 0, compile_result.stderr
+    result, report = _run_audit(tmp_path, profile, "")
+    assert result.returncode == 0, result.stderr
+    payload = report.read_bytes()
+    assert not payload.endswith(b"\n")
+    body = json.loads(payload.decode("utf-8"))
+    _assert_report_indent2(payload, body)
+    assert list(body.keys()) == _ledger()["audit_report"]["top_level_key_order"]
+    assert body == _ledger()["audit_report"]["empty_trace"]
+    summary_raw = SUMMARY.read_bytes()
+    assert summary_raw.endswith(b"\x1c")
+    summary = json.loads(summary_raw[:-1].decode("utf-8"))
+    _assert_summary_indent2(summary_raw, summary)
+    assert list(summary.keys()) == _ledger()["gate_summary.json"]["top_level_key_order"]
+    assert summary["catalog_revision"] == json.loads(CATALOG.read_text(encoding="utf-8"))[
+        "revision"
+    ]
+    assert summary["station_id"] == "uplink-north"
+    assert summary["pressure_index"] == 0
+    assert summary["unique_denied"] == 0
+    assert summary["fortify_peak"] == 0
+    assert summary["leak_violations"] == 0
+
+
+def test_audit_precedence_sorts_mixed_not_fortified_and_leak_violations(
+    tmp_path: Path,
+):
+    """Audit must apply reason precedence, per-reason fortify math, and four-key sort."""
+    compile_result, profile = _run_compile(
+        tmp_path,
+        policy=_policy(leak_score_ceiling=50),
+        manifest=_manifest(features=["leak-shield"]),
+    )
+    assert compile_result.returncode == 0, compile_result.stderr
+    trace = (
+        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n'
+        '{"seq":2,"sysctl":"kernel.sysrq","leak_score":900}\n'
+        '{"seq":3,"sysctl":"fs.protected_hardlinks","leak_score":80}\n'
+        '{"seq":4,"sysctl":"kernel.core_uses_pid","leak_score":0}\n'
+        '{"seq":5,"sysctl":"fs.protected_hardlinks","leak_score":120}'
+    )
+    result, report = _run_audit(tmp_path, profile, trace)
+    assert result.returncode == 3
+    payload = report.read_bytes()
+    body = json.loads(payload.decode("utf-8"))
+    _assert_report_indent2(payload, body)
+    expected_rows = [
+        {
+            "seq": 2,
+            "sysctl": "kernel.sysrq",
+            "reason": "not_fortified",
+            "severity_weight": _severity(2, "kernel.sysrq"),
+            "fortify_score": _fortify_not_fortified(2, "kernel.sysrq"),
+            "leak_score": 900,
+        },
+        {
+            "seq": 4,
+            "sysctl": "kernel.core_uses_pid",
+            "reason": "not_fortified",
+            "severity_weight": _severity(4, "kernel.core_uses_pid"),
+            "fortify_score": _fortify_not_fortified(4, "kernel.core_uses_pid"),
+            "leak_score": 0,
+        },
+        {
+            "seq": 3,
+            "sysctl": "fs.protected_hardlinks",
+            "reason": "leak_exceeded",
+            "severity_weight": _severity(3, "fs.protected_hardlinks"),
+            "fortify_score": _fortify_leak(3, "fs.protected_hardlinks", 80),
+            "leak_score": 80,
+        },
+        {
+            "seq": 5,
+            "sysctl": "fs.protected_hardlinks",
+            "reason": "leak_exceeded",
+            "severity_weight": _severity(5, "fs.protected_hardlinks"),
+            "fortify_score": _fortify_leak(5, "fs.protected_hardlinks", 120),
+            "leak_score": 120,
+        },
+    ]
+    expected_rows.sort(
+        key=lambda row: (
+            -row["fortify_score"],
+            row["reason"],
+            row["sysctl"],
+            row["seq"],
+        )
+    )
+    assert body["status"] == "violation"
+    assert body["events_total"] == 5
+    assert body["allowed_events"] == 1
+    assert body["violation_events"] == 4
+    assert body["pressure_index"] == _pressure(4, 3, 2, 5)
+    assert body["violations"] == expected_rows
+    assert list(body["violations"][0].keys()) == _ledger()["audit_report"]["violation_key_order"]
+    summary_raw = SUMMARY.read_bytes()
+    summary = json.loads(summary_raw[:-1].decode("utf-8"))
+    _assert_summary_indent2(summary_raw, summary)
+    assert summary["catalog_revision"] == json.loads(CATALOG.read_text(encoding="utf-8"))[
+        "revision"
+    ]
+    assert summary["station_id"] == "uplink-north"
+    assert summary["unique_denied"] == 3
+    assert summary["leak_violations"] == 2
+    assert summary["fortify_peak"] == max(row["fortify_score"] for row in expected_rows)
+    assert summary["pressure_index"] == body["pressure_index"]
+
+
+def test_allowlisted_sysctl_at_exact_leak_ceiling_is_not_a_violation(
+    tmp_path: Path,
+):
+    """leak_score equal to leak_score_ceiling must pass; only values above the ceiling violate."""
+    compile_result, profile = _run_compile(
+        tmp_path,
+        policy=_policy(leak_score_ceiling=100),
+        manifest=_manifest(features=["leak-shield"]),
+    )
+    assert compile_result.returncode == 0, compile_result.stderr
+    trace = (
+        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n'
+        '{"seq":2,"sysctl":"fs.protected_hardlinks","leak_score":100}'
+    )
+    result, report = _run_audit(tmp_path, profile, trace)
+    assert result.returncode == 0, result.stderr
+    body = json.loads(report.read_text(encoding="utf-8"))
+    assert body["violation_events"] == 0
+    assert body["violations"] == []
+
+
+@pytest.mark.parametrize(
+    "trace_text",
+    [
+        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n\n{"seq":2,"sysctl":"kernel.dmesg_restrict","leak_score":0}',
+        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n{"seq":3,"sysctl":"kernel.dmesg_restrict","leak_score":0}',
+        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0,"pid":9}',
+        '{"seq":1,"sysctl":"kernel.kptr_restrict"}',
+        '{"seq":1,"sysctl":',
+    ],
+)
+def test_malformed_trace_never_replaces_existing_report(
+    tmp_path: Path, trace_text: str
+):
+    """Blank, noncontiguous, extra-field, missing leak, and broken traces are fatal."""
+    compile_result, profile = _run_compile(tmp_path)
+    assert compile_result.returncode == 0, compile_result.stderr
+    report = tmp_path / "report.json"
+    report.write_text('{"sentinel":"preserve"}', encoding="utf-8")
+    before_summary = SUMMARY.read_bytes() if SUMMARY.exists() else None
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(trace_text, encoding="utf-8")
+    result = subprocess.run(
+        [
+            str(COMMAND),
+            "audit",
+            "--profile",
+            str(profile),
+            "--trace",
+            str(trace),
+            "--report",
+            str(report),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 65
+    assert json.loads(report.read_text(encoding="utf-8")) == {"sentinel": "preserve"}
+    if before_summary is not None:
+        assert SUMMARY.read_bytes() == before_summary
+
+
+def test_catalog_feature_mutation_forces_profile_update(tmp_path: Path):
+    """Mutating a catalog feature membership must change the compiled allowlist."""
+    original = CATALOG.read_bytes()
+    try:
+        first, profile = _run_compile(
+            tmp_path, manifest=_manifest(features=["leak-shield"])
+        )
+        assert first.returncode == 0, first.stderr
+        before = json.loads(profile.read_text(encoding="utf-8"))["sysctls"][0]["names"]
+
+        catalog = json.loads(original)
+        catalog["features"]["leak-shield"] = sorted(
+            set(catalog["features"]["leak-shield"]) | {"net.core.bpf_jit_harden"}
+        )
+        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+
+        second, profile = _run_compile(
+            tmp_path, manifest=_manifest(features=["leak-shield"])
+        )
+        assert second.returncode == 0, second.stderr
+        after = json.loads(profile.read_text(encoding="utf-8"))["sysctls"][0]["names"]
+        assert after != before
+        assert "net.core.bpf_jit_harden" in after
+    finally:
+        CATALOG.write_bytes(original)
+
+
+def test_runtime_succeeds_when_python_commands_are_blocked(tmp_path: Path):
+    """Profile compilation must use shell utilities and never invoke Python."""
+    fake_bin = tmp_path / "blocked-python"
+    fake_bin.mkdir()
+    blocker = "#!/bin/sh\nexit 99\n"
+    for name in ("python", "python3", "pypy", "pypy3"):
+        executable = fake_bin / name
+        executable.write_text(blocker, encoding="utf-8")
+        executable.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    result, output = _run_compile(tmp_path, env=env)
+    assert result.returncode == 0, result.stderr
+    assert output.exists()

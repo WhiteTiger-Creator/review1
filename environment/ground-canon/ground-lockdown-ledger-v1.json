@@ -1,0 +1,345 @@
+{
+  "ledger_name": "ground-lockdown-ledger-v1",
+  "spec_revision": 9,
+  "authoritative": true,
+  "contains_precomputed_outputs": false,
+  "override_decoy_documents": [
+    "/app/docs/DRAFT_LOCKDOWN_v0.json",
+    "/app/docs/sample-layout-hint.json",
+    "/app/docs/OPS_NOTES.md",
+    "/app/control/last-fortify.json",
+    "/app/ground-canon/ground-lockdown-rules-v1.json"
+  ],
+  "cli": {
+    "command": "/app/kernel-fortify",
+    "modes": {
+      "compile": [
+        "--policy",
+        "--manifest",
+        "--output"
+      ],
+      "audit": [
+        "--profile",
+        "--trace",
+        "--report"
+      ]
+    },
+    "paths_must_be_absolute": true,
+    "options_required_once": true,
+    "option_order": "any_order_within_subcommand",
+    "exit_codes": {
+      "success": 0,
+      "audit_violation": 3,
+      "usage": 64,
+      "invalid_document": 65,
+      "missing_input": 66,
+      "immutable_floor": 77
+    },
+    "immutable_floor_exit_77": "only when manifest.additional_sysctls explicitly names a ledger immutable_floor sysctl; floor names present only via tampered catalog.baseline or catalog.features are silently excluded and compile exits 0"
+  },
+  "runtime_constraints": {
+    "shell_tooling_only": true,
+    "python_forbidden": true
+  },
+  "policy_promotion": {
+    "required_station_channel": "ground-v2"
+  },
+  "catalog_contract": {
+    "path": "/app/config/sysctl-module-catalog.json",
+    "required_revision": 9,
+    "closed_schema": true,
+    "permitted_keys": [
+      "revision",
+      "baseline",
+      "features",
+      "hard_deny"
+    ],
+    "top_level_key_order": [
+      "revision",
+      "baseline",
+      "features",
+      "hard_deny"
+    ],
+    "promotion": {
+      "revision": "set to catalog_contract.required_revision",
+      "baseline": "exact copy of catalog_contract.baseline",
+      "features": "exact copy of catalog_contract.features",
+      "hard_deny": "exact copy of catalog_contract.immutable_floor in ledger order; never preserve pre-promotion hard_deny"
+    },
+    "runtime_trust": {
+      "baseline": "live_catalog",
+      "features": "live_catalog",
+      "hard_deny": "informational_only_at_runtime",
+      "immutable_floor": "ledger_catalog_contract_immutable_floor_always"
+    },
+    "baseline": [
+      "kernel.kptr_restrict",
+      "kernel.dmesg_restrict",
+      "kernel.yama.ptrace_scope",
+      "kernel.unprivileged_bpf_disabled"
+    ],
+    "features": {
+      "leak-shield": [
+        "fs.protected_hardlinks",
+        "fs.protected_symlinks",
+        "kernel.kptr_restrict"
+      ],
+      "ptrace-lock": [
+        "kernel.yama.ptrace_scope",
+        "kernel.perf_event_paranoid"
+      ],
+      "module-seal": [
+        "kernel.modules_disabled",
+        "kernel.printk"
+      ]
+    },
+    "immutable_floor": [
+      "kernel.sysrq",
+      "kernel.core_uses_pid",
+      "net.ipv4.conf.all.accept_source_route",
+      "net.ipv4.conf.default.accept_source_route"
+    ],
+    "immutable_floor_source": "ledger_only_even_if_catalog_tampered",
+    "feature_exclusion_pairs": [
+      [
+        "leak-shield",
+        "module-seal"
+      ]
+    ]
+  },
+  "policy_schema": {
+    "version": 1,
+    "closed_schema": true,
+    "permitted_keys_errno": [
+      "version",
+      "default_action",
+      "errno",
+      "station_channel",
+      "lockdown_modes",
+      "blocked_sysctls",
+      "allowed_bands",
+      "allow_feature_stacking",
+      "band_allowlist",
+      "leak_score_ceiling"
+    ],
+    "permitted_keys_kill": [
+      "version",
+      "default_action",
+      "station_channel",
+      "lockdown_modes",
+      "blocked_sysctls",
+      "allowed_bands",
+      "allow_feature_stacking",
+      "band_allowlist",
+      "leak_score_ceiling"
+    ],
+    "default_actions": [
+      "LOCK_ACT_ERRNO",
+      "LOCK_ACT_KILL"
+    ],
+    "lockdown_modes": [
+      "LOCKDOWN_INTEGRITY",
+      "LOCKDOWN_CONFIDENTIALITY",
+      "LOCKDOWN_NONE"
+    ],
+    "allowed_bands": "non-empty unique lowercase kebab-case band ids, length 2 to 24",
+    "band_allowlist": "non-empty unique lowercase kebab-case band ids, length 2 to 24",
+    "allow_feature_stacking": "JSON boolean; when false, manifests with more than one feature are schema-invalid (exit 65)",
+    "leak_score_ceiling": "JSON integer inclusive 0..100000; leak_score above this ceiling is leak_exceeded when the sysctl is otherwise fortified",
+    "station_channel": "must equal policy_promotion.required_station_channel after promotion",
+    "errno": {
+      "type": "json_integer",
+      "min": 1,
+      "max": 255,
+      "inclusive": true,
+      "reject_fractional": true,
+      "reject_string": true
+    },
+    "errno_range": {
+      "min": 1,
+      "max": 255
+    },
+    "errno_required_for": "LOCK_ACT_ERRNO"
+  },
+  "manifest_schema": {
+    "closed_schema": true,
+    "permitted_keys": [
+      "station_id",
+      "band_id",
+      "band",
+      "features",
+      "additional_sysctls"
+    ],
+    "station_id": "lowercase kebab-case, length 3 to 48",
+    "band_id": "must exactly match one entry in policy.allowed_bands",
+    "band": "must exactly match one entry in policy.band_allowlist",
+    "features": "unique names present in catalog.features; min_length 0 (empty array is valid); length may exceed 1 only when policy.allow_feature_stacking is true; must not include any ledger feature_exclusion_pairs together",
+    "additional_sysctls": "at most 6 unique sysctl names matching ^[a-z][a-z0-9._]{0,63}$"
+  },
+  "compile_merge_order": [
+    "catalog.baseline",
+    "union of catalog.features for each requested feature",
+    "manifest.additional_sysctls",
+    "remove duplicates",
+    "remove policy.blocked_sysctls",
+    "remove ledger immutable_floor"
+  ],
+  "compile_side_effects": {
+    "station_stamp": "write UTF-8 station_id bytes to `<output_path>.station` with no trailing newline",
+    "station_stamp_trailing_newline": false,
+    "policy_stamp": "copy the compile --policy file to `<output_path_without_.json>.policy` for audit leak_score_ceiling lookup"
+  },
+  "profile.json": {
+    "closed_schema": true,
+    "top_level_key_order_errno": [
+      "defaultAction",
+      "defaultErrnoRet",
+      "lockdownModes",
+      "sysctls"
+    ],
+    "top_level_key_order_kill": [
+      "defaultAction",
+      "lockdownModes",
+      "sysctls"
+    ],
+    "lockdown_modes_sort": "ascending lexical",
+    "sysctls": {
+      "single_group": true,
+      "action": "LOCK_ACT_ALLOW",
+      "names_sort": "ascending lexical",
+      "group_key_order": [
+        "names",
+        "action"
+      ]
+    },
+    "serialization": {
+      "indent_spaces": 2,
+      "ensure_ascii": true,
+      "trailing_newline": true
+    }
+  },
+  "audit_report": {
+    "closed_schema": true,
+    "top_level_key_order": [
+      "status",
+      "events_total",
+      "allowed_events",
+      "violation_events",
+      "pressure_index",
+      "violations"
+    ],
+    "violation_key_order": [
+      "seq",
+      "sysctl",
+      "reason",
+      "severity_weight",
+      "fortify_score",
+      "leak_score"
+    ],
+    "violation_reason_precedence": [
+      "not_fortified",
+      "leak_exceeded"
+    ],
+    "status_values": {
+      "pass": "pass",
+      "violation": "violation"
+    },
+    "empty_trace": {
+      "status": "pass",
+      "events_total": 0,
+      "allowed_events": 0,
+      "violation_events": 0,
+      "pressure_index": 0,
+      "violations": []
+    },
+    "sorting": {
+      "primary": {
+        "field": "fortify_score",
+        "direction": "descending"
+      },
+      "secondary": {
+        "field": "reason",
+        "direction": "ascending"
+      },
+      "tertiary": {
+        "field": "sysctl",
+        "direction": "ascending"
+      },
+      "quaternary": {
+        "field": "seq",
+        "direction": "ascending"
+      }
+    },
+    "severity_weight": {
+      "formula": "floor((sysctl_byte_length * 37 + seq * 11) / 5)",
+      "rounding": "truncate_toward_zero"
+    },
+    "fortify_score": {
+      "not_fortified": "floor((severity_weight * 43 + seq * 17) / 4)",
+      "leak_exceeded": "floor((severity_weight * 23 + leak_score + seq * 5) / 3)",
+      "rounding": "truncate_toward_zero"
+    },
+    "pressure_index": {
+      "formula": "floor((violation_events * 100 + unique_denied * 31 + leak_violations * 13) / max(events_total, 1))",
+      "rounding": "truncate_toward_zero",
+      "unique_denied": "count of distinct violation sysctl names",
+      "leak_violations": "count of violations with reason leak_exceeded"
+    },
+    "serialization": {
+      "indent_spaces": 2,
+      "ensure_ascii": true,
+      "trailing_newline": false
+    }
+  },
+  "gate_summary.json": {
+    "path": "/app/output/gate_summary.json",
+    "written_by": "audit",
+    "closed_schema": true,
+    "top_level_key_order": [
+      "catalog_revision",
+      "station_id",
+      "events_total",
+      "allowed_events",
+      "violation_events",
+      "unique_denied",
+      "pressure_index",
+      "fortify_peak",
+      "leak_violations"
+    ],
+    "field_sources": {
+      "catalog_revision": "/app/config/sysctl-module-catalog.json -> revision",
+      "station_id": "read UTF-8 text from `<profile_path>.station` stamp written by compile; if missing use unknown",
+      "events_total": "audit_report.events_total",
+      "allowed_events": "audit_report.allowed_events",
+      "violation_events": "audit_report.violation_events",
+      "unique_denied": "distinct violation sysctl names",
+      "pressure_index": "audit_report.pressure_index",
+      "fortify_peak": "max fortify_score across violations, or 0 when none",
+      "leak_violations": "count of violations with reason leak_exceeded"
+    },
+    "serialization": {
+      "indent_spaces": 2,
+      "ensure_ascii": true,
+      "trailing_newline": false,
+      "final_byte": "0x1c"
+    }
+  },
+  "trace_schema": {
+    "format": "jsonl",
+    "closed_schema": true,
+    "blank_lines": "fatal",
+    "permitted_keys": [
+      "seq",
+      "sysctl",
+      "leak_score"
+    ],
+    "record_keys_only": [
+      "seq",
+      "sysctl",
+      "leak_score"
+    ],
+    "seq": "contiguous positive integers starting at 1",
+    "sysctl": "^[a-z][a-z0-9._]{0,63}$",
+    "leak_score": "JSON integer >= 0"
+  }
+}

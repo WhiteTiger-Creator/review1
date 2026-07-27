@@ -1,0 +1,10 @@
+{
+  "station_id": "uplink-north",
+  "band_id": "uplink",
+  "band": "band-alpha",
+  "features": [
+    "leak-shield",
+    "ptrace-lock"
+  ],
+  "additional_sysctls": []
+}

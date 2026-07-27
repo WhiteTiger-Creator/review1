@@ -1,0 +1,8 @@
+{
+  "revision": 2,
+  "baseline": [
+    "vm.swappiness"
+  ],
+  "hard_deny": [],
+  "warning": "draft only"
+}

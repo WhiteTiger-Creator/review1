@@ -1,0 +1,9 @@
+{
+  "title": "draft lockdown rules (non-authoritative)",
+  "revision": 4,
+  "hard_deny": [
+    "floppy",
+    "pcspkr"
+  ],
+  "note": "historical rehearsal draft; do not use for admission"
+}

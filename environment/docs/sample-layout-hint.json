@@ -1,0 +1,7 @@
+{
+  "hint": "put outputs under /tmp/fortify-out",
+  "modes": [
+    "preview",
+    "dry-run"
+  ]
+}
