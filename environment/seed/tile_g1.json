@@ -1,0 +1,36 @@
+{
+  "gen": 1,
+  "note": "stable",
+  "entries": [
+    {
+      "module_path": "example.com/lib/root",
+      "version": "v1.0.0",
+      "sum": "baf5744cdfa03fa361e3b78aef48b463234a3272caa78edf958b94a12025a7a1"
+    },
+    {
+      "module_path": "example.com/lib/bind",
+      "version": "v1.2.0",
+      "sum": "db5c83cbb08b5cc03b5d2a40e81e91b62121fb67c86546aec08ba39e3e51c8f7"
+    },
+    {
+      "module_path": "example.com/lib/a7x",
+      "version": "v0.3.0",
+      "sum": "e821d31270c555d74348ffcc3fafbef9dc99a09e2a5a2da7c444bef818da999a"
+    },
+    {
+      "module_path": "example.com/lib/b2x",
+      "version": "v0.4.0",
+      "sum": "445784422ae07c1ebaa29ab8def8811583ec7188fdfea11ada548812c0228e5b"
+    },
+    {
+      "module_path": "example.com/lib/legacy",
+      "version": "v1.0.0",
+      "sum": "39b694188a4fb32c77aa9403d645be81b07ff71eee604856df1becaf1a04b1a0"
+    },
+    {
+      "module_path": "example.com/lib/legacy/v2",
+      "version": "v2.0.0",
+      "sum": "1e4cf630b0d7cdf5b6d564e5ed791995db0bd7c3ef177f35bac4dc0b7cfc4036"
+    }
+  ]
+}
