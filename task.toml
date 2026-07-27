@@ -5,31 +5,26 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "build-and-dependency-management"
-subcategories = []
-number_of_milestones = 0
+tags = ["bundler", "gemindex", "lockfile", "offline-resolve", "journal-recovery", "checkpoint-resume"]
+languages = ["ruby", "yaml"]
 codebase_size = "small"
-languages = ["rust", "bash"]
-tags = [
-  "content-addressed-artifacts",
-  "vendored-build",
-  "generation-retention",
-  "cargo",
-  "garbage-collection",
-]
-expert_time_estimate_min = 270
-junior_time_estimate_min = 600
+number_of_milestones = 0
+subcategories = ["tool_specific"]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 480
+
+[reference_pattern]
+justification_if_none = "No promoted reference task in docs/reference_tasks/index.json matches Ruby Bundler gemindex lock-journal mid-horizon recovery dossiers; agent brief reports none promoted."
 
 [agent]
 timeout_sec = 1800
 
 [verifier]
-timeout_sec = 1200
+timeout_sec = 900
 
 [environment]
-build_timeout_sec = 900
+allow_internet = false
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
-storage_mb = 12288
-gpus = 0
-gpu_types = []
-allow_internet = false
+storage_mb = 10240

@@ -1,7 +1,0 @@
-[daemon]
-listen = "/run/rstore.sock"
-store_root = "/var/lib/mint"
-max_concurrent_gc = 1
-
-[daemon.logging]
-level = "info"

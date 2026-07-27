@@ -1,0 +1,39 @@
+Offline Bundler gemindex lock-journal recovery - operator commands
+
+Working directory is /app.
+Environment root is /app/environment. Export KW_ROOT to /app/environment if needed.
+Output directory is /app/output. Export KW_OUT to /app/output if needed.
+
+No gem rebuild is required. Ruby resolve stages load directly from the offline toolchain.
+
+Full dependency resolve / lock-closure
+  /app/environment/tools/kw_run
+
+Mid-horizon checkpoint (writes restart.bin only; cut must be in 1 through n-1)
+  /app/environment/tools/kw_run --mode split_a --cut 4
+
+Resume from restart and emit dossier plus transcript
+  /app/environment/tools/kw_run --mode split_b
+
+Optional alternate restart path
+  /app/environment/tools/kw_run --mode split_b --resume /app/output/restart.bin
+
+Gate-first optional-dependency activation is the default. To reverse optional-dep class ordering
+  /app/environment/tools/kw_run --sides-first
+  /app/environment/tools/kw_run --mode split_a --cut 4 --sides-first
+  /app/environment/tools/kw_run --mode split_b --sides-first
+
+Optional walk-base override (integer). When set, replaces training_walk_base for the resolve walk and for dossier reloc_off / bind seals. On split_b, also rebases completed rows from restart.bin. Held-out slice bases in extra_mtx.yaml are unchanged.
+  With KW_WALK_BASE set to 6144, run /app/environment/tools/kw_run
+  With KW_WALK_BASE set to 6144, run /app/environment/tools/kw_run --mode split_b
+
+Success exit code is 0. Artifacts include
+  /app/output/dossier.json
+  /app/output/replay.jsonl
+  /app/output/restart.bin   (split_a)
+
+Do not fetch gems from rubygems.org. All gemindex and lock-overlay fixtures are local under /app/environment.
+
+Helper /app/environment/tools/hex_dgst prints the hex digest of stdin (used by offline resolve checks).
+
+Normative resolve mesh starts at /app/environment/docs/formal_rules.md.
