@@ -1,0 +1,6 @@
+{
+  "batches": [
+    {"batch_id": "B100", "facility_id": "MFG-A", "doses": 800, "expires_day": 30},
+    {"batch_id": "B200", "facility_id": "WH-N01", "doses": 200, "expires_day": 25}
+  ]
+}

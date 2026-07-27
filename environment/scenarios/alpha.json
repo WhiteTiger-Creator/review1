@@ -1,0 +1,8 @@
+{
+  "scenario_id": "alpha",
+  "rounds": 2,
+  "shipments": [
+    {"round": 1, "shipment_id": "S001", "origin": "MFG-A", "destination": "WH-N01", "batch_id": "B100", "doses": 300, "temp_c": 4.0},
+    {"round": 2, "shipment_id": "S002", "origin": "WH-N01", "destination": "CL-N01", "batch_id": "B100", "doses": 100, "temp_c": 5.0}
+  ]
+}

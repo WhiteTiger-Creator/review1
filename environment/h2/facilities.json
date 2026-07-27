@@ -1,0 +1,8 @@
+{
+  "facilities": {
+    "MFG-A": {"id": "MFG-A", "capacity": 5000, "usable_doses": 0, "quarantined_doses": 0, "batches": []},
+    "WH-N01": {"id": "WH-N01", "capacity": 2000, "usable_doses": 0, "quarantined_doses": 0, "batches": []},
+    "WH-N02": {"id": "WH-N02", "capacity": 1500, "usable_doses": 0, "quarantined_doses": 0, "batches": []},
+    "CL-N01": {"id": "CL-N01", "capacity": 500, "usable_doses": 0, "quarantined_doses": 0, "batches": []}
+  }
+}

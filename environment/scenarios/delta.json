@@ -1,0 +1,10 @@
+{
+  "scenario_id": "delta",
+  "rounds": 3,
+  "recovery_round": 3,
+  "recovery_shipment": "S030",
+  "shipments": [
+    {"round": 2, "shipment_id": "S030", "origin": "MFG-A", "destination": "WH-N02", "batch_id": "B100", "doses": 200, "temp_c": 9.2, "interrupt": true},
+    {"round": 3, "shipment_id": "S031", "origin": "WH-N01", "destination": "CL-N01", "batch_id": "B200", "doses": 40, "temp_c": 4.0}
+  ]
+}

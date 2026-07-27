@@ -5,22 +5,22 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "system-administration"
-subcategories = ["db_interaction"]
-number_of_milestones = 0
+tags = ["system-administration", "policy", "config", "cold-chain", "deployment"]
+languages = ["go", "bash"]
 codebase_size = "small"
-languages = ["rust", "sql", "bash"]
-tags = [
-  "credential-store",
-  "daemon-administration",
-  "services",
-  "generation-handoff",
-  "sqlite",
-  "reconciliation",
-  "reader-snapshots",
-  "crash-recovery",
-]
-expert_time_estimate_min = 210
-junior_time_estimate_min = 480
+number_of_milestones = 0
+subcategories = ["tool_specific"]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 420
+
+[category_profile]
+challenge_family = "config_policy_precedence"
+profile_name = "config_policy_precedence"
+allowed_instruction_disclosures = "deployment policy mismatch symptoms, coldchain_policy.toml path, operator_guide.md path, output artifact paths, checkpoint preservation rule, runner rebuild rule, and static-output rejection."
+forbidden_instruction_leaks = "exact policy value answer tables, per-scenario oracle rows, and implementation-internal module paths."
+category_specific_hardness_bar = "Agents must restore vaccine cold-chain deployment policy compliance so multi-format operations exports and checkpoint continuity satisfy the published operator contract."
+category_specific_verifier_risks = "Static JSON writes, single-artifact edits, TOML-only edits without deployment repair, and tamper-only reruns without runner rebuild."
+coverage_role = "System-administration deployment policy compliance for vaccine cold-chain operations exports and persisted checkpoint saves."
 
 [agent]
 timeout_sec = 1800
@@ -29,11 +29,11 @@ timeout_sec = 1800
 timeout_sec = 900
 
 [environment]
-build_timeout_sec = 900
+allow_internet = false
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
-storage_mb = 8192
-allow_internet = false
-docker_flags = []
-gpus = 0
-gpu_types = []
+storage_mb = 10240
+
+[reference_pattern]
+justification_if_none = "National vaccine cold-chain deployment policy compliance with operations exports and checkpoint continuity; distinct from transplant-network, municipal water SCADA, and humanitarian logistics deployment tasks."

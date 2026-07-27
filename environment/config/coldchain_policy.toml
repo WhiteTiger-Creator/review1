@@ -1,0 +1,10 @@
+[lineage]
+parent_link_mode = "omit_parent"
+child_id_mode = "fixed_zero_suffix"
+
+[recovery]
+temp_on_recovery = "reset_ok"
+
+[merge]
+quarantine_mode = "ignore_violation"
+in_transit_release = "skip"
