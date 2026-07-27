@@ -1,9 +1,0 @@
-{
-  "scenario_id": "epsilon",
-  "rounds": 2,
-  "production": {"round": 2, "batch_id": "B300", "facility_id": "MFG-A", "doses": 150, "expires_day": 20},
-  "shipments": [
-    {"round": 1, "shipment_id": "S040", "origin": "MFG-A", "destination": "WH-N01", "batch_id": "B100", "doses": 100, "temp_c": 4.0},
-    {"round": 2, "shipment_id": "S041", "origin": "MFG-A", "destination": "WH-N02", "batch_id": "B300", "doses": 150, "temp_c": 4.2}
-  ]
-}

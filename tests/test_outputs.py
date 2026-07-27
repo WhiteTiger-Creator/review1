@@ -1,353 +1,359 @@
-"""Vaccine cold-chain cross-artifact verification."""
+"""Verifier for unix-peer-cred-cache-stale."""
 
 from __future__ import annotations
 
-import csv
 import json
-import re
+import os
 import subprocess
 from pathlib import Path
 
-import pytest
+ENV_ROOT = Path("/app/environment")
+OUTPUT_DIR = Path("/app/output")
 
-APP = Path("/app")
-ENV = APP / "environment"
-BIN = APP / "bin" / "vcs_sim"
-INVENTORY = APP / "output" / "inventory.json"
-SHIPMENTS = APP / "output" / "shipments.csv"
-COMPLIANCE = APP / "output" / "compliance.log"
-ANALYTICS = APP / "output" / "analytics.json"
-CHECKPOINT = ENV / "state" / "checkpoint.json"
-POLICY = ENV / "config" / "coldchain_policy.toml"
+KAIRO_UID = 4101
+VEXA_UID = 4202
+DROP_MASK = 0x00FF
+KAIRO_SUPP = 0x00FF
+VEXA_SUPP = 0x0F00
+ALPHA = "alpha-sock"
+CHILD = "beta-child"
+RUN_SOCK = "/app/environment/state/run.sock"
+SHIFT_CYCLES = 3
+OUTPUT_FILES = (
+    "binding_transcript.json",
+    "auth_trace.json",
+    "probe_report.jsonl",
+    "auth_journal.jsonl",
+    "converge_report.json",
+)
 
 
-def rebuild_runner() -> None:
+def _hex_digest(material: str, nbytes: int) -> str:
     proc = subprocess.run(
-        ["bash", "-c", "cd /app/environment && go build -o /app/bin/vcs_sim ./e5"],
-        text=True,
+        ["openssl", "dgst", "-sha256", "-hex"],
+        input=material.encode(),
         capture_output=True,
-        check=False,
+        check=True,
     )
-    if proc.returncode != 0:
-        raise AssertionError(
-            f"go build failed\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-        )
+    return proc.stdout.decode().strip().split()[-1][: nbytes * 2]
 
 
-@pytest.fixture(scope="module", autouse=True)
-def ensure_driver() -> None:
-    rebuild_runner()
-    assert BIN.exists(), f"missing driver: {BIN}"
+def _mark_hex(uid: int, tag: str) -> str:
+    return _hex_digest(f"{tag}:{uid}", 8)
 
 
-def run_checked(command: list[str]) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(command, text=True, capture_output=True, check=False, cwd="/app")
-    if proc.returncode != 0:
-        raise AssertionError(
-            f"command failed: {' '.join(command)}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-        )
-    return proc
+def _cookie(path: str, gen: int, arm_epoch: int) -> str:
+    return _hex_digest(f"{path}|{gen}|{arm_epoch}", 8)
 
 
-def reset_artifacts() -> None:
-    for path in (INVENTORY, SHIPMENTS, COMPLIANCE, ANALYTICS):
-        if path.exists():
-            path.unlink()
-    if CHECKPOINT.exists():
-        CHECKPOINT.unlink()
+def _cookie_gen_only(path: str, gen: int) -> str:
+    return _hex_digest(f"{path}|{gen}", 8)
 
 
-def run_scenario(scenario: str, rounds: int | None = None) -> None:
-    cmd = [str(BIN), "run", "--scenario", scenario]
-    if rounds is not None:
-        cmd.extend(["--rounds", str(rounds)])
-    run_checked(cmd)
+def _lane_hex(slot: str, path: str, cookie: str, uid: int, supp: int, mark: str) -> str:
+    return _hex_digest(f"{slot}|{path}|{cookie}|{uid}|{supp}|{mark}", 8)
 
 
-def load_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+KAIRO_MARK = _mark_hex(KAIRO_UID, "kairo")
+VEXA_MARK = _mark_hex(VEXA_UID, "vexa")
+POST_DROP_SUPP = KAIRO_SUPP & ~DROP_MASK
+LIVE_COOKIE = _cookie(RUN_SOCK, SHIFT_CYCLES, SHIFT_CYCLES)
 
 
-def read_csv_rows() -> list[dict[str, str]]:
-    with SHIPMENTS.open(encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
-
-
-def parse_compliance() -> list[str]:
-    if not COMPLIANCE.exists():
-        return []
-    return [ln.strip() for ln in COMPLIANCE.read_text(encoding="utf-8").splitlines() if ln.strip()]
-
-
-def sum_facility_field(inventory: dict, field: str) -> int:
-    total = 0
-    for fac in inventory.get("facilities", {}).values():
-        total += int(fac.get(field, 0))
-    return total
-
-
-def delivered_from_csv(rows: list[dict[str, str]]) -> int:
-    total = 0
-    for row in rows:
-        if row["status"] in {"delivered", "recovered"} and row["temp_ok"] == "true":
-            total += int(row["doses"])
-    return total
-
-
-def violation_count(lines: list[str]) -> int:
-    return sum(1 for ln in lines if "STATUS=violation" in ln)
-
-
-def expected_state_digest(inventory: dict) -> str:
-    """Recompute digest per operator_guide.md (independent of exporter code)."""
-    facilities = inventory.get("facilities", {})
-    parts: list[str] = []
-    for fid in sorted(facilities.keys()):
-        batches = facilities[fid].get("batches", []) or []
-        chunk: list[str] = []
-        for batch in sorted(batches, key=lambda b: str(b.get("batch_id", ""))):
-            chunk.append(
-                f"{fid}|{batch.get('batch_id')}|{int(batch.get('doses', 0))}|"
-                f"{batch.get('status')}"
-            )
-        parts.append(";".join(chunk))
-    raw = "||".join(parts)
-    proc = subprocess.run(
-        ["sha256sum"],
-        input=raw,
-        text=True,
-        capture_output=True,
-        check=False,
+def run_repro(cycles: int = SHIFT_CYCLES) -> None:
+    env = os.environ.copy()
+    env.update(
+        {
+            "ENV_ROOT": str(ENV_ROOT),
+            "OUTPUT_DIR": str(OUTPUT_DIR),
+            "SHIFT_CYCLES": str(cycles),
+        }
     )
-    if proc.returncode != 0:
-        raise AssertionError(f"sha256sum failed: {proc.stderr}")
-    return proc.stdout.split()[0][:16]
+    subprocess.run(
+        ["bash", "/app/environment/scripts/repro_shift_cycle.sh"],
+        check=True,
+        env=env,
+    )
 
 
-def assert_cross_artifact(scenario: str) -> None:
-    inventory = load_json(INVENTORY)
-    analytics = load_json(ANALYTICS)
-    rows = read_csv_rows()
-    lines = parse_compliance()
-
-    assert inventory["schema_version"] == 1, scenario
-    assert inventory["scenario_id"] == scenario, scenario
-    digest = expected_state_digest(inventory)
-    assert inventory["state_digest"] == digest, scenario
-    assert analytics["state_digest"] == digest, scenario
-    assert analytics["total_usable_doses"] == sum_facility_field(inventory, "usable_doses"), scenario
-    assert analytics["total_quarantined_doses"] == sum_facility_field(
-        inventory, "quarantined_doses"
-    ), scenario
-    assert analytics["total_delivered"] == delivered_from_csv(rows), scenario
-
-    temp_summary = inventory["temperature_summary"]
-    assert temp_summary["violations"] == violation_count(lines), scenario
-    assert analytics["compliance_pass"] is True, scenario
-
-    lineage_rows = inventory.get("lineage")
-    assert isinstance(lineage_rows, list), scenario
-    for row in lineage_rows:
-        parent = row.get("parent_id", "")
-        if not parent:
-            continue
-        child = row["batch_id"]
-        gen = int(row["split_gen"])
-        assert gen > 0, f"lineage split_gen for {child} in {scenario}"
-        assert child == f"{parent}-s{gen}", f"lineage id mismatch for {child} in {scenario}"
+def run_gated_resume(cycles: int = SHIFT_CYCLES) -> None:
+    subprocess.run(
+        [
+            "/app/bin/gated",
+            "-root",
+            str(ENV_ROOT),
+            "-out",
+            str(OUTPUT_DIR),
+            "-cycles",
+            str(cycles),
+        ],
+        check=True,
+    )
 
 
-class TestVaccineColdChain:
-    def test_policy_toml_contains_correct_values(self) -> None:
-        """coldchain_policy.toml must carry the operator_guide contract values."""
-        content = POLICY.read_text(encoding="utf-8")
-        assert 'parent_link_mode = "enforce_parent"' in content
-        assert 'child_id_mode = "increment_generation"' in content
-        assert 'temp_on_recovery = "preserve_transit"' in content
-        assert 'quarantine_mode = "honor_violation"' in content
-        assert 'in_transit_release = "release"' in content
+def load_json(name: str):
+    return json.loads((OUTPUT_DIR / name).read_text(encoding="utf-8"))
 
-    def test_alpha_baseline_consistency(self) -> None:
-        """Clean two-round flow keeps inventory, CSV, log, and analytics aligned."""
-        reset_artifacts()
-        run_scenario("alpha")
-        assert_cross_artifact("alpha")
-        assert CHECKPOINT.exists()
 
-    def test_beta_temp_excursion_quarantine(self) -> None:
-        """Excursion above 8C quarantines affected doses across exports."""
-        reset_artifacts()
-        run_scenario("beta")
-        inventory = load_json(INVENTORY)
-        analytics = load_json(ANALYTICS)
-        assert analytics["total_quarantined_doses"] > 0
-        rows = read_csv_rows()
-        assert any(r["temp_ok"] == "false" for r in rows)
-        assert inventory["temperature_summary"]["violations"] >= 1
-        assert_cross_artifact("beta")
+def load_jsonl(name: str):
+    lines = (OUTPUT_DIR / name).read_text(encoding="utf-8").strip().splitlines()
+    return [json.loads(line) for line in lines if line.strip()]
 
-    def test_gamma_split_lineage(self) -> None:
-        """Partial transfer records parent-linked child batch lineage."""
-        reset_artifacts()
-        run_scenario("gamma")
-        inventory = load_json(INVENTORY)
-        child_rows = [r for r in inventory["lineage"] if r.get("parent_id") == "B200"]
-        assert child_rows, "expected child lineage for B200"
-        assert any(r["batch_id"] == "B200-s1" for r in child_rows)
-        assert_cross_artifact("gamma")
 
-    def test_delta_recovery_reconciliation(self) -> None:
-        """Interrupted shipment recovery respects temperature history and totals."""
-        reset_artifacts()
-        run_scenario("delta")
-        rows = read_csv_rows()
-        recovered = next(r for r in rows if r["shipment_id"] == "S030")
-        assert recovered["status"] == "recovered"
-        assert recovered["temp_ok"] == "false"
-        inventory = load_json(INVENTORY)
-        assert sum_facility_field(inventory, "quarantined_doses") >= int(recovered["doses"])
-        # Origin must release the in-transit hold so doses are not double-counted.
-        origin_batches = inventory["facilities"]["MFG-A"]["batches"]
-        b100 = next(b for b in origin_batches if b["batch_id"] == "B100")
-        assert int(b100["doses"]) == 600
-        assert_cross_artifact("delta")
+def rows_for_ref(rows, ref: str):
+    return [r for r in rows if r.get("slot_ref") == ref]
 
-    def test_epsilon_incremental_production(self) -> None:
-        """Round-2 production arrival appears in inventory without static writes."""
-        reset_artifacts()
-        run_scenario("epsilon")
-        inventory = load_json(INVENTORY)
-        found = False
-        for fac in inventory["facilities"].values():
-            for batch in fac.get("batches", []):
-                if batch.get("batch_id") == "B300":
-                    found = True
-        assert found
-        assert_cross_artifact("epsilon")
 
-    def test_zeta_expiry_exclusion(self) -> None:
-        """Expired batches are excluded from usable totals."""
-        reset_artifacts()
-        run_scenario("zeta")
-        inventory = load_json(INVENTORY)
-        expired = False
-        for fac in inventory["facilities"].values():
-            for batch in fac.get("batches", []):
-                if batch.get("batch_id") == "B900" and batch.get("status") == "expired":
-                    expired = True
-        assert expired
-        assert_cross_artifact("zeta")
+def test_bind_cookie_chains_attach_policy_epoch():
+    """Bind cookies must chain inode generation with attach policy_epoch for each cycle."""
+    run_repro()
+    probes = load_jsonl("probe_report.jsonl")
+    alpha_cookies = [p["bind_cookie"] for p in probes if p["slot_ref"] == ALPHA]
+    assert len(alpha_cookies) == SHIFT_CYCLES
+    expected = [_cookie(RUN_SOCK, g, g) for g in range(1, SHIFT_CYCLES + 1)]
+    assert alpha_cookies == expected
+    assert alpha_cookies[-1] == LIVE_COOKIE
+    assert len(set(alpha_cookies)) == SHIFT_CYCLES
 
-    def test_mutation_demand_changes_outcome(self) -> None:
-        """Mutating scenario shipment doses changes derived analytics totals."""
-        reset_artifacts()
-        run_scenario("alpha")
-        baseline = load_json(ANALYTICS)["total_delivered"]
-        scenario_path = ENV / "scenarios" / "alpha.json"
-        original = scenario_path.read_text(encoding="utf-8")
-        try:
-            data = json.loads(original)
-            data["shipments"][0]["doses"] = 50
-            scenario_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-            reset_artifacts()
-            run_scenario("alpha")
-            mutated = load_json(ANALYTICS)["total_delivered"]
-            assert mutated != baseline
-            assert mutated < baseline
-        finally:
-            scenario_path.write_text(original, encoding="utf-8")
 
-    def test_mutation_threshold_changes_quarantine(self) -> None:
-        """Raising scenario temp reading increases quarantine totals."""
-        reset_artifacts()
-        scenario_path = ENV / "scenarios" / "beta.json"
-        original = scenario_path.read_text(encoding="utf-8")
-        try:
-            data = json.loads(original)
-            data["shipments"][0]["temp_c"] = 12.0
-            scenario_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-            run_scenario("beta")
-            analytics = load_json(ANALYTICS)
-            assert analytics["total_quarantined_doses"] >= 250
-            assert_cross_artifact("beta")
-        finally:
-            scenario_path.write_text(original, encoding="utf-8")
+def test_cookie_arm_epoch_diverges_from_gen_only_digest():
+    """Armed cookies must not collapse to generation-only digest material."""
+    run_repro()
+    probes = load_jsonl("probe_report.jsonl")
+    alpha_cookies = [p["bind_cookie"] for p in probes if p["slot_ref"] == ALPHA]
+    gen_only = [_cookie_gen_only(RUN_SOCK, g) for g in range(1, SHIFT_CYCLES + 1)]
+    assert alpha_cookies != gen_only
+    for armed, plain in zip(alpha_cookies, gen_only, strict=True):
+        assert armed != plain
 
-    def test_mutation_policy_temp_recovery(self) -> None:
-        """Flipping temp_on_recovery must change recovered shipment temp_ok."""
-        reset_artifacts()
-        original = POLICY.read_text(encoding="utf-8")
-        try:
-            if 'temp_on_recovery = "preserve_transit"' in original:
-                first_expect = "false"
-                flipped = original.replace(
-                    'temp_on_recovery = "preserve_transit"',
-                    'temp_on_recovery = "reset_ok"',
-                )
-                second_expect = "true"
-            else:
-                first_expect = "true"
-                flipped = original.replace(
-                    'temp_on_recovery = "reset_ok"',
-                    'temp_on_recovery = "preserve_transit"',
-                )
-                second_expect = "false"
 
-            rebuild_runner()
-            run_scenario("delta")
-            rows = read_csv_rows()
-            recovered = next(r for r in rows if r["shipment_id"] == "S030")
-            assert recovered["temp_ok"] == first_expect
+def test_child_vault_key_binds_attach_epoch():
+    """Child vault keys must bind attach policy_epoch so sibling lane fingerprints diverge."""
+    run_repro()
+    traces = load_json("auth_trace.json")
+    hot_alpha = [r for r in rows_for_ref(traces, ALPHA) if r["mark_digest_hex"] == VEXA_MARK]
+    child_rows = rows_for_ref(traces, CHILD)
+    assert hot_alpha and child_rows
+    parent = hot_alpha[-1]
+    child = child_rows[-1]
+    assert child["bind_cookie"] == parent["bind_cookie"] == LIVE_COOKIE
+    assert child["seal_hex"] != parent["seal_hex"]
+    want_child = _lane_hex(CHILD, RUN_SOCK, LIVE_COOKIE, VEXA_UID, POST_DROP_SUPP, "vexa")
+    assert child["seal_hex"] == want_child
+    probes = load_jsonl("probe_report.jsonl")
+    child_probes = [p for p in probes if p["slot_ref"] == CHILD]
+    assert child_probes[-1]["seal_match"] == 0
 
-            POLICY.write_text(flipped, encoding="utf-8")
-            rebuild_runner()
-            reset_artifacts()
-            run_scenario("delta")
-            rows = read_csv_rows()
-            recovered = next(r for r in rows if r["shipment_id"] == "S030")
-            assert recovered["temp_ok"] == second_expect
-        finally:
-            POLICY.write_text(original, encoding="utf-8")
-            rebuild_runner()
 
-    def test_no_verdict_sentinels(self) -> None:
-        """Exports must not contain hardcoded verdict sentinel tokens."""
-        reset_artifacts()
-        run_scenario("alpha")
-        blob = (
-            INVENTORY.read_text(encoding="utf-8")
-            + ANALYTICS.read_text(encoding="utf-8")
-            + COMPLIANCE.read_text(encoding="utf-8")
-        )
-        for token in ("_ok", "_green", "_valid", "_passes", "stays_green"):
-            assert token not in blob
+def test_facet_republishes_on_mask_only_change():
+    """Hot transition must republish the facet when only supp_mask and seal_hex change under the same cookie."""
+    run_repro()
+    traces = load_json("auth_trace.json")
+    hot = [r for r in rows_for_ref(traces, ALPHA) if r["mark_digest_hex"] == VEXA_MARK]
+    assert hot
+    last = hot[-1]
+    assert last["supp_mask"] == POST_DROP_SUPP
+    assert last["seal_hex"] == _lane_hex(ALPHA, RUN_SOCK, LIVE_COOKIE, VEXA_UID, POST_DROP_SUPP, "vexa")
+    probes = load_jsonl("probe_report.jsonl")
+    alpha_probes = [p for p in probes if p["slot_ref"] == ALPHA]
+    assert alpha_probes[-1]["seal_match"] == 1
+    assert alpha_probes[-1]["current_uid"] == VEXA_UID
 
-    def test_checkpoint_advances(self) -> None:
-        """Checkpoint round advances after multi-round simulation."""
-        reset_artifacts()
-        run_scenario("alpha", rounds=2)
-        cp = load_json(CHECKPOINT)
-        assert int(cp["round"]) == 2
 
-    def test_checkpoint_cross_run_resume(self) -> None:
-        """Second runner invocation must resume batches from checkpoint state."""
-        reset_artifacts()
-        run_scenario("alpha", rounds=1)
-        cp1 = load_json(CHECKPOINT)
-        assert int(cp1["round"]) == 1
-        run_scenario("alpha", rounds=2)
-        cp2 = load_json(CHECKPOINT)
-        assert int(cp2["round"]) == 2
-        assert_cross_artifact("alpha")
-        # Batches must still be addressable after JSON round-trip.
-        inventory = load_json(INVENTORY)
-        total_batches = sum(len(f.get("batches", [])) for f in inventory["facilities"].values())
-        assert total_batches >= 2
+def test_child_epoch_uses_attach_bind_snapshot():
+    """Child policy_epoch must trail the attach bind snapshot within each cycle, not a later counter."""
+    run_repro()
+    binds = load_json("binding_transcript.json")
+    for cycle_idx in range(SHIFT_CYCLES):
+        alpha_rows = rows_for_ref(binds, ALPHA)
+        child_rows = rows_for_ref(binds, CHILD)
+        assert len(alpha_rows) > cycle_idx
+        assert len(child_rows) > cycle_idx
+        attach_epoch = alpha_rows[cycle_idx]["policy_epoch"]
+        child_epoch = child_rows[cycle_idx]["policy_epoch"]
+        assert child_epoch == attach_epoch + 1
 
-    def test_compliance_log_format(self) -> None:
-        """Compliance log lines follow SEQ/ROUND/EVENT structure."""
-        reset_artifacts()
-        run_scenario("beta")
-        pattern = re.compile(r"^SEQ=\d+ ROUND=\d+ EVENT=\w+")
-        for line in parse_compliance():
-            assert pattern.match(line), line
+
+def test_lane_fingerprint_binds_cookie_and_slot():
+    """Post-shift alpha fingerprint binds slot_ref and the live armed bind cookie."""
+    run_repro()
+    traces = load_json("auth_trace.json")
+    hot = [r for r in rows_for_ref(traces, ALPHA) if r["mark_digest_hex"] == VEXA_MARK]
+    assert hot
+    last = hot[-1]
+    want = _lane_hex(ALPHA, RUN_SOCK, LIVE_COOKIE, VEXA_UID, POST_DROP_SUPP, "vexa")
+    assert last["seal_hex"] == want
+    assert last["supp_mask"] == POST_DROP_SUPP
+    assert last["bind_cookie"] == LIVE_COOKIE
+
+
+def test_lane_digest_uses_cleared_mask():
+    """Lane fingerprints must hash supplemental masks after drop-bit clearing."""
+    run_repro()
+    traces = load_json("auth_trace.json")
+    hot = [r for r in rows_for_ref(traces, ALPHA) if r["mark_digest_hex"] == VEXA_MARK]
+    assert hot
+    last = hot[-1]
+    uncleared = _lane_hex(ALPHA, RUN_SOCK, LIVE_COOKIE, VEXA_UID, VEXA_SUPP, "vexa")
+    assert last["seal_hex"] != uncleared
+    assert last["seal_hex"] == _lane_hex(
+        ALPHA, RUN_SOCK, LIVE_COOKIE, VEXA_UID, POST_DROP_SUPP, "vexa"
+    )
+
+
+def test_hot_drop_clears_mask_and_facet_agrees():
+    """Hot transition clears drop_mask bits and probe current view matches post-clear uid."""
+    run_repro()
+    traces = load_json("auth_trace.json")
+    hot = [r for r in rows_for_ref(traces, ALPHA) if r["mark_digest_hex"] == VEXA_MARK]
+    assert hot
+    last = hot[-1]
+    assert last["supp_mask"] & DROP_MASK == 0
+    assert last["supp_mask"] == POST_DROP_SUPP
+    probes = load_jsonl("probe_report.jsonl")
+    alpha_probes = [p for p in probes if p["slot_ref"] == ALPHA]
+    assert alpha_probes[-1]["current_uid"] == VEXA_UID
+    assert alpha_probes[-1]["seal_match"] == 1
+
+
+def test_vault_live_cookie_pins_probe():
+    """After rematerialization, probes pin the live-cookie vault sample with seal_match."""
+    run_repro()
+    probes = load_jsonl("probe_report.jsonl")
+    alpha_probes = [p for p in probes if p["slot_ref"] == ALPHA]
+    assert alpha_probes
+    last = alpha_probes[-1]
+    assert last["seal_match"] == 1
+    assert last["cred_gap"] == 0
+    assert last["current_uid"] == last["pinned_uid"] == VEXA_UID
+    assert last["bind_cookie"] == LIVE_COOKIE
+
+
+def snapshot_outputs() -> dict[str, bytes]:
+    return {name: (OUTPUT_DIR / name).read_bytes() for name in OUTPUT_FILES}
+
+
+def test_sibling_probe_seal_match_requires_full_agreement():
+    """Sibling slot probes keep seal_match at 0 when lane fingerprints differ but uids agree."""
+    run_repro()
+    probes = load_jsonl("probe_report.jsonl")
+    child_probes = [p for p in probes if p["slot_ref"] == CHILD]
+    assert child_probes
+    last = child_probes[-1]
+    assert last["cred_gap"] == 0
+    assert last["pinned_uid"] == last["current_uid"] == VEXA_UID
+    assert last["bind_cookie"] == LIVE_COOKIE
+    assert last["seal_match"] == 0
+
+
+def test_child_vault_isolates_shared_path():
+    """Child ref restamps under its own slot even when path string matches parent."""
+    run_repro()
+    traces = load_json("auth_trace.json")
+    hot_alpha = [r for r in rows_for_ref(traces, ALPHA) if r["mark_digest_hex"] == VEXA_MARK]
+    child_rows = rows_for_ref(traces, CHILD)
+    assert hot_alpha and child_rows
+    parent = hot_alpha[-1]
+    child = child_rows[-1]
+    assert child["mark_digest_hex"] == parent["mark_digest_hex"] == VEXA_MARK
+    assert child["supp_mask"] == parent["supp_mask"] == POST_DROP_SUPP
+    assert child["bind_cookie"] == parent["bind_cookie"] == LIVE_COOKIE
+    assert child["seal_hex"] != parent["seal_hex"]
+    want_child = _lane_hex(CHILD, RUN_SOCK, LIVE_COOKIE, VEXA_UID, POST_DROP_SUPP, "vexa")
+    assert child["seal_hex"] == want_child
+    assert child["seal_hex"] != _lane_hex(ALPHA, RUN_SOCK, LIVE_COOKIE, VEXA_UID, POST_DROP_SUPP, "vexa")
+
+
+def test_journal_once_intake_rebind():
+    """Multi-cycle export keeps one intake and one rebind across the full journal."""
+    run_repro()
+    journal = load_jsonl("auth_journal.jsonl")
+    ops = [row["op"] for row in journal]
+    assert ops.count("intake") == 1
+    assert ops.count("rebind") == 1
+    rebind = next(row for row in journal if row["op"] == "rebind")
+    assert rebind["mark"] == "vexa"
+    assert rebind["supp_mask"] == POST_DROP_SUPP
+    armed_cookie = _cookie(RUN_SOCK, 2, 2)
+    assert rebind["bind_cookie"] == armed_cookie
+    assert rebind["seal_hex"] == _lane_hex(
+        ALPHA, RUN_SOCK, armed_cookie, VEXA_UID, POST_DROP_SUPP, "vexa"
+    )
+
+
+def test_journal_rebind_gated_on_listener_seal():
+    """Rebind rows must carry armed cookies from sealed listener cycles, not pre-shift material."""
+    run_repro()
+    journal = load_jsonl("auth_journal.jsonl")
+    rebind_rows = [row for row in journal if row["op"] == "rebind"]
+    assert len(rebind_rows) == 1
+    rebind = rebind_rows[0]
+    assert rebind["bind_cookie"] == _cookie(RUN_SOCK, 2, 2)
+    assert rebind["bind_cookie"] != _cookie(RUN_SOCK, 1, 1)
+    probes = load_jsonl("probe_report.jsonl")
+    alpha_cookies = [p["bind_cookie"] for p in probes if p["slot_ref"] == ALPHA]
+    assert rebind["bind_cookie"] in alpha_cookies
+
+
+def test_resume_freezes_existing_exports():
+    """Resumed gated against existing outputs must not add rows and keeps post-shift state."""
+    if OUTPUT_DIR.exists():
+        for p in OUTPUT_DIR.iterdir():
+            p.unlink()
+    run_repro()
+    before = snapshot_outputs()
+    run_gated_resume()
+    after = snapshot_outputs()
+    assert after == before
+    traces = load_json("auth_trace.json")
+    hot = [r for r in rows_for_ref(traces, ALPHA) if r["mark_digest_hex"] == VEXA_MARK]
+    assert hot
+    assert hot[-1]["supp_mask"] & DROP_MASK == 0
+    assert hot[-1]["bind_cookie"] == LIVE_COOKIE
+    probes = load_jsonl("probe_report.jsonl")
+    alpha_probes = [p for p in probes if p["slot_ref"] == ALPHA]
+    assert alpha_probes
+    last = alpha_probes[-1]
+    assert last["cred_gap"] == 0
+    assert last["current_uid"] == last["pinned_uid"] == VEXA_UID
+    assert last["seal_match"] == 1
+
+
+def test_facet_publish_survives_hot_transition_chain():
+    """Authorization facet keeps attach slot_ref and seal agreement across every post-intake cycle."""
+    run_repro()
+    probes = load_jsonl("probe_report.jsonl")
+    alpha_probes = [p for p in probes if p["slot_ref"] == ALPHA]
+    assert len(alpha_probes) == SHIFT_CYCLES
+    for probe in alpha_probes[1:]:
+        assert probe["seal_match"] == 1
+        assert probe["cred_gap"] == 0
+        assert probe["current_uid"] == VEXA_UID
+    armed = [_cookie(RUN_SOCK, g, g) for g in range(1, SHIFT_CYCLES + 1)]
+    assert [p["bind_cookie"] for p in alpha_probes] == armed
+
+
+def test_cross_module_convergence():
+    """Cookie, drop, child isolation, facet pin, and journal authorities converge."""
+    run_repro()
+    conv = load_json("converge_report.json")
+    assert conv["cycles"]
+    assert len(conv["cycles"]) == SHIFT_CYCLES
+    final = conv["cycles"][-1]
+    assert final["scope_agreement_count"] >= 3
+    probes = load_jsonl("probe_report.jsonl")
+    last_probe = [p for p in probes if p["slot_ref"] == ALPHA][-1]
+    assert last_probe["cred_gap"] == 0
+    assert last_probe["seal_match"] == 1
+    assert last_probe["bind_cookie"] == LIVE_COOKIE
+    traces = load_json("auth_trace.json")
+    child = rows_for_ref(traces, CHILD)[-1]
+    hot = [r for r in rows_for_ref(traces, ALPHA) if r["mark_digest_hex"] == VEXA_MARK][-1]
+    assert child["seal_hex"] != hot["seal_hex"]
+    assert hot["supp_mask"] & DROP_MASK == 0
+    assert hot["bind_cookie"] == LIVE_COOKIE
+    journal = load_jsonl("auth_journal.jsonl")
+    assert len(journal) == final["journal_rows"]
+    binds = load_json("binding_transcript.json")
+    assert len(binds) == final["transcript_rows"]
+    assert len(traces) == final["trace_rows"]
