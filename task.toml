@@ -4,28 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "scientific-computing"
-subcategories = ["api_integration"]
+category = "system-administration"
+subcategories = []
 number_of_milestones = 0
 codebase_size = "small"
-languages = ["go"]
-tags = ["go", "sqlite", "hmac", "worldbank", "statistics"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 300
-
-[environment]
-allow_internet = false
-build_timeout_sec = 1800
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
-workdir = "/app"
+languages = ["bash"]
+tags = ["bash", "selinux", "labeling", "restorecon", "mac"]
+expert_time_estimate_min = 90
+junior_time_estimate_min = 240
 
 [agent]
 timeout_sec = 1800
 
 [verifier]
-timeout_sec = 450
+timeout_sec = 1500
 
-
-# build-refresh v57
+[environment]
+allow_internet = false
+build_timeout_sec = 600
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240

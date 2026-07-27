@@ -1,0 +1,4 @@
+/var/www(/.*)?	u:o:t_www_mid:s0
+/opt/svc(/.*)?	u:o:t_svc_mid:s0
+/tmp/lane(/.*)?	u:o:t_tmp_mid:s0
+/srv/box(/.*)?	u:o:t_box_mid:s0

@@ -1,0 +1,8 @@
+[profile]
+name = "north"
+
+[rank_boost]
+"10-core.fc" = 0
+"15-mid.fc" = 0
+"20-side.fc" = 5
+"30-top.fc" = 0
