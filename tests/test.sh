@@ -1,14 +1,19 @@
 #!/bin/bash
+set -uo pipefail
+mkdir -p /logs/verifier
+echo 0 > /logs/verifier/reward.txt
 
-if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile."
-    exit 1
-fi
+# Defense-in-depth (redundant with tests/conftest.py's session-scoped
+# fixture): unconditionally clear any pre-existing db/output artifacts
+# before the test run starts, in case this filesystem is reused across
+# sequential evaluation trials.
+rm -f /app/wb.db /app/wb.db-journal /app/wb.db-wal /app/wb.db-shm
+rm -rf /app/output
 
-pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+python3 -m pytest -o cache_dir=/tmp/pytest_cache --ctrf /logs/verifier/ctrf.json /tests/test_wb_tracker.py -rA 2>&1
 rc=$?
 if [ "$rc" -eq 0 ]; then
-  echo 1 > /logs/verifier/reward.txt
+    echo 1 > /logs/verifier/reward.txt
 else
-  echo 0 > /logs/verifier/reward.txt
+    echo 0 > /logs/verifier/reward.txt
 fi

@@ -1,10 +1,38 @@
-After the bind-mount migration of snap trees and language packs, the hostctl-export systemd oneshot at /app/svcunit/metricd.service still reaches active, but the host no longer meets the site export contract. Unit Environment locale settings, exclusion-book policy on mounted snap trees, and interrupted /app/output journal recovery disagree with what operators expect from a oneshot RemainAfterExit ship.
+# World Bank Country Tracker
 
-Desired host state when the unit-managed path runs (including /app/scripts/run_ship.sh --from-unit, which applies every Environment= line from /app/svcunit/metricd.service before ExecStart):
-- /app/output/canonical_export.sha256 is byte-identical for the same selected metrics under language pack C, bundled de_DE, and the unit Environment path. Canonical metric text uses selected snap tree metrics.json rows (string k, numeric v): one line per row as k=<number> with exactly six digits after an ASCII period, no thousands separators, no scientific notation; lines sorted by k ascending; one lowercase hex digest line for those UTF-8 bytes.
-- Snap selection under /app/fixtures/snaps/ follows /app/fixtures/exclbook/ evidence_tier and supersedes edges. Only on-disk snap ids compete. Highest evidence_tier wins. On a tier tie, keep supersede-chain roots only (an id is a root when no other same-tier candidate reaches it through supersedes edges, directly or through a chain). If more than one root remains, take the lexicographically minimum id. Bind-mounted tree mtime must not override that policy.
-- /app/output/ship_journal.json carries selected_id, book_stamp (sha256 of the active book file bytes), pack_label for the active language pack, stage_path, complete, and generation. Metric text stages under /app/output/stage/ before promote. An incomplete journal discards leftover staged bodies and re-selects plus re-emits. A completed journal is stale when book_stamp no longer matches the active book or pack_label no longer matches the active language pack, and must re-run. generation increases on every re-select or re-emit. Staged bytes that disagree with the active book or the ASCII decimal rule above are never promoted.
-- /app/output/reconcile_trace.jsonl appends across ships (prior lines stay). The final line is JSON with event equal to ship_complete, selected_id, non-empty note_text, sha_prefix as the first 12 hex characters of that run's digest, and pack_label matching the active pack.
-- /app/bin/check_bin --pack <label> leaves /app/output/counterexample_archive/manifest.json with a non-empty cases array; <label> is the active pack name and becomes each case pack_label. Each case has non-empty case_id, selected_id, note_text, sha_prefix, and pack_label aligned with the latest digest and trace (case note_text equals or is a substring of the matching trace note_text).
+Build a small economic-data analysis pipeline that ingests World Bank
+country indicators, keeps a tamper-evident record of every change, and
+answers rigorous statistical questions about the dataset — inequality
+across regions, how a country's standing shifts as new data arrives, and
+whether the historical record has been altered.
 
-Schemas and operator flags live under /app/docs/ship-contract.rst. Correct the unit-invoked host binaries and libraries under /app/environment so oneshot behavior stays correct across refreshes, not only ad-hoc CLI wrappers. Installed binaries under /app/bin must come from make -C /app/environment PREFIX=/app install. Hand-written /app/output files are not enough; the normal unit ship path must regenerate the artifacts.
+Country records are pulled from the World Bank open-data source and stored
+in a local SQLite database, with the exact schema, request shape, and error
+behavior spelled out in the referenced docs rather than here. Every insert
+also appends an entry to a running, cryptographically-chained audit log —
+each entry binds a snapshot of the distribution's shape at that moment
+(its center, spread, and higher moments), so the log doubles as an
+integrity trail over the statistics themselves, not just the raw records.
+Two commands can replay that chain in either direction to catch any
+tampering; the exact preimage format and byte order matter and are covered
+in the HMAC and chain-format references.
+
+On the analysis side, the tool reports the standard descriptive measures,
+several inequality and concentration indices, and a handful of
+regression/correlation measures — all using population-level statistics,
+consistent rounding, and the log bases and edge-case handling called out in
+the statistics references. One report goes further: a country's standing
+relative to its own region is recomputed live from the current table every
+time it's asked for, rather than cached from when the country was first
+seen, so a region's membership picture can shift as new entries arrive. A
+separate audit-side report tracks which log entries currently belong to a
+bounded "trusted" reference window, aging entries out on a delay tied to
+when they actually joined that window rather than when they were first
+recorded.
+
+See `/docs/operations-reference.md` for the full command reference, sample
+runs, and edge-case notes — read it before implementing, since exact
+formulas, field orders, and precision rules live there rather than being
+repeated inline. The record source is mocked, so no network access is
+needed at runtime. Grading inspects the populated database tables and the
+run report written under the output directory.

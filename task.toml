@@ -4,24 +4,28 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "system-administration"
-tags = ["systemd", "oneshot", "bind-mount", "locale", "journal-recovery", "host-export"]
-languages = ["bash", "c"]
-codebase_size = "small"
+category = "scientific-computing"
+subcategories = ["api_integration"]
 number_of_milestones = 0
-subcategories = ["tool_specific"]
+codebase_size = "small"
+languages = ["go"]
+tags = ["go", "sqlite", "hmac", "worldbank", "statistics"]
 expert_time_estimate_min = 120
 junior_time_estimate_min = 300
+
+[environment]
+allow_internet = false
+build_timeout_sec = 1800
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+workdir = "/app"
 
 [agent]
 timeout_sec = 1800
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 450
 
-[environment]
-allow_internet = false
-build_timeout_sec = 600
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
+
+# build-refresh v57

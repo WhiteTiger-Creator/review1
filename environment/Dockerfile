@@ -1,41 +1,47 @@
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
+# force-rebuild 2026-07-19-v43-reward-block-fix
+# force-rebuild 2026-07-19-infra-retry-v46
+# force-rebuild 2026-07-20-v48-p50-spec-fix
+# force-rebuild 2026-07-21-v56-stub-removal-doc-rename
+# force-rebuild 2026-07-23-v56-regional-tier-driver
+# force-rebuild 2026-07-24-v56-dockerfile-hygiene
+# force-rebuild 2026-07-24-v57-audit-credit-ledger-driver
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    sqlite3=3.* \
+    tmux \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --break-system-packages pytest==8.4.1 pytest-json-report==1.5.0 pytest-json-ctrf==0.3.5 asciinema==2.4.0
+
+ENV GOFLAGS=-mod=mod
+ENV GOPROXY=https://proxy.golang.org,direct
+
+ENV TASK_VERSION=v57-audit-credit-ledger-driver
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends make=4.3-4.1 gcc=4:12.2.0-3 \
-        libc6-dev=2.36-9+deb12u14 \
-        python3=3.11.2-1+b1 \
-        python3-pip=23.0.1+dfsg-1 \
-        python3-venv=3.11.2-1+b1 \
-        locales=2.36-9+deb12u14 \
-        tmux=3.3a-3 \
-        asciinema=2.2.0-1 \
-        ca-certificates=20230311+deb12u1 \
-        coreutils=9.1-1 \
-    && rm -rf /var/lib/apt/lists/*
+# Dependency-install layer: copy only the module manifest (plus the
+# throwaway warmup source) so `go mod download` is cached independently of
+# the agent's later source authoring, and group both install RUN steps
+# contiguously with no COPY between them.
+COPY source/go.mod ./
+# Warm the module cache with the FULL transitive closure (go.mod's require
+# list alone doesn't pull transitive deps like modernc.org/libc without an
+# actual build). modcache-warmup.go is throwaway: built once here, reusing
+# the real go.mod so it resolves against the same requires, then deleted so
+# no application source ships in the final image.
+COPY scripts/modcache-warmup.go /tmp/modwarm/main.go
+RUN go mod download \
+    && cp /app/go.mod /tmp/modwarm/go.mod \
+    && cd /tmp/modwarm && go build -o /dev/null . \
+    && rm -rf /tmp/modwarm
 
-RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
-    && sed -i '/de_DE.UTF-8/s/^# //g' /etc/locale.gen \
-    && sed -i '/C.UTF-8/s/^# //g' /etc/locale.gen \
-    && locale-gen
+# NOTE: the golang toolchain is intentionally kept in the runtime image
+# (not split into a multi-stage build) because the agent must author and
+# compile main.go themselves inside this exact container; no pre-built
+# source ships here for the agent to edit in place.
+ENV GOPROXY=off
 
-RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5
-
-ENV PATH=/opt/verifier/bin:/app/bin:${PATH}
-
-COPY . /app/environment
-
-RUN mkdir -p /app/output /app/bin \
-    && ln -sfn /app/environment/scripts /app/scripts \
-    && ln -sfn /app/environment/docs /app/docs \
-    && ln -sfn /app/environment/fixtures /app/fixtures \
-    && ln -sfn /app/environment/svcunit /app/svcunit \
-    && chmod +x /app/environment/scripts/run_ship.sh \
-    && chmod +x /app/environment/scripts/seed_torn.sh \
-    && make -C /app/environment PREFIX=/app install
-
-CMD ["bash"]
+COPY docs/ /docs/
