@@ -1,760 +1,698 @@
-import hashlib
-import json
+"""Exact checks for a rank-four oriented-matroid face-incidence census.
+
+The reference census is derived from integer orientation determinants in R^4.
+It merges all affine-independent four-point carriers that produce the same
+complete coplanar face, excludes interior points, sorts facet incidence rows,
+and audits the resulting face lattice through incidence and carrier-sign hashes.
+"""
+
+import functools
+import itertools
+import math
+import os
+import random
+import shutil
 import subprocess
 from pathlib import Path
 
-APP = Path('/app')
-OUT = APP / 'output' / 'build-plan.json'
-CMD = ['node', '/app/bin/repair-lock.js']
+import pytest
 
-BASE_POLICY = {
-    'nodeVersion': '20.11.1',
-    'buildHost': 'linux',
-    'includeDevDependencies': False,
-    'includeOptionalDependencies': False,
-    'preferStable': True,
-    'licenseAllowlist': ['MIT'],
-    'blockedPackages': [],
-    'expectedIntegrityHost': 'mirror.local',
-    'overrides': {},
-    'resolutions': {},
-    'patches': {},
-}
+HASH_MOD = 1_000_000_007
+HASH_BASE = 1_000_003
 
 
-def run_tool():
-    if OUT.exists():
-        OUT.unlink()
-    result = subprocess.run(
-        CMD, cwd='/app', text=True, capture_output=True, timeout=30, check=False
-    )
-    assert result.returncode == 0, result.stderr + result.stdout
-    assert OUT.exists(), 'build-plan.json was not created'
-    raw = OUT.read_text()
-    return raw, json.loads(raw)
+def determinant(matrix):
+    if len(matrix) == 1:
+        return matrix[0][0]
+    return sum((-1) ** col * matrix[0][col] * determinant([row[:col] + row[col + 1:] for row in matrix[1:]]) for col in range(len(matrix)))
 
 
-def by_name(plan):
-    return {pkg['name']: pkg for pkg in plan['packages']}
+def orient(a, b, c, d, q):
+    return determinant([[p[j] - a[j] for j in range(4)] for p in (b, c, d, q)])
 
 
-def input_fingerprints(app_root=APP):
-    fingerprints = {}
-    for directory in ('workspace', 'registry', 'config', 'docs'):
-        root = app_root / directory
-        if not root.exists():
+def hyperplane_coefficients(points, ids):
+    rows = [[*points[i], 1] for i in ids]
+    coeffs = []
+    for col in range(5):
+        submatrix = [row[:col] + row[col + 1:] for row in rows]
+        coeffs.append(((-1) ** col) * determinant(submatrix))
+    return tuple(coeffs)
+
+
+def primitive_carrier(points, ids):
+    coeffs = hyperplane_coefficients(points, ids)
+    values = [sum(c * x for c, x in zip(coeffs[:4], q)) + coeffs[4] for q in points]
+    if not any(values):
+        return None
+    if any(v > 0 for v in values) and any(v < 0 for v in values):
+        return None
+    if any(v < 0 for v in values):
+        coeffs = tuple(-c for c in coeffs)
+    scale = 0
+    for value in coeffs:
+        scale = math.gcd(scale, abs(value))
+    return tuple(value // scale for value in coeffs)
+
+
+def affine_dimension(points, ids):
+    if len(ids) <= 1:
+        return 0
+    base = points[ids[0]]
+    differences = [
+        tuple(points[index][axis] - base[axis] for axis in range(4))
+        for index in ids[1:]
+    ]
+    for rank in range(min(4, len(differences)), 0, -1):
+        for rows in itertools.combinations(differences, rank):
+            for columns in itertools.combinations(range(4), rank):
+                matrix = [[row[column] for column in columns] for row in rows]
+                if determinant(matrix) != 0:
+                    return rank
+    return 0
+
+
+def complete_face_family(points, hull, ordered_facets):
+    if not ordered_facets:
+        return []
+    faces = {tuple(hull), *ordered_facets}
+    changed = True
+    while changed:
+        changed = False
+        snapshot = tuple(faces)
+        for left, right in itertools.combinations(snapshot, 2):
+            face = tuple(sorted(set(left) & set(right)))
+            if face and face not in faces:
+                faces.add(face)
+                changed = True
+    return sorted(faces, key=lambda face: (affine_dimension(points, face), face))
+
+
+@functools.cache
+def reference_facet_profile(points):
+    facets = {}
+    for i, j, k, m in itertools.combinations(range(len(points)), 4):
+        carrier = primitive_carrier(points, (i, j, k, m))
+        if carrier is None:
             continue
-        for path in sorted(root.rglob('*')):
-            if path.is_file():
-                rel = path.relative_to(app_root).as_posix()
-                fingerprints[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
-    return fingerprints
-
-
-EXPECTED_INPUT_FINGERPRINTS = {
-    'workspace/package-lock.json': '83d758b7f6688af47c17c90945a19cbb6c79ea31ea6efc8ff78a3a4748cc3f12',
-    'workspace/package.json': 'e26b5b2f48c772b9d4cfc05397a06df53364710e1f59003de38c92a55c2d9545',
-    'workspace/packages/core/package.json': 'a34997a7c8f9e64f62a5e65f16600f79e96600b995b7a2d0140b47453e547156',
-    'workspace/packages/plugin-auth/package.json': 'ffbb4f5fb65aa591f968d79c763facf78a61c87930a7d9cf0d2502344edb37f7',
-    'workspace/packages/telemetry/package.json': '0cb4980f40a359404fe7b6a42e2a1b0033306cdd88722f42199f467f92d52e64',
-    'registry/packages.json': '6b6e4bc17dee211eb445a6671afde81abe4b2d6dfb564b1fa5ebca59dffa4b77',
-    'config/archive_policy.json': 'd5ffa1bf3361173802e3c49718c331727f3971df0bac3df133782d2108dae58d',
-    'config/policy.json': '4a29473c3e523781038e86eb41f950e1a7aec764b6372b4fe2e89d8698401c27',
-    'docs/mirror_contract.md': 'a766ccc859415e4e3d5cb91fa27fb2d8235085ce5c7a8f577860684eebdf0279',
-}
-
-
-def test_bundled_inputs_remain_unchanged():
-    before = input_fingerprints()
-    assert before == EXPECTED_INPUT_FINGERPRINTS
-    run_tool()
-    after = input_fingerprints()
-    assert after == EXPECTED_INPUT_FINGERPRINTS
-
-
-def test_top_level_schema_formatting_and_determinism():
-    raw1, plan1 = run_tool()
-    raw2, _ = run_tool()
-    assert raw1 == raw2
-    assert raw1 == json.dumps(plan1, indent=2)
-    assert '\t' not in raw1
-    assert list(plan1.keys()) == [
-        'root', 'nodeVersion', 'packages', 'unresolved', 'peerWarnings',
-        'policyViolations', 'mirrorWarnings', 'lockDrift', 'summary'
-    ]
-    assert plan1['root'] == 'ridge-ui'
-    assert plan1['nodeVersion'] == '20.11.1'
-    assert [p['name'] for p in plan1['packages']] == sorted(p['name'] for p in plan1['packages'])
-
-
-def test_package_entry_key_order_and_requested_by():
-    _, plan = run_tool()
-    for pkg in plan['packages']:
-        assert list(pkg.keys()) == [
-            'name', 'package', 'version', 'source', 'requestedBy',
-            'license', 'integrity', 'tarball', 'patched', 'yanked'
+        facet = tuple(q for q, point in enumerate(points) if sum(c * x for c, x in zip(carrier[:4], point)) + carrier[4] == 0)
+        facets.setdefault(facet, carrier)
+    hull = sorted({q for facet in facets for q in facet})
+    hull_line = "HULL " + str(len(hull))
+    if hull:
+        hull_line += " " + " ".join(str(q + 1) for q in hull)
+    lines = [hull_line, f"FACETS {len(facets)}"]
+    lines.extend("FACET " + str(len(facet)) + " " + " ".join(str(q + 1) for q in facet) for facet in sorted(facets))
+    facet_hash = 17
+    for facet in sorted(facets):
+        for value in (len(facet), *(q + 1 for q in facet)):
+            facet_hash = (facet_hash * HASH_BASE + value) % HASH_MOD
+    triple_face_hash = 31
+    for triple in itertools.combinations(hull, 3):
+        count = sum(all(vertex in facet for vertex in triple) for facet in facets)
+        for value in (*(q + 1 for q in triple), count):
+            triple_face_hash = (triple_face_hash * HASH_BASE + value) % HASH_MOD
+    normal_hash = 43
+    for facet in sorted(facets):
+        carrier = facets[facet]
+        for value in (len(facet), *(q + 1 for q in facet), *carrier):
+            normal_hash = (normal_hash * HASH_BASE + (value % HASH_MOD)) % HASH_MOD
+    pair_normal_hash = 83
+    ordered_facets = sorted(facets)
+    for left_index, left in enumerate(ordered_facets):
+        for right_index, right in enumerate(ordered_facets[left_index + 1 :], start=left_index + 1):
+            face = tuple(sorted(set(left) & set(right)))
+            if len(face) < 2:
+                continue
+            for value in (
+                left_index + 1,
+                right_index + 1,
+                len(face),
+                *(q + 1 for q in face),
+                *facets[left],
+                *facets[right],
+            ):
+                pair_normal_hash = (
+                    pair_normal_hash * HASH_BASE + (value % HASH_MOD)
+                ) % HASH_MOD
+    intersection_faces = set()
+    for left, right in itertools.combinations(ordered_facets, 2):
+        face = tuple(sorted(set(left) & set(right)))
+        if len(face) >= 2:
+            intersection_faces.add(face)
+    intersection_hash = 59
+    for face in sorted(intersection_faces):
+        containing = sum(all(vertex in facet for vertex in face) for facet in facets)
+        for value in (len(face), *(q + 1 for q in face), containing):
+            intersection_hash = (intersection_hash * HASH_BASE + value) % HASH_MOD
+    carrier_sign_hash = 71
+    for ids in itertools.combinations(range(len(points)), 4):
+        coeffs = hyperplane_coefficients(points, ids)
+        if not any(coeffs):
+            continue
+        values = [sum(c * x for c, x in zip(coeffs[:4], point)) + coeffs[4] for point in points]
+        first_nonzero = next((value for value in values if value != 0), None)
+        if first_nonzero is None:
+            continue
+        if first_nonzero < 0:
+            values = [-value for value in values]
+        for value in (*(q + 1 for q in ids),):
+            carrier_sign_hash = (carrier_sign_hash * HASH_BASE + value) % HASH_MOD
+        for value in values:
+            sign_code = 0 if value < 0 else 1 if value == 0 else 2
+            carrier_sign_hash = (carrier_sign_hash * HASH_BASE + sign_code) % HASH_MOD
+    vertex_figure_hash = 97
+    for vertex in hull:
+        incident = [
+            position + 1
+            for position, facet in enumerate(ordered_facets)
+            if vertex in facet
         ]
-        assert pkg['requestedBy'] == sorted(set(pkg['requestedBy']))
-
-
-def test_resolution_overrides_aliases_workspaces_and_shared_versions():
-    _, plan = run_tool()
-    pkgs = by_name(plan)
-    expected_names = {
-        '@ridge/core', '@ridge/plugin-auth', '@types/node', 'ansi-regex', 'debug',
-        'jsonwebtoken', 'jwa', 'jws', 'left-pad', 'left-pad-safe',
-        'ms', 'rollup', 'undici-types'
+        for value in (vertex + 1, len(incident), *incident):
+            vertex_figure_hash = (vertex_figure_hash * HASH_BASE + value) % HASH_MOD
+        for left_pos, right_pos in itertools.combinations(incident, 2):
+            left = ordered_facets[left_pos - 1]
+            right = ordered_facets[right_pos - 1]
+            face = tuple(sorted(set(left) & set(right)))
+            for value in (left_pos, right_pos, len(face), *(q + 1 for q in face)):
+                vertex_figure_hash = (vertex_figure_hash * HASH_BASE + value) % HASH_MOD
+    facet_triple_hash = 109
+    for a, b, c in itertools.combinations(range(len(ordered_facets)), 3):
+        face = tuple(
+            sorted(
+                set(ordered_facets[a])
+                & set(ordered_facets[b])
+                & set(ordered_facets[c])
+            )
+        )
+        if not face:
+            continue
+        containing = sum(all(vertex in facet for vertex in face) for facet in facets)
+        for value in (a + 1, b + 1, c + 1, len(face), *(q + 1 for q in face), containing):
+            facet_triple_hash = (facet_triple_hash * HASH_BASE + value) % HASH_MOD
+    facet_quad_hash = 127
+    for a, b, c, d in itertools.combinations(range(len(ordered_facets)), 4):
+        face = tuple(
+            sorted(
+                set(ordered_facets[a])
+                & set(ordered_facets[b])
+                & set(ordered_facets[c])
+                & set(ordered_facets[d])
+            )
+        )
+        if not face:
+            continue
+        containing = sum(all(vertex in facet for vertex in face) for facet in facets)
+        for value in (a + 1, b + 1, c + 1, d + 1, len(face), *(q + 1 for q in face), containing):
+            facet_quad_hash = (facet_quad_hash * HASH_BASE + value) % HASH_MOD
+    face_family = complete_face_family(points, hull, tuple(ordered_facets))
+    face_lattice_hash = 149
+    dimensions = []
+    for face in face_family:
+        dimension = affine_dimension(points, face)
+        dimensions.append(dimension)
+        containing = sum(all(vertex in facet for vertex in face) for facet in facets)
+        for value in (
+            dimension,
+            len(face),
+            *(vertex + 1 for vertex in face),
+            containing,
+        ):
+            face_lattice_hash = (
+                face_lattice_hash * HASH_BASE + value
+            ) % HASH_MOD
+    flag_hash = 163
+    positions_by_dimension = {
+        dimension: [
+            position
+            for position, actual_dimension in enumerate(dimensions)
+            if actual_dimension == dimension
+        ]
+        for dimension in range(4)
     }
-    assert set(pkgs) == expected_names
-    assert '@ridge/telemetry' not in pkgs
-    assert 'source-map' not in pkgs
-    assert pkgs['@ridge/core']['source'] == 'workspace'
-    assert pkgs['debug']['version'] == '4.3.5'
-    assert pkgs['debug']['integrity'] == 'sha512-debug435-patched'
-    assert pkgs['ansi-regex']['version'] == '6.1.0'
-    assert pkgs['left-pad-safe']['package'] == 'left-pad'
-    assert pkgs['left-pad']['integrity'] == 'sha512-left130-patched'
-    assert pkgs['ms']['version'] == '2.1.3'
-    assert pkgs['ms']['requestedBy'] == ['@ridge/core', 'debug', 'root']
+    for p0 in positions_by_dimension[0]:
+        face0 = set(face_family[p0])
+        for p1 in positions_by_dimension[1]:
+            face1 = set(face_family[p1])
+            if not face0 < face1:
+                continue
+            for p2 in positions_by_dimension[2]:
+                face2 = set(face_family[p2])
+                if not face1 < face2:
+                    continue
+                for p3 in positions_by_dimension[3]:
+                    face3 = set(face_family[p3])
+                    if not face2 < face3:
+                        continue
+                    for value in (p0 + 1, p1 + 1, p2 + 1, p3 + 1):
+                        flag_hash = (flag_hash * HASH_BASE + value) % HASH_MOD
+    facet_carrier_hash = 181
+    for position, facet in enumerate(ordered_facets, start=1):
+        normal = facets[facet]
+        for value in (
+            position,
+            len(facet),
+            *(vertex + 1 for vertex in facet),
+            *normal,
+        ):
+            facet_carrier_hash = (
+                facet_carrier_hash * HASH_BASE + value
+            ) % HASH_MOD
+        for ids in itertools.combinations(facet, 4):
+            for value in (vertex + 1 for vertex in ids):
+                facet_carrier_hash = (
+                    facet_carrier_hash * HASH_BASE + value
+                ) % HASH_MOD
+            carrier = hyperplane_coefficients(points, ids)
+            scale = 0
+            for value in carrier:
+                scale = math.gcd(scale, abs(value))
+            if scale == 0:
+                facet_carrier_hash = (
+                    facet_carrier_hash * HASH_BASE
+                ) % HASH_MOD
+                continue
+            carrier = tuple(value // scale for value in carrier)
+            pivot = next(index for index, value in enumerate(normal) if value)
+            if (carrier[pivot] < 0) != (normal[pivot] < 0):
+                carrier = tuple(-value for value in carrier)
+            facet_carrier_hash = (
+                facet_carrier_hash * HASH_BASE + 1
+            ) % HASH_MOD
+            for value in carrier:
+                facet_carrier_hash = (
+                    facet_carrier_hash * HASH_BASE + value
+                ) % HASH_MOD
+    face_positions = {
+        face: position
+        for position, face in enumerate(face_family, start=1)
+    }
+    facet_sets = tuple(set(facet) for facet in ordered_facets)
+    containing_cache = {}
+
+    def containing_positions(face):
+        if face not in containing_cache:
+            face_set = set(face)
+            containing_cache[face] = tuple(
+                position
+                for position, facet_set in enumerate(facet_sets, start=1)
+                if face_set <= facet_set
+            )
+        return containing_cache[face]
+
+    face_normal_hash = 191
+    for position, (face, dimension) in enumerate(
+        zip(face_family, dimensions), start=1
+    ):
+        containing = containing_positions(face)
+        for value in (
+            position,
+            dimension,
+            len(face),
+            *(vertex + 1 for vertex in face),
+            len(containing),
+            *containing,
+        ):
+            face_normal_hash = (
+                face_normal_hash * HASH_BASE + value
+            ) % HASH_MOD
+        for facet_position in containing:
+            for value in facets[ordered_facets[facet_position - 1]]:
+                face_normal_hash = (
+                    face_normal_hash * HASH_BASE + value
+                ) % HASH_MOD
+    normal_gram_hash = 193
+    for left, right in itertools.combinations(range(len(ordered_facets)), 2):
+        left_facet = ordered_facets[left]
+        right_facet = ordered_facets[right]
+        face = tuple(sorted(set(left_facet) & set(right_facet)))
+        if not face:
+            continue
+        left_normal = facets[left_facet][:4]
+        right_normal = facets[right_facet][:4]
+        left_norm = sum(value * value for value in left_normal)
+        right_norm = sum(value * value for value in right_normal)
+        inner = sum(
+            left_value * right_value
+            for left_value, right_value in zip(left_normal, right_normal)
+        )
+        gram = left_norm * right_norm - inner * inner
+        for value in (
+            left + 1,
+            right + 1,
+            face_positions[face],
+            len(face),
+            *(vertex + 1 for vertex in face),
+            left_norm,
+            right_norm,
+            inner,
+            gram,
+        ):
+            normal_gram_hash = (
+                normal_gram_hash * HASH_BASE + value
+            ) % HASH_MOD
+    facet_positions = {
+        facet: position
+        for position, facet in enumerate(ordered_facets, start=1)
+    }
+    flag_normal_hash = 197
+    for p0 in positions_by_dimension[0]:
+        face0 = set(face_family[p0])
+        for p1 in positions_by_dimension[1]:
+            face1 = set(face_family[p1])
+            if not face0 < face1:
+                continue
+            for p2 in positions_by_dimension[2]:
+                face2 = set(face_family[p2])
+                if not face1 < face2:
+                    continue
+                for p3 in positions_by_dimension[3]:
+                    face3 = set(face_family[p3])
+                    if not face2 < face3:
+                        continue
+                    facet_position = facet_positions[face_family[p3]]
+                    for value in (
+                        p0 + 1,
+                        p1 + 1,
+                        p2 + 1,
+                        p3 + 1,
+                        facet_position,
+                        *facets[ordered_facets[facet_position - 1]],
+                        len(containing_positions(face_family[p0])),
+                        len(containing_positions(face_family[p1])),
+                        len(containing_positions(face_family[p2])),
+                    ):
+                        flag_normal_hash = (
+                            flag_normal_hash * HASH_BASE + value
+                        ) % HASH_MOD
+    lines.append(f"FACET_HASH {facet_hash}")
+    lines.append(f"TRIPLE_FACE_HASH {triple_face_hash}")
+    lines.append(f"NORMAL_HASH {normal_hash}")
+    lines.append(f"PAIR_NORMAL_HASH {pair_normal_hash}")
+    lines.append(f"INTERSECTION_HASH {intersection_hash}")
+    lines.append(f"CARRIER_SIGN_HASH {carrier_sign_hash}")
+    lines.append(f"VERTEX_FIGURE_HASH {vertex_figure_hash}")
+    lines.append(f"FACET_TRIPLE_HASH {facet_triple_hash}")
+    lines.append(f"FACET_QUAD_HASH {facet_quad_hash}")
+    lines.append(f"FACE_LATTICE_HASH {face_lattice_hash}")
+    lines.append(f"FLAG_HASH {flag_hash}")
+    lines.append(f"FACET_CARRIER_HASH {facet_carrier_hash}")
+    lines.append(f"FACE_NORMAL_HASH {face_normal_hash}")
+    lines.append(f"NORMAL_GRAM_HASH {normal_gram_hash}")
+    lines.append(f"FLAG_NORMAL_HASH {flag_normal_hash}")
+    return "\n".join(lines) + "\n"
 
 
-def test_resolutions_pins_and_transitive_chain():
-    _, plan = run_tool()
-    pkgs = by_name(plan)
-    assert pkgs['jsonwebtoken']['version'] == '9.0.0'
-    assert pkgs['jsonwebtoken']['integrity'] == 'sha512-jwt900'
-    assert pkgs['jws']['version'] == '3.2.2'
-    assert pkgs['jwa']['requestedBy'] == ['jws']
-    assert pkgs['undici-types']['requestedBy'] == ['@types/node']
+def cases():
+    rng = random.Random(0x4D)
+    out = []
+    for index in range(72):
+        vectors = []
+        while len(vectors) < 3 + index % 4:
+            v = tuple(rng.randrange(2, 80) * (1 if rng.randrange(2) else -1) for _ in range(4))
+            if v not in vectors and tuple(-x for x in v) not in vectors:
+                vectors.append(v)
+        points = [v for v in vectors for v in (v, tuple(-x for x in v))]
+        points.extend(tuple(rng.randrange(-8, 9) for _ in range(4)) for _ in range(index % 3))
+        rng.shuffle(points)
+        if (
+            len(points) >= 5
+            and len(reference_facet_profile(tuple(points)).splitlines()) >= 3
+        ):
+            out.append(tuple(points))
+    for seed in range(48):
+        scale = 130 + seed % 17
+        shear = 3 + seed % 9
+        points = []
+        for bits in itertools.product((-1, 1), repeat=4):
+            x0, x1, x2, x3 = bits
+            points.append((
+                scale * (x0 + 2 * x1) + shear * x2,
+                scale * (3 * x1 - x2) + (seed + 5) * x3,
+                scale * (x2 + x3) - (2 * seed + 7) * x0,
+                scale * (2 * x3 - x0) + (seed % 5) * x1,
+            ))
+        if seed % 3 == 0:
+            points = points[::2] + points[1::2]
+        elif seed % 3 == 1:
+            points = points[5:] + points[:5]
+        out.append(tuple(points))
+    for seed in range(12):
+        count = 5 + seed % 8
+        points = []
+        for i in range(count):
+            points.append((
+                97 * seed + 11 * i,
+                (i * i + 13 * seed) % 211 - 105,
+                (i * i * i + 7 * seed * i) % 307 - 153,
+                4000 - 17 * seed,
+            ))
+        out.append(tuple(points))
+    for seed in range(36):
+        count = 10 + seed % 7
+        ts = list(range(-8, 8))
+        shift = seed % len(ts)
+        ts = (ts[shift:] + ts[:shift])[:count]
+        points = []
+        for t in ts:
+            points.append((
+                t + seed % 5,
+                t * t + (seed % 3) * t - 40,
+                t * t * t + 3 * seed - 11 * (seed % 4),
+                t * t * t * t - 2 * t * t + 7 * (seed % 6),
+            ))
+        if seed % 2:
+            points = points[3:] + points[:3]
+        out.append(tuple(points))
+    for seed in range(36):
+        rng2 = random.Random(0xFBF700 + seed)
+        count = 11 + seed % 6
+        points = []
+        while len(points) < count:
+            point = tuple(rng2.randrange(-9000, 9001) for _ in range(4))
+            if point not in points:
+                points.append(point)
+        out.append(tuple(points))
+    return out
 
 
-def test_transitive_dev_engine_blocked_and_patch_behavior():
-    _, plan = run_tool()
-    pkgs = by_name(plan)
-    assert pkgs['rollup']['version'] == '3.29.5'
-    assert 'fsevents' not in pkgs
-    assert pkgs['jwa']['version'] == '1.4.1'
-    assert pkgs['debug']['patched'] is True
-    assert pkgs['left-pad-safe']['patched'] is True
-    assert plan['unresolved'] == [{
-        'name': 'event-stream',
-        'range': '^4.0.0',
-        'requestedBy': 'root',
-        'reason': 'blocked by policy'
-    }]
+def high_coordinate_nonsimplicial_cases():
+    out = []
+    for seed in range(24):
+        scale = 1520 + 29 * (seed % 8)
+        shift = (
+            3200 - 47 * (seed % 5),
+            -3150 + 41 * (seed % 7),
+            3050 - 37 * (seed % 6),
+            6900 - 43 * (seed % 9),
+        )
+        permutation = tuple((axis + seed) % 4 for axis in range(4))
+        points = []
+        for bits in itertools.product((-1, 1), repeat=4):
+            u = tuple(bits[index] for index in permutation)
+            points.append(
+                (
+                    shift[0] + scale * (2 * u[0] + u[1]),
+                    shift[1] + scale * (u[1] + 2 * u[2]),
+                    shift[2] + scale * (u[2] + 2 * u[3]),
+                    shift[3] + scale * u[3],
+                )
+            )
+        out.append(tuple(points))
+    for seed in range(24):
+        scale = 1580 + 31 * (seed % 7)
+        center = (
+            3150 - 43 * (seed % 6),
+            -3100 + 47 * (seed % 5),
+            3000 - 53 * (seed % 4),
+        )
+        base_height = -7900 + 12 * seed
+        apex_height = 7900 - 16 * seed
+        permutation = tuple((axis + seed) % 3 for axis in range(3))
+        points = []
+        for bits in itertools.product((-1, 1), repeat=3):
+            u = tuple(bits[index] for index in permutation)
+            points.append(
+                (
+                    center[0] + scale * (2 * u[0] + u[1]),
+                    center[1] + scale * (u[1] + 2 * u[2]),
+                    center[2] + scale * (2 * u[2] - u[0]),
+                    base_height,
+                )
+            )
+        points.append((*center, apex_height))
+        points.append((*center, (3 * base_height + apex_height) // 4))
+        points.append((*center, (base_height + apex_height) // 2))
+        out.append(tuple(points))
+    return out
 
 
-def test_peer_optional_meta_and_mirror_warnings():
-    _, plan = run_tool()
-    peers = {(w['package'], w['peer']) for w in plan['peerWarnings']}
-    assert ('@ridge/plugin-auth', 'legacy-shim') not in peers
-    assert ('jsonwebtoken', 'crypto-helper') in peers
-    assert plan['policyViolations'] == []
-    assert plan['mirrorWarnings'] == [{
-        'package': 'ansi-regex',
-        'version': '6.1.0',
-        'tarball': 'https://cdn.badmirror.test/ansi-regex-6.1.0.tgz',
-        'expectedHost': 'mirror.local'
-    }]
+ADVERSARIAL_CASES = high_coordinate_nonsimplicial_cases()
+BASE_CASES = cases()
+CASES = BASE_CASES + ADVERSARIAL_CASES
+SCRATCH_ROOT = Path("/tmp/fbf7_geometry_workspace")
+SOLVER = SCRATCH_ROOT / "bin" / "hull4_facet_profile"
+RUN_UID = 65534
+RUN_GID = 65534
 
 
-def test_lock_drift_matches_stale_snapshot():
-    _, plan = run_tool()
-    assert plan['lockDrift'] == [
-        {
-            'package': 'ansi-regex',
-            'lockVersion': '5.0.1',
-            'plannedVersion': '6.1.0',
-            'lockIntegrity': 'sha512-oldansi',
-            'plannedIntegrity': 'sha512-ansi610'
-        },
-        {
-            'package': 'debug',
-            'lockVersion': '3.2.7',
-            'plannedVersion': '4.3.5',
-            'lockIntegrity': 'sha512-olddebug',
-            'plannedIntegrity': 'sha512-debug435-patched'
-        },
-        {
-            'package': 'left-pad',
-            'lockVersion': '1.1.3',
-            'plannedVersion': '1.3.0',
-            'lockIntegrity': 'sha512-oldleft',
-            'plannedIntegrity': 'sha512-left130-patched'
-        },
-        {
-            'package': 'ms',
-            'lockVersion': '2.1.1',
-            'plannedVersion': '2.1.3',
-            'lockIntegrity': 'sha512-oldms',
-            'plannedIntegrity': 'sha512-ms213'
-        }
-    ]
+def drop_privileges():
+    os.setgid(RUN_GID)
+    os.setuid(RUN_UID)
 
 
-def test_warning_section_sort_orders():
-    _, plan = run_tool()
-    assert plan['unresolved'] == sorted(
-        plan['unresolved'], key=lambda e: (e['name'], e['requestedBy'], e['range'])
+def stage_geometry_evaluator():
+    if SCRATCH_ROOT.exists():
+        shutil.rmtree(SCRATCH_ROOT)
+    (SCRATCH_ROOT / "src").mkdir(parents=True)
+    shutil.copy2("/app/Makefile", SCRATCH_ROOT / "Makefile")
+    shutil.copy2("/app/src/main.cpp", SCRATCH_ROOT / "src" / "main.cpp")
+    for path in (
+        SCRATCH_ROOT,
+        SCRATCH_ROOT / "src",
+        SCRATCH_ROOT / "Makefile",
+        SCRATCH_ROOT / "src" / "main.cpp",
+    ):
+        os.chown(path, RUN_UID, RUN_GID)
+    os.chmod(SCRATCH_ROOT, 0o755)
+    os.chmod(SCRATCH_ROOT / "src", 0o755)
+    os.chmod(SCRATCH_ROOT / "Makefile", 0o644)
+    os.chmod(SCRATCH_ROOT / "src" / "main.cpp", 0o644)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def prepare_four_dimensional_profile():
+    stage_geometry_evaluator()
+    subprocess.run(
+        ["make", "clean", "all"],
+        cwd=SCRATCH_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        preexec_fn=drop_privileges,
     )
-    assert plan['peerWarnings'] == sorted(
-        plan['peerWarnings'], key=lambda e: (e['package'], e['peer'], e['requested'])
+    assert SOLVER.is_file()
+
+
+def execute(points):
+    points = tuple(points)
+    data = str(len(points)) + "\n" + "\n".join(" ".join(map(str, p)) for p in points) + "\n"
+    result = subprocess.run(
+        [str(SOLVER)],
+        input=data,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+        cwd="/tmp",
+        env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+        preexec_fn=drop_privileges,
     )
-    assert plan['mirrorWarnings'] == sorted(
-        plan['mirrorWarnings'], key=lambda e: (e['package'], e['version'])
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout == reference_facet_profile(points)
+
+
+@pytest.mark.parametrize("index", range(len(CASES)))
+def test_exact_rank_four_face_case(index):
+    """Verify rank-four carrier orientation, facet merging, and boundary membership."""
+    execute(CASES[index])
+
+
+def test_relabeling_metamorphism():
+    """Relabeling points changes only the one-based IDs in the canonical signature."""
+    points = list(CASES[12])
+    points = points[::2] + points[1::2]
+    execute(points)
+
+
+def test_wrong_semantics_are_separated():
+    """Interior points and non-simplicial face families defeat common shortcuts."""
+    assert len(CASES) >= 60
+    assert any(
+        "FACET 5" in reference_facet_profile(points) or "FACET 6" in reference_facet_profile(points)
+        for points in CASES
     )
-    assert plan['lockDrift'] == sorted(plan['lockDrift'], key=lambda e: e['package'])
+    assert "FACET_HASH" in reference_facet_profile(CASES[0])
+    assert "TRIPLE_FACE_HASH" in reference_facet_profile(CASES[0])
+    assert "NORMAL_HASH" in reference_facet_profile(CASES[0])
+    assert "PAIR_NORMAL_HASH" in reference_facet_profile(CASES[0])
+    assert "INTERSECTION_HASH" in reference_facet_profile(CASES[0])
+    assert "CARRIER_SIGN_HASH" in reference_facet_profile(CASES[0])
+    assert "VERTEX_FIGURE_HASH" in reference_facet_profile(CASES[0])
+    assert "FACET_TRIPLE_HASH" in reference_facet_profile(CASES[0])
+    assert "FACET_QUAD_HASH" in reference_facet_profile(CASES[0])
+    assert "FACE_LATTICE_HASH" in reference_facet_profile(CASES[0])
+    assert "FLAG_HASH" in reference_facet_profile(CASES[0])
+    assert "FACET_CARRIER_HASH" in reference_facet_profile(CASES[0])
+    assert "FACE_NORMAL_HASH" in reference_facet_profile(CASES[0])
+    assert "NORMAL_GRAM_HASH" in reference_facet_profile(CASES[0])
+    assert "FLAG_NORMAL_HASH" in reference_facet_profile(CASES[0])
+    assert any(reference_facet_profile(points).startswith("HULL 0\nFACETS 0\n") for points in CASES)
+    assert len({reference_facet_profile(points).split("NORMAL_HASH ")[1] for points in CASES[72:96]}) == 24
+    assert len({reference_facet_profile(points).split("PAIR_NORMAL_HASH ")[1] for points in CASES[72:96]}) == 24
+    assert len({reference_facet_profile(points).split("CARRIER_SIGN_HASH ")[1] for points in BASE_CASES[-36:]}) == 36
 
 
-def test_summary_matches_report_sections():
-    _, plan = run_tool()
-    packages = plan['packages']
-    summary = plan['summary']
-    assert summary == {
-        'packageCount': len(packages),
-        'workspaceCount': sum(1 for p in packages if p['source'] == 'workspace'),
-        'registryCount': sum(1 for p in packages if p['source'] == 'registry'),
-        'patchedCount': sum(1 for p in packages if p['patched']),
-        'yankedSelectedCount': sum(1 for p in packages if p['yanked']),
-        'unresolvedCount': len(plan['unresolved']),
-        'peerWarningCount': len(plan['peerWarnings']),
-        'policyViolationCount': len(plan['policyViolations']),
-        'mirrorWarningCount': len(plan['mirrorWarnings']),
-        'lockDriftCount': len(plan['lockDrift'])
-    }
-    assert summary['packageCount'] == 13
-    assert summary['patchedCount'] == 3
-    assert summary['lockDriftCount'] == 4
-    assert summary['yankedSelectedCount'] == 0
+@functools.cache
+def exposed_facets(points):
+    facets = {}
+    for ids in itertools.combinations(range(len(points)), 4):
+        carrier = primitive_carrier(points, ids)
+        if carrier is None:
+            continue
+        facet = tuple(
+            index
+            for index, point in enumerate(points)
+            if sum(
+                coefficient * coordinate
+                for coefficient, coordinate in zip(carrier[:4], point)
+            )
+            + carrier[4]
+            == 0
+        )
+        facets.setdefault(facet, carrier)
+    return facets
 
 
-def _write_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + '\n')
+def first_four_shortcut_normal_hash(points):
+    value_hash = 43
+    for facet in sorted(exposed_facets(points)):
+        shortcut = primitive_carrier(points, facet[:4])
+        if shortcut is None:
+            shortcut = (0, 0, 0, 0, 0)
+        for value in (
+            len(facet),
+            *(vertex + 1 for vertex in facet),
+            *shortcut,
+        ):
+            value_hash = (
+                value_hash * HASH_BASE + value
+            ) % HASH_MOD
+    return value_hash
 
 
-def _swap_app_files(overrides):
-    backups = {}
-    for rel, content in overrides.items():
-        target = APP / rel
-        backups[target] = target.read_text() if target.exists() else None
-        if content is None:
-            if target.exists():
-                target.unlink()
-        elif rel.endswith('.json'):
-            _write_json(target, content)
-        else:
-            target.write_text(content)
-    return backups
-
-
-def _restore_app_files(backups):
-    for target, original in backups.items():
-        if original is None:
-            if target.exists():
-                target.unlink()
-        else:
-            target.write_text(original)
-
-
-def _minimal_workspace(deps=None, dev_deps=None, optional_deps=None):
-    pkg = {
-        'name': 'ridge-ui',
-        'version': '1.0.0',
-        'private': True,
-        'workspaces': ['packages/*'],
-        'dependencies': deps or {}
-    }
-    if dev_deps is not None:
-        pkg['devDependencies'] = dev_deps
-    if optional_deps is not None:
-        pkg['optionalDependencies'] = optional_deps
-    return pkg
-
-
-def test_license_violation_synthetic():
-    policy = dict(BASE_POLICY)
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'bad-license-lib': '1.0.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                'bad-license-lib': {
-                    '1.0.0': {
-                        'license': 'GPL-3.0',
-                        'integrity': 'sha512-gpl',
-                        'tarball': 'https://mirror.local/bad-license-lib-1.0.0.tgz',
-                        'dependencies': {}
-                    }
-                }
-            }
-        },
-        'config/policy.json': policy
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        assert plan['policyViolations'] == [{
-            'package': 'bad-license-lib',
-            'version': '1.0.0',
-            'rule': 'license',
-            'message': 'license GPL-3.0 is not allowed'
-        }]
-    finally:
-        _restore_app_files(backups)
-
-
-def test_deprecated_only_unresolved_synthetic():
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'legacy-only': '^1.0.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                'legacy-only': {
-                    '1.0.0': {'license': 'MIT', 'integrity': 'a', 'tarball': 'https://mirror.local/a.tgz', 'deprecated': True, 'dependencies': {}},
-                    '1.1.0': {'license': 'MIT', 'integrity': 'b', 'tarball': 'https://mirror.local/b.tgz', 'deprecated': True, 'dependencies': {}}
-                }
-            }
-        },
-        'config/policy.json': dict(BASE_POLICY)
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        assert plan['packages'] == []
-        assert plan['unresolved'][0]['reason'] == 'no compatible version'
-    finally:
-        _restore_app_files(backups)
-
-
-def test_resolution_out_of_range_synthetic():
-    policy = dict(BASE_POLICY, resolutions={'widget': '2.0.0'})
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                'widget': {
-                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
-                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
-                }
-            }
-        },
-        'config/policy.json': policy
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        assert plan['unresolved'] == [{
-            'name': 'widget',
-            'range': '^1.0.0',
-            'requestedBy': 'root',
-            'reason': 'resolution out of range'
-        }]
-    finally:
-        _restore_app_files(backups)
-
-
-def test_version_conflict_suffix_synthetic():
-    overrides = {
-        'workspace/package.json': _minimal_workspace({
-            'widget': '^1.0.0',
-            'widget-alt': 'npm:widget@^2.0.0'
-        }),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                'widget': {
-                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
-                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
-                }
-            }
-        },
-        'config/policy.json': dict(BASE_POLICY)
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        pkgs = by_name(plan)
-        assert pkgs['widget']['version'] == '1.0.0'
-        assert pkgs['widget-alt']['version'] == '2.0.0'
-    finally:
-        _restore_app_files(backups)
-
-
-def test_version_conflict_hash_suffix_synthetic():
-    overrides = {
-        'workspace/package.json': _minimal_workspace({
-            '@ridge/core': 'workspace:*',
-            'widget': '^1.0.0'
-        }),
-        'workspace/packages/core/package.json': {
-            'name': '@ridge/core',
-            'version': '1.0.0',
-            'dependencies': {'widget': '^2.0.0'}
-        },
-        'registry/packages.json': {
-            'packages': {
-                'widget': {
-                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
-                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
-                }
-            }
-        },
-        'config/policy.json': dict(BASE_POLICY)
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        pkgs = by_name(plan)
-        assert pkgs['widget']['version'] == '1.0.0'
-        assert pkgs['widget#2']['version'] == '2.0.0'
-        assert pkgs['widget#2']['package'] == 'widget'
-    finally:
-        _restore_app_files(backups)
-
-
-def test_workspace_missing_synthetic():
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'@ridge/missing': 'workspace:*'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {'packages': {}},
-        'config/policy.json': dict(BASE_POLICY)
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        assert plan['unresolved'][0]['reason'] == 'workspace package missing'
-    finally:
-        _restore_app_files(backups)
-
-
-def test_peer_range_mismatch_synthetic():
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'host': '1.0.0', 'peer-lib': '1.0.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                'host': {
-                    '1.0.0': {
-                        'license': 'MIT',
-                        'integrity': 'host',
-                        'tarball': 'https://mirror.local/host.tgz',
-                        'peerDependencies': {'peer-lib': '^2.0.0'},
-                        'dependencies': {}
-                    }
-                },
-                'peer-lib': {
-                    '1.0.0': {'license': 'MIT', 'integrity': 'peer', 'tarball': 'https://mirror.local/peer.tgz', 'dependencies': {}}
-                }
-            }
-        },
-        'config/policy.json': dict(BASE_POLICY)
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        assert plan['peerWarnings'][0]['reason'] == 'peer range mismatch'
-    finally:
-        _restore_app_files(backups)
-
-
-def test_patch_integrity_only_on_matching_version():
-    policy = dict(BASE_POLICY, patches={'widget': {'version': '1.0.0', 'file': 'p.patch', 'integrity': 'sha512-patched'}})
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                'widget': {
-                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
-                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'dependencies': {}}
-                }
-            }
-        },
-        'config/policy.json': policy
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        pkgs = by_name(plan)
-        assert pkgs['widget']['version'] == '1.1.0'
-        assert pkgs['widget']['patched'] is False
-        assert pkgs['widget']['integrity'] == 'w110'
-    finally:
-        _restore_app_files(backups)
-
-
-def test_prefer_stable_skips_prerelease_synthetic():
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                'widget': {
-                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
-                    '1.1.0-rc.1': {'license': 'MIT', 'integrity': 'w110rc', 'tarball': 'https://mirror.local/w110rc.tgz', 'dependencies': {}},
-                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'dependencies': {}}
-                }
-            }
-        },
-        'config/policy.json': dict(BASE_POLICY, preferStable=True)
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        assert by_name(plan)['widget']['version'] == '1.1.0'
-    finally:
-        _restore_app_files(backups)
-
-
-def test_yanked_fallback_when_only_option_synthetic():
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                'widget': {
-                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'yanked': True, 'dependencies': {}}
-                }
-            }
-        },
-        'config/policy.json': dict(BASE_POLICY)
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        pkgs = by_name(plan)
-        assert pkgs['widget']['yanked'] is True
-        assert plan['summary']['yankedSelectedCount'] == 1
-    finally:
-        _restore_app_files(backups)
-
-
-def test_yanked_deprioritized_when_stable_exists_synthetic():
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                'widget': {
-                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
-                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'yanked': True, 'dependencies': {}}
-                }
-            }
-        },
-        'config/policy.json': dict(BASE_POLICY)
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        assert by_name(plan)['widget']['version'] == '1.0.0'
-        assert plan['summary']['yankedSelectedCount'] == 0
-    finally:
-        _restore_app_files(backups)
-
-
-def test_optional_dependencies_respect_policy_flag():
-    overrides = {
-        'workspace/package.json': _minimal_workspace(
-            {},
-            optional_deps={'opt-root': '^1.0.0'}
-        ),
-        'workspace/packages/core/package.json': {
-            'name': '@ridge/core',
-            'version': '1.0.0',
-            'dependencies': {},
-            'optionalDependencies': {'opt-ws': '^1.0.0'}
-        },
-        'registry/packages.json': {
-            'packages': {
-                'opt-root': {'1.0.0': {'license': 'MIT', 'integrity': 'or', 'tarball': 'https://mirror.local/or.tgz', 'dependencies': {}}},
-                'opt-ws': {'1.0.0': {'license': 'MIT', 'integrity': 'ow', 'tarball': 'https://mirror.local/ow.tgz', 'dependencies': {}}},
-                'host': {
-                    '1.0.0': {
-                        'license': 'MIT',
-                        'integrity': 'host',
-                        'tarball': 'https://mirror.local/host.tgz',
-                        'dependencies': {},
-                        'optionalDependencies': {'opt-reg': '^1.0.0'}
-                    }
-                }
-            }
-        },
-        'config/policy.json': dict(BASE_POLICY, includeOptionalDependencies=False)
-    }
-    overrides['workspace/package.json']['dependencies'] = {'host': '1.0.0'}
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        names = set(by_name(plan))
-        assert names == {'host'}
-    finally:
-        _restore_app_files(backups)
-
-
-def test_optional_dependencies_install_when_enabled():
-    policy = dict(BASE_POLICY, includeOptionalDependencies=True)
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'host': '1.0.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                'host': {
-                    '1.0.0': {
-                        'license': 'MIT',
-                        'integrity': 'host',
-                        'tarball': 'https://mirror.local/host.tgz',
-                        'dependencies': {},
-                        'optionalDependencies': {'opt-reg': '1.0.0'}
-                    }
-                },
-                'opt-reg': {'1.0.0': {'license': 'MIT', 'integrity': 'or', 'tarball': 'https://mirror.local/or.tgz', 'dependencies': {}}}
-            }
-        },
-        'config/policy.json': policy
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        assert 'opt-reg' in by_name(plan)
-    finally:
-        _restore_app_files(backups)
-
-
-def test_workspace_semver_prefers_local_package():
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'@ridge/lib': '^1.2.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'workspace/packages/lib/package.json': {'name': '@ridge/lib', 'version': '1.4.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                '@ridge/lib': {
-                    '1.9.0': {'license': 'MIT', 'integrity': 'lib190', 'tarball': 'https://mirror.local/lib190.tgz', 'dependencies': {}}
-                }
-            }
-        },
-        'config/policy.json': dict(BASE_POLICY)
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        pkgs = by_name(plan)
-        assert pkgs['@ridge/lib']['source'] == 'workspace'
-        assert pkgs['@ridge/lib']['version'] == '1.4.0'
-    finally:
-        _restore_app_files(backups)
-
-
-def test_x_range_hyphen_and_union_synthetic():
-    overrides = {
-        'workspace/package.json': _minimal_workspace({
-            'x-lib': '1.2.x',
-            'range-lib': '1.0.0 - 1.2.0',
-            'union-lib': '^1.0.0 || ^2.0.0'
-        }),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'registry/packages.json': {
-            'packages': {
-                'x-lib': {
-                    '1.1.0': {'license': 'MIT', 'integrity': 'x110', 'tarball': 'https://mirror.local/x110.tgz', 'dependencies': {}},
-                    '1.2.7': {'license': 'MIT', 'integrity': 'x127', 'tarball': 'https://mirror.local/x127.tgz', 'dependencies': {}},
-                    '1.3.0': {'license': 'MIT', 'integrity': 'x130', 'tarball': 'https://mirror.local/x130.tgz', 'dependencies': {}}
-                },
-                'range-lib': {
-                    '1.0.0': {'license': 'MIT', 'integrity': 'r100', 'tarball': 'https://mirror.local/r100.tgz', 'dependencies': {}},
-                    '1.2.0': {'license': 'MIT', 'integrity': 'r120', 'tarball': 'https://mirror.local/r120.tgz', 'dependencies': {}},
-                    '1.3.0': {'license': 'MIT', 'integrity': 'r130', 'tarball': 'https://mirror.local/r130.tgz', 'dependencies': {}}
-                },
-                'union-lib': {
-                    '1.5.0': {'license': 'MIT', 'integrity': 'u150', 'tarball': 'https://mirror.local/u150.tgz', 'dependencies': {}},
-                    '2.1.0': {'license': 'MIT', 'integrity': 'u210', 'tarball': 'https://mirror.local/u210.tgz', 'dependencies': {}}
-                }
-            }
-        },
-        'config/policy.json': dict(BASE_POLICY)
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        pkgs = by_name(plan)
-        assert pkgs['x-lib']['version'] == '1.2.7'
-        assert pkgs['range-lib']['version'] == '1.2.0'
-        assert pkgs['union-lib']['version'] == '2.1.0'
-    finally:
-        _restore_app_files(backups)
-
-
-def test_lock_drift_ignores_workspace_and_missing_entries():
-    overrides = {
-        'workspace/package.json': _minimal_workspace({'widget': '1.0.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'workspace/package-lock.json': {
-            'name': 'ridge-ui',
-            'lockfileVersion': 3,
-            'packages': {
-                '': {'dependencies': {'widget': '1.0.0'}},
-                'node_modules/widget': {'version': '0.9.0', 'integrity': 'old'},
-                'node_modules/@ridge/core': {'version': '1.0.0', 'integrity': 'ws'}
-            }
-        },
-        'registry/packages.json': {
-            'packages': {
-                'widget': {'1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}}}
-            }
-        },
-        'config/policy.json': dict(BASE_POLICY)
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        assert plan['lockDrift'] == [{
-            'package': 'widget',
-            'lockVersion': '0.9.0',
-            'plannedVersion': '1.0.0',
-            'lockIntegrity': 'old',
-            'plannedIntegrity': 'w100'
-        }]
-    finally:
-        _restore_app_files(backups)
-
-
-def test_lock_drift_includes_scoped_registry_entries():
-    policy = dict(BASE_POLICY, includeDevDependencies=True)
-    overrides = {
-        'workspace/package.json': _minimal_workspace({}, dev_deps={'@types/node': '^20.0.0'}),
-        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
-        'workspace/package-lock.json': {
-            'name': 'ridge-ui',
-            'lockfileVersion': 3,
-            'packages': {
-                '': {'devDependencies': {'@types/node': '^20.0.0'}},
-                'node_modules/@types/node': {'version': '20.0.0', 'integrity': 'old-types'}
-            }
-        },
-        'registry/packages.json': {
-            'packages': {
-                '@types/node': {
-                    '20.11.30': {
-                        'license': 'MIT',
-                        'integrity': 'sha512-types201130',
-                        'tarball': 'https://mirror.local/@types/node/-/node-20.11.30.tgz',
-                        'dependencies': {}
-                    }
-                }
-            }
-        },
-        'config/policy.json': policy
-    }
-    backups = _swap_app_files(overrides)
-    try:
-        _, plan = run_tool()
-        assert plan['lockDrift'] == [{
-            'package': '@types/node',
-            'lockVersion': '20.0.0',
-            'plannedVersion': '20.11.30',
-            'lockIntegrity': 'old-types',
-            'plannedIntegrity': 'sha512-types201130'
-        }]
-    finally:
-        _restore_app_files(backups)
+def test_adversarial_nonsimplicial_carriers_reject_prefix_shortcut():
+    assert len(ADVERSARIAL_CASES) == 48
+    assert all(
+        max(abs(coordinate) for point in points for coordinate in point) >= 7000
+        for points in ADVERSARIAL_CASES
+    )
+    dependent_prefix_cases = 0
+    shortcut_failures = 0
+    for points in ADVERSARIAL_CASES:
+        facets = exposed_facets(points)
+        if any(
+            len(facet) > 4
+            and not any(hyperplane_coefficients(points, facet[:4]))
+            for facet in facets
+        ):
+            dependent_prefix_cases += 1
+        expected = next(
+            int(line.split()[1])
+            for line in reference_facet_profile(points).splitlines()
+            if line.startswith("NORMAL_HASH ")
+        )
+        shortcut_failures += first_four_shortcut_normal_hash(points) != expected
+    assert dependent_prefix_cases >= 40
+    assert shortcut_failures >= 40
