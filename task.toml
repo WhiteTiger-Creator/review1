@@ -4,24 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-tags = ["machine-learning", "curriculum", "training", "model", "epoch", "checkpoint"]
-languages = ["go"]
-codebase_size = "small"
-number_of_milestones = 0
+category = "games"
 subcategories = []
-expert_time_estimate_min = 150
-junior_time_estimate_min = 480
-
-[agent]
-timeout_sec = 1800
+number_of_milestones = 0
+codebase_size = "small"
+languages = ["java"]
+tags = ["rollback-netcode", "deterministic-physics", "input-prediction", "subframe-collisions", "immutable-snapshots", "late-input-resimulation"]
+expert_time_estimate_min = 290
+junior_time_estimate_min = 650
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 620.0
+
+[agent]
+timeout_sec = 1550.0
 
 [environment]
-allow_internet = false
-build_timeout_sec = 400
+build_timeout_sec = 900.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+allow_internet = false

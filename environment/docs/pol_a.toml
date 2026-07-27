@@ -1,6 +1,0 @@
-epochs = 2
-alpha = 0.35
-fence_lag = 1
-band_cuts = [0.25, 0.50, 0.75]
-interrupt_after_epoch = 1
-weight_decimals = 6

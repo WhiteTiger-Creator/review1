@@ -1,9 +1,0 @@
-{
-  "id": "seed_b",
-  "items": [
-    {"item_id": "b0", "prior": 0.05, "signal": 0.95},
-    {"item_id": "b1", "prior": 0.48, "signal": 0.48},
-    {"item_id": "b2", "prior": 0.88, "signal": 0.20},
-    {"item_id": "b3", "prior": 0.33, "signal": 0.67}
-  ]
-}

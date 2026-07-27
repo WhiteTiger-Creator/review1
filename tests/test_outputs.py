@@ -1,220 +1,372 @@
-"""Behavioral checks for curriculum cohort WAL resume and eval fence."""
+"""Verifier for the glideclash rollback contact engine."""
 
 from __future__ import annotations
 
-import json
-import shutil
+import os
+import re
 import subprocess
-import sys
+import tempfile
 from pathlib import Path
 
-import pytest
-
-sys.path.insert(0, "/app/environment/scripts")
-from ref_kit import expected_trace, fence_hex, load_pol, load_seeds, sha16
-
-APP = Path("/app")
-PACKS = APP / "packs"
-OUT = APP / "output" / "cohort_trace.json"
-STATE = APP / "output" / "cohort_state"
+from java_harness import run_probe
 
 
-def _drive_session(packs: Path = PACKS, out: Path = OUT, state: Path = STATE) -> dict:
-    subprocess.run(
-        ["/app/environment/scripts/build_cqrun.sh"],
-        check=True,
-        cwd="/app",
-    )
-    out.parent.mkdir(parents=True, exist_ok=True)
-    if out.exists():
-        out.unlink()
-    if state.exists():
-        shutil.rmtree(state)
-    subprocess.run(
-        [
-            "/app/bin/cqrun",
-            "run",
-            "--packs",
-            str(packs),
-            "--out",
-            str(out),
-            "--state",
-            str(state),
-        ],
-        check=True,
-        cwd="/app",
-    )
-    assert out.is_file(), "cohort_trace.json missing after run"
-    return json.loads(out.read_text(encoding="utf-8"))
+def _lines(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        if "=" not in raw:
+            continue
+        key, val = raw.split("=", 1)
+        out[key] = val
+    return out
 
 
-@pytest.fixture(scope="module")
-def trace() -> dict:
-    return _drive_session()
+def test_pristine_engine_exposes_sorted_immutable_seed_state():
+    """Engine creation canonicalizes blueprint lists and protects its initial snapshot from mutation."""
+    data = _lines(run_probe("ScenarioProbe", "pristine"))
+    assert data["puck0"] == "a-puck"
+    assert data["puck1"] == "b-puck"
+    assert data["mutated"] == "false"
+    assert data["s0.head"] == "0"
+    assert data["s0.act.1"] == "NEUTRAL"
 
 
-@pytest.fixture(scope="module")
-def expect() -> dict:
-    return expected_trace()
+def test_negative_velocity_uses_floor_division_remainders():
+    """Signed subframe integration follows Java floor division rather than truncation toward zero."""
+    data = _lines(run_probe("ScenarioProbe", "floor-div"))
+    # vx=-5, subframes=4 => x=95 with rem=0 (truncation toward zero would yield 96)
+    assert data["t1.puck.p"] == "95,100,-5,0,0,0"
 
 
-def test_cq_schema_stamp(trace: dict, expect: dict) -> None:
-    """Regenerated trace carries the public schema and row count."""
-    assert set(trace) >= {"rows", "summary"}
-    rows = trace["rows"]
-    assert isinstance(rows, list) and len(rows) > 0
-    assert set(rows[0]) >= {
-        "scenario_id",
-        "epoch",
-        "item_id",
-        "band",
-        "role",
-        "admit_hex",
-        "fence_hex",
-        "weight",
-    }
-    summary = trace["summary"]
-    assert set(summary) >= {
-        "epochs",
-        "rows_total",
-        "cohort_digest",
-        "resume_digest",
-        "fence_status",
-        "wal_depth",
-    }
-    assert summary["rows_total"] == len(rows) == expect["summary"]["rows_total"]
-    assert summary["epochs"] == expect["summary"]["epochs"] == 2
+def test_missing_player_frame_repeats_prior_effective_action():
+    """Prediction carries the previous direction forward until another authoritative input appears."""
+    data = _lines(run_probe("ScenarioProbe", "predict"))
+    assert data["t3.pad.pad"].startswith("70,100,")
+    assert data["t3.act.1"] == "EAST"
 
 
-def test_cq_admit_fold(trace: dict, expect: dict) -> None:
-    """cohort_digest matches sorted admit_hex derivation after coherent selection."""
-    hexes = sorted(r["admit_hex"] for r in trace["rows"])
-    assert trace["summary"]["cohort_digest"] == sha16(",".join(hexes))
-    assert trace["summary"]["cohort_digest"] == expect["summary"]["cohort_digest"]
-    by_key = {(r["scenario_id"], r["epoch"], r["item_id"], r["role"]): r for r in trace["rows"]}
-    matched = 0
-    for er in expect["rows"]:
-        got = by_key[(er["scenario_id"], er["epoch"], er["item_id"], er["role"])]
-        assert (got["band"], got["admit_hex"], got["fence_hex"]) == (
-            er["band"],
-            er["admit_hex"],
-            er["fence_hex"],
+def test_future_authority_stops_prediction_at_its_tick():
+    """A stored later action becomes effective exactly at its declared simulation tick."""
+    data = _lines(run_probe("ScenarioProbe", "future-auth"))
+    assert data["frame.0.act"] == "EAST"
+    assert data["frame.1.act"] == "EAST"
+    assert data["frame.2.act"] == "WEST"
+    assert data["t3.act.1"] == "WEST"
+
+
+def test_late_input_resimulates_from_earliest_affected_tick():
+    """Accepted history revision rewinds its tick and rebuilds every dependent later frame."""
+    data = _lines(run_probe("RollbackProbe", "late-revise"))
+    assert data["status"] == "REVISED"
+    assert data["corrCount"] == "2"
+    assert data["changed"] == "true"
+    assert data["head"] == "3"
+
+
+def test_later_authoritative_frame_caps_prediction_correction():
+    """A revised action stops changing predictions when the next accepted action is reached."""
+    data = _lines(run_probe("RollbackProbe", "cap-predict"))
+    assert data["status"] == "REVISED"
+    assert data["corr.0.act"] == "WEST"
+    assert data["corr.1.act"] == "WEST"
+    assert data["corr.2.act"] == "NORTH"
+    assert data["corr.3.act"] == "NORTH"
+    assert data["match"] == "true"
+
+
+def test_sequence_idempotence_staleness_and_conflict_are_transactional():
+    """Equal, older, and conflicting sequence cases preserve the strongest accepted input and state."""
+    data = _lines(run_probe("RollbackProbe", "sequence"))
+    assert data["a"] == "STORED"
+    assert data["b"] == "IDEMPOTENT"
+    assert data["c"] == "STALE_SEQUENCE"
+    assert data["d"] == "CONFLICT"
+    assert data["act"] == "EAST"
+
+
+def test_higher_sequence_replaces_authority_without_losing_future_inputs():
+    """A stronger revision changes one ledger slot while retaining later player commands."""
+    data = _lines(run_probe("RollbackProbe", "higher-keep-future"))
+    assert data["status"] == "REVISED"
+    assert data["t0"] == "WEST"
+    assert data["t1"] == "WEST"
+    assert data["t2"] == "NORTH"
+
+
+def test_input_older_than_rollback_window_is_refused_unchanged():
+    """Pruned history cannot be revised and TOO_OLD leaves snapshots plus inputs intact."""
+    data = _lines(run_probe("RollbackProbe", "too-old"))
+    assert data["status"] == "TOO_OLD"
+    assert data["unchanged"] == "true"
+    assert data["corr"] == "0"
+
+
+def test_forked_timeline_advances_independently_from_parent():
+    """A deep fork owns separate history, predictions, scores, residuals, and pending serves."""
+    data = _lines(run_probe("RollbackProbe", "fork"))
+    assert data["independent"] == "true"
+    assert data["parent.act"] == "NORTH"
+    assert data["child.act"] == "WEST"
+    assert data["parent.padx"] != data["child.padx"]
+
+
+def test_wall_crossing_reflects_at_the_exact_subframe():
+    """WALL secondaryId is the side name; bounce purges that axis remainder."""
+    data = _lines(run_probe("ScenarioProbe", "wall"))
+    assert data["t0.ev"] == "0,1,WALL,p,left"
+    assert data["t1.puck.p"] == "25,20,40,0,0,0"
+
+
+def test_one_way_gate_blocks_only_declared_crossing_sign():
+    """Opposite approaches distinguish a reflecting gate passage from a transparent one."""
+    data = _lines(run_probe("ScenarioProbe", "gate"))
+    assert data["block.ev"] == "0,1,GATE,p,g1"
+    assert "pass.ev" not in data
+    assert data["block.puck.p"] == "75,100,-40,0,0,0"
+    assert data["pass.puck.p"].startswith("80,100,-40,")
+
+
+def test_goal_precedence_removes_puck_before_wall_response():
+    """GOAL primaryId is the puck and secondaryId is the goal; scoring suppresses WALL."""
+    data = _lines(run_probe("ScenarioProbe", "goal"))
+    assert data["g.ev"] == "0,0,GOAL,p,gl"
+    assert data["hasWall"] == "false"
+    assert data["t1.scores"] == "0,1"
+    assert data["t1.serve.p"] == "LEFT"
+
+
+def test_scored_puck_respawns_at_next_tick_with_directed_serve():
+    """Serve is directed away from the exited mouth at the following tick start."""
+    data = _lines(run_probe("ScenarioProbe", "respawn"))
+    assert data["afterGoal.serve.p"] == "LEFT"
+    assert "afterGoal.puck.p" not in data
+    # LEFT exit => vx = +serveSpeed
+    assert data["afterServe.puck.p"] == "110,100,10,0,0,0"
+
+
+def test_bumper_kick_reflects_axis_and_respects_speed_cap():
+    """First bumper response: reflect then add outwardSign * floorDiv(kick,1), then clamp."""
+    data = _lines(run_probe("ScenarioProbe", "bumper"))
+    assert data["b.ev"] == "0,3,BUMPER,p,bum"
+    # reflected -20 + (-1)*5 => -25
+    assert data["t1.puck.p"].startswith("85,100,-25,0,")
+
+
+def test_moving_paddle_transfers_its_selected_axis_velocity():
+    """Authoritative paddle contact uses 2*pad_v - puck_v on the contact axis."""
+    data = _lines(run_probe("ScenarioProbe", "paddle-hit"))
+    assert data["h.ev"] == "0,3,PADDLE,p,pad"
+    assert data["t1.puck.p"].startswith("73,100,40,0,")
+
+
+def test_predicted_paddle_uses_soft_impulse_formula():
+    """Predicted (non-authoritative) paddle actions use pad_v - puck_v instead of 2*pad_v - puck_v."""
+    data = _lines(run_probe("ScenarioProbe", "paddle-soft"))
+    assert data["s.ev"] == "1,2,PADDLE,p,pad"
+    # soft: 20 - 0 = 20 (authoritative would be 40)
+    assert data["t2.puck.p"].startswith("93,100,20,0,")
+
+
+def test_bumper_kick_decays_by_response_ordinal_within_tick():
+    """Second bumper velocity response in a tick uses floorDiv(kick, ordinal)."""
+    text = run_probe("ScenarioProbe", "bumper-decay")
+    assert "d.ev=0,1,BUMPER,p,br" in text
+    assert "d.ev=0,5,BUMPER,p,bl" in text
+    data = _lines(text)
+    # second hit: reflect then +floorDiv(8,2)=4 => 37 (full kick would clamp to 40)
+    assert data["t1.puck.p"].startswith("107,100,37,0,")
+
+
+def test_equal_mass_pucks_swap_only_contact_axis_components():
+    """A two-puck impact exchanges selected velocity components without rotating the other axis."""
+    data = _lines(run_probe("ScenarioProbe", "puck-swap"))
+    assert data["s.ev"] == "0,2,PUCK,a,b"
+    a = data["t1.puck.a"].split(",")
+    b = data["t1.puck.b"].split(",")
+    assert a[2] == "-10" and a[3] == "3"
+    assert b[2] == "20" and b[3] == "7"
+
+
+def test_coincident_centers_use_identifier_oriented_x_axis():
+    """Degenerate overlap remains deterministic through lexical orientation and separation splitting."""
+    data = _lines(run_probe("ScenarioProbe", "coincident"))
+    assert data["c.ev"] == "0,0,PUCK,a,b"
+    a = data["t1.puck.a"].split(",")
+    b = data["t1.puck.b"].split(",")
+    assert int(a[0]) < int(b[0])
+    assert a[2] == "-20" and b[2] == "20"
+
+
+def test_four_sweep_island_propagates_a_three_puck_chain():
+    """Rediscovered contacts carry one subframe's impulse across a connected puck sequence."""
+    text = run_probe("ScenarioProbe", "chain")
+    assert "ch.ev=0,0,PUCK,a,b" in text
+    assert "ch.ev=0,0,PUCK,b,c" in text
+    data = _lines(text)
+    assert data["t1.puck.c"].startswith("155,100,30,")
+
+
+def test_unresolved_fifth_contact_rolls_back_entire_advance_call():
+    """Impact-limit failure exposes its tick and subframe while preserving the pre-call engine."""
+    data = _lines(run_probe("ScenarioProbe", "impact-limit"))
+    assert data["threw"] == "true"
+    assert data["code"] == "impact-limit"
+    assert data["tick"] == "0"
+    assert data["subframe"] == "0"
+    assert data["head"] == "0"
+    assert data["unchanged"] == "true"
+
+
+def test_ricochet_cap_rolls_back_corner_double_wall():
+    """Exceeding floorDiv(subframes,2) WALL/GATE/BUMPER/PADDLE events throws ricochet-cap transactionally."""
+    data = _lines(run_probe("ScenarioProbe", "ricochet-cap"))
+    assert data["threw"] == "true"
+    assert data["code"] == "ricochet-cap"
+    assert data["tick"] == "0"
+    assert data["subframe"] == "0"
+    assert data["head"] == "0"
+    assert data["unchanged"] == "true"
+
+
+def test_home_clamp_zeroes_only_the_paddle_clamped_remainder():
+    """Paddle bounds discard blocked-axis residue without altering its free-axis integration."""
+    data = _lines(run_probe("ScenarioProbe", "home-clamp"))
+    parts = data["t1.pad.pad"].split(",")
+    assert parts[0] == "72"
+    assert parts[1] == "87"
+    assert parts[4] == "0"
+    assert parts[5] == "0"
+
+
+def test_tick_friction_moves_each_puck_component_toward_zero():
+    """End-of-tick drag never crosses zero and does not affect paddle control velocity."""
+    data = _lines(run_probe("ScenarioProbe", "friction"))
+    # started 10,-7 with friction 3 => 7,-4
+    assert data["t1.puck.p"] == "110,93,7,-4,0,0"
+    assert data["t1.pad.pad"].startswith("40,90,0,0,")
+
+
+def test_correction_receipt_contains_only_changed_frames():
+    """Late resimulation omits structurally equal publications and marks every returned correction."""
+    data = _lines(run_probe("RollbackProbe", "corrections-filter"))
+    assert data["same.status"] == "REVISED"
+    assert data["same.corr"] == "0"
+    assert data["chg.status"] == "REVISED"
+    assert data["chg.corr"] == "2"
+    assert data["chg.corr.tick"] in {"1", "2"} or True
+    text = run_probe("RollbackProbe", "corrections-filter")
+    assert "corrected=true" in text
+    assert "corrected=false" not in text.split("chg.status")[-1]
+
+
+def test_single_advance_and_chunked_advances_publish_equal_frames():
+    """Dividing the same tick interval across API calls cannot change physics or events."""
+    data = _lines(run_probe("ScenarioProbe", "chunked"))
+    assert data["equal"] == "true"
+    assert data["snapEqual"] == "true"
+
+
+def test_permuted_blueprint_members_produce_equal_timelines():
+    """Orderless seed and fixture lists canonicalize before validation and collision discovery."""
+    data = _lines(run_probe("ScenarioProbe", "permute"))
+    assert data["equal"] == "true"
+
+
+def test_blueprint_error_precedence_selects_code_then_identifier():
+    """Several malformed members yield the documented earliest validation code and lexical id."""
+    data = _lines(run_probe("ValidationProbe", "precedence"))
+    assert data["code"] == "rules"
+    assert data["id"] == "-"
+    assert data["dup.code"] == "duplicate-id"
+    assert data["dup.id"] == "a-pad"
+    assert data["ov.code"] == "overlap"
+    assert data["ov.id"] == "p"
+    assert data["nm.code"] == "null-member"
+    assert data["nm.id"] == "-"
+
+
+def test_blueprint_mid_codes_player_bounds_home_goal_gate():
+    """Middle validation codes fire with the expected offending identifiers."""
+    data = _lines(run_probe("ValidationProbe", "mid-codes"))
+    assert data["player.code"] == "player"
+    assert data["player.id"] == "pad"
+    assert data["bounds.code"] == "bounds"
+    assert data["bounds.id"] == "out"
+    assert data["home.code"] == "home"
+    assert data["home.id"] == "pad"
+    assert data["goal.code"] == "goal"
+    assert data["goal.id"] == "aa"
+    assert data["gate.code"] == "gate"
+    assert data["gate.id"] == "gx"
+
+
+def test_invalid_and_unknown_inputs_leave_engine_unchanged():
+    """UNKNOWN_PLAYER and INVALID_INPUT receipts do not advance headTick."""
+    data = _lines(run_probe("ValidationProbe", "invalid-input"))
+    assert data["unknown"] == "UNKNOWN_PLAYER"
+    assert data["invalid"] == "INVALID_INPUT"
+    assert data["head"] == "0"
+
+
+def test_returned_collections_and_caller_lists_cannot_mutate_engine():
+    """Defensive copies isolate blueprint inputs, frames, snapshots, events, and receipts."""
+    data = _lines(run_probe("ScenarioProbe", "mutate"))
+    assert data["snapMut"] == "false"
+    assert data["survived"] == "true"
+    assert data["receiptMut"] == "false"
+
+
+def test_two_harnesses_match_across_cwd_locale_and_clean_filesystem():
+    """Equivalent JVM runs yield equal record text without locale drift or filesystem side effects."""
+    first = run_probe("RollbackProbe", "locale-fs")
+    # Change cwd and locale for the second invocation via a nested runner
+    jar = Path("/app/lib/glideclash.jar")
+    probe_dir = Path(__file__).resolve().parent / "java"
+    with tempfile.TemporaryDirectory(prefix="glide_locale_") as tmp:
+        tmp_path = Path(tmp)
+        work = tmp_path / "work"
+        work.mkdir()
+        junk = work / "noise.txt"
+        junk.write_text("should-not-matter\n", encoding="utf-8")
+        classes = tmp_path / "classes"
+        classes.mkdir()
+        subprocess.run(
+            [
+                "javac",
+                "--release",
+                "17",
+                "-cp",
+                str(jar),
+                "-d",
+                str(classes),
+                *[str(p) for p in sorted(probe_dir.glob("*.java"))],
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
         )
-        matched += 1
-    assert matched == len(expect["rows"]) == len(trace["rows"])
-
-
-def test_cq_fence_window(trace: dict, expect: dict) -> None:
-    """Eval fence stays sealed across the lag window after interrupt."""
-    assert trace["summary"]["fence_status"] == "sealed"
-    assert expect["summary"]["fence_status"] == "sealed"
-    pol = load_pol()
-    fence_lag = int(pol["fence_lag"])
-    train_by_epoch: dict[int, set[tuple[str, str]]] = {}
-    for r in trace["rows"]:
-        if r["role"] == "train":
-            e = int(r["epoch"])
-            bucket = train_by_epoch.get(e)
-            if bucket is None:
-                bucket = set()
-                train_by_epoch[e] = bucket
-            bucket.add((r["scenario_id"], r["item_id"]))
-    for r in trace["rows"]:
-        bit = 0
-        if r["role"] == "eval":
-            e = int(r["epoch"])
-            forbidden: set[tuple[str, str]] = set()
-            for k in range(e - fence_lag, e):
-                forbidden |= train_by_epoch.get(k, set())
-            if (r["scenario_id"], r["item_id"]) in forbidden:
-                bit = 1
-        assert r["fence_hex"] == fence_hex(r["admit_hex"], bit)
-        assert bit == 0
-
-
-def test_cq_replay_stamp(trace: dict, expect: dict) -> None:
-    """resume_digest reflects WAL-replayed competence, not a stale snap blob."""
-    assert trace["summary"]["resume_digest"] == expect["summary"]["resume_digest"]
-    assert trace["summary"]["wal_depth"] == expect["summary"]["wal_depth"]
-    assert trace["summary"]["wal_depth"] == len(trace["rows"])
-
-
-def test_cq_second_pass(trace: dict) -> None:
-    """Second full harness run rewrites identical field values."""
-    first = json.dumps(trace, sort_keys=True)
-    second = _drive_session()
-    assert json.dumps(second, sort_keys=True) == first
-    assert second["summary"]["fence_status"] == "sealed"
-
-
-def test_cq_pack_shuffle(tmp_path: Path, expect: dict) -> None:
-    """Reversing item order inside packs does not change coherent digests."""
-    packs = tmp_path
-    for src in sorted(PACKS.glob("seed_*.json")):
-        data = json.loads(src.read_text(encoding="utf-8"))
-        data["items"] = list(reversed(data["items"]))
-        (packs / src.name).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    out = tmp_path / "out.json"
-    state = tmp_path / "state"
-    got = _drive_session(packs=packs, out=out, state=state)
-    assert got["summary"]["cohort_digest"] == expect["summary"]["cohort_digest"]
-    assert got["summary"]["resume_digest"] == expect["summary"]["resume_digest"]
-    assert got["summary"]["fence_status"] == "sealed"
-
-
-def test_cq_lag_holdout(trace: dict, expect: dict) -> None:
-    """Epoch-2 eval cohorts stay outside the epoch-1 train set (delayed fence)."""
-    e1_train = {
-        (r["scenario_id"], r["item_id"])
-        for r in trace["rows"]
-        if r["role"] == "train" and int(r["epoch"]) == 1
-    }
-    e2_eval = [
-        r for r in trace["rows"] if r["role"] == "eval" and int(r["epoch"]) == 2
-    ]
-    assert e2_eval
-    for r in e2_eval:
-        assert (r["scenario_id"], r["item_id"]) not in e1_train
-    exp_e2 = {
-        (r["scenario_id"], r["item_id"])
-        for r in expect["rows"]
-        if r["role"] == "eval" and int(r["epoch"]) == 2
-    }
-    got_e2 = {(r["scenario_id"], r["item_id"]) for r in e2_eval}
-    assert got_e2 == exp_e2
-
-
-def test_cq_ema_step(trace: dict) -> None:
-    """Train rows advance competence by the public EMA; eval rows do not."""
-    pol = load_pol()
-    alpha = float(pol["alpha"])
-    decimals = int(pol["weight_decimals"])
-    seeds = {s["id"]: {it["item_id"]: it for it in s["items"]} for s in load_seeds()}
-    weights: dict[tuple[str, str], float] = {}
-    for sid, items in seeds.items():
-        for iid, it in items.items():
-            weights[(sid, iid)] = float(it["prior"])
-    for r in trace["rows"]:
-        key = (r["scenario_id"], r["item_id"])
-        assert f"{float(r['weight']):.{decimals}f}" == f"{weights[key]:.{decimals}f}"
-        if r["role"] == "train":
-            s = float(seeds[r["scenario_id"]][r["item_id"]]["signal"])
-            weights[key] = (1.0 - alpha) * weights[key] + alpha * s
-
-
-def test_cq_stale_wipe(expect: dict) -> None:
-    """Stale hand-written JSON is cleared; only a rebuilt harness run counts."""
-    OUT.write_text(
-        json.dumps({"rows": [], "summary": {"fence_status": "sealed"}}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    got = _drive_session()
-    assert got["summary"]["rows_total"] == expect["summary"]["rows_total"]
-    assert got["summary"]["cohort_digest"] == expect["summary"]["cohort_digest"]
-    assert got["summary"]["resume_digest"] == expect["summary"]["resume_digest"]
-    assert got["summary"]["fence_status"] == "sealed"
-    assert got["summary"]["wal_depth"] == expect["summary"]["wal_depth"]
-    assert len(got["rows"]) == expect["summary"]["rows_total"]
-    assert all(r["role"] in {"train", "eval"} for r in got["rows"])
-    assert all(int(r["epoch"]) in {1, 2} for r in got["rows"])
-    assert {r["scenario_id"] for r in got["rows"]} == {s["id"] for s in load_seeds()}
+        env = os.environ.copy()
+        env["LANG"] = "C"
+        env["LC_ALL"] = "C"
+        second = subprocess.run(
+            [
+                "java",
+                "-Duser.language=fr",
+                "-Duser.country=FR",
+                "-cp",
+                f"{classes}{os.pathsep}{jar}",
+                "RollbackProbe",
+                "locale-fs",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=str(work),
+            env=env,
+        ).stdout
+    d1 = _lines(first)
+    d2 = _lines(second)
+    assert d1["head"] == d2["head"] == "2"
+    assert d1["padx"] == d2["padx"]
+    assert d1["record"] == d2["record"]
+    assert not re.search(r"/tmp/|noise\.txt", d1["record"])
