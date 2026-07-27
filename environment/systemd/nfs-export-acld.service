@@ -1,0 +1,11 @@
+[Unit]
+Description=NFS export ACL reconciliation oneshot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/app/scripts/start-nfs-acld.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
