@@ -1,0 +1,11 @@
+{
+  "schema_version": "wakeclock.state.v1",
+  "trace_seq": 0,
+  "clock_utc": "2026-11-01T04:00:00Z",
+  "high_water_utc": "2026-11-01T04:00:00Z",
+  "boot_id": "boot-initial",
+  "pending": [],
+  "committed_ids": [],
+  "last_activation": {},
+  "cursors": {}
+}
