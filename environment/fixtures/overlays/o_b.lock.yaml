@@ -1,5 +1,0 @@
-schema: lock-overlay/v1
-name: o_b
-pins:
-  delta-io: "1.0.3"
-  epsilon-cache: "3.1.0"

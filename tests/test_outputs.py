@@ -1,741 +1,447 @@
-"""Verifier for gem-shelfwalk lock-journal recovery algebra."""
-
 from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+from helpers.wakeclock_reference import reconcile
+
+APP_DIR = Path(os.environ.get("APP_DIR", "/app"))
+TESTS_DIR = Path(__file__).resolve().parent
+PUBLIC_FIXTURE_ROOT = TESTS_DIR / "fixtures" / "public_case"
+CANONICAL_OCCURRENCE_ID = re.compile(
+    r"^[^|]+\|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\|-?\d+\|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+)
 
 
-def _crc32(data: bytes) -> int:
-    crc = 0xFFFFFFFF
-    for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            crc = (crc >> 1) ^ 0xEDB88320 if (crc & 1) else (crc >> 1)
-    return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF
+def iter_fixture_occurrence_ids(fixture_root: Path) -> list[str]:
+    occurrence_ids: list[str] = []
+    snapshot = json.loads((fixture_root / "state" / "snapshot.json").read_text())
+    for item in snapshot.get("pending", []):
+        occurrence_ids.append(str(item["occurrence_id"]))
+    for cursor in snapshot.get("cursors", {}).values():
+        if cursor:
+            occurrence_ids.append(str(cursor))
+    journal_path = fixture_root / "state" / "journal.jsonl"
+    if journal_path.exists():
+        for line in journal_path.read_text().splitlines():
+            if line.strip():
+                record = json.loads(line)
+                occurrence_ids.extend(str(value) for value in record.get("occurrence_ids", []))
+    spool_dir = fixture_root / "state" / "spool"
+    if spool_dir.is_dir():
+        for path in spool_dir.glob("*.json"):
+            record = json.loads(path.read_text())
+            occurrence_ids.extend(str(value) for value in record.get("occurrence_ids", []))
+    return occurrence_ids
 
 
-def _u16(data: bytes, off: int) -> int:
-    return int.from_bytes(data[off : off + 2], "little")
+def assert_fixture_occurrence_ids_are_canonical(fixture_root: Path) -> None:
+    for occurrence_id in iter_fixture_occurrence_ids(fixture_root):
+        assert occurrence_id.count("|") == 3, occurrence_id
+        assert CANONICAL_OCCURRENCE_ID.match(occurrence_id), occurrence_id
 
 
-def _u32(data: bytes, off: int) -> int:
-    return int.from_bytes(data[off : off + 4], "little")
+@pytest.fixture(scope="session", autouse=True)
+def _validate_public_fixture_occurrence_ids() -> None:
+    assert_fixture_occurrence_ids_are_canonical(PUBLIC_FIXTURE_ROOT)
 
 
-def _load_simple_yaml(path: Path):
-    with path.open("r", encoding="utf-8") as fh:
-        return yaml.load(fh, Loader=yaml.SafeLoader)
-
-
-def _fnv1a32(data: bytes) -> int:
-    h = 0x811C9DC5
-    for b in data:
-        h ^= b
-        h = (h * 0x01000193) & 0xFFFFFFFF
-    return h
-
-
-APP = Path("/app")
-ENV = Path(os.environ.get("KW_ROOT", "/app/environment"))
-OUT = Path(os.environ.get("KW_OUT", "/app/output"))
-KW = ENV / "tools" / "kw_run"
-BLOB = ENV / "fixtures" / "ix_blob.bin"
-MX = ENV / "docs" / "mx_rows.yaml"
-EXTRA = ENV / "data" / "extra_mtx.yaml"
-SEED = ENV / "data" / "walk_seed.txt"
-OV_DIR = ENV / "fixtures" / "overlays"
-DOSSIER = OUT / "dossier.json"
-REPLAY = OUT / "replay.jsonl"
-RESTART = OUT / "restart.bin"
-
-
-def _sha256_hex(data: bytes) -> str:
-    tool = ENV / "tools" / "hex_dgst"
-    return subprocess.check_output([str(tool)], input=data).decode().strip()
-
-
-def edge_digest(name: str, ver: str) -> str:
-    return _sha256_hex(f"edge|{name}|{ver}".encode())[:16]
-
-
-def closure_digest(seed: str, tags: list[str]) -> str:
-    body = "|".join(sorted(tags))
-    return _sha256_hex(f"{seed}|0|{body}".encode())
-
-
-def bind_token(edge: str, overlay_ref: str, reloc_off: int) -> str:
-    return _sha256_hex(f"{edge}|{overlay_ref}|{reloc_off}".encode())[:12]
-
-
-def parse_blob(data: bytes):
-    assert data[:4] == b"GIX1"
-    ver = _u16(data, 4)
-    count = _u16(data, 6)
-    rb = _u32(data, 8)
-    crc = _u32(data, 12)
-    body = data[16:]
-    assert _crc32(body) == crc
-    rows = []
-    for i in range(count):
-        off = 16 + i * 32
-        nh = _u32(data, off)
-        vtag = _u16(data, off + 4)
-        pbits = _u16(data, off + 6)
-        abs_off = _u32(data, off + 8)
-        length = _u16(data, off + 12)
-        flags = _u16(data, off + 14)
-        etag = _u32(data, off + 16)
-        raw = data[abs_off : abs_off + length]
-        parts = raw.decode().split("|", 2)
-        rows.append((i, nh, vtag, pbits, abs_off, length, flags, etag, parts[0], parts[1], parts[2]))
-    return ver, count, rb, crc, rows
-
-
-def load_overlays():
-    out = {}
-    for path in sorted(OV_DIR.glob("*.lock.yaml")):
-        doc = _load_simple_yaml(path)
-        out[doc["name"]] = doc["pins"]
-    return out
-
-
-def mx_by_id():
-    return {r["gem_id"]: r for r in _load_simple_yaml(MX)["rows"]}
-
-
-def extra_doc():
-    return _load_simple_yaml(EXTRA)
-
-
-def expected_order(rows, gate_first=True):
-    def key(r):
-        cls = r["opt_class"]
-        if gate_first:
-            gr = 0 if cls == "gate" else 1
-        else:
-            gr = 0 if cls == "side" else 1
-        return (int(r["priority"]), gr, r["gem_id"])
-
-    ordered = sorted(rows, key=key)
-    out = []
-    for i, row in enumerate(ordered):
-        item = dict(row)
-        item["act_ord"] = i
-        out.append(item)
-    return out
-
-
-def _clean_outputs(*paths: Path) -> None:
-    for p in paths:
-        if p.exists():
-            p.unlink()
-
-
-def run_kw(*extra_args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
-    OUT.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env["KW_ROOT"] = str(ENV)
-    env["KW_OUT"] = str(OUT)
-    if env_extra:
-        env.update(env_extra)
-    return subprocess.run(
-        [str(KW), *extra_args],
+@pytest.fixture(scope="session")
+def binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    destination = tmp_path_factory.mktemp("bin") / "wakeclock"
+    subprocess.run(
+        ["go", "build", "-o", str(destination), "./cmd/wakeclock"],
+        cwd=APP_DIR,
         check=True,
-        cwd=str(APP),
-        env=env,
         capture_output=True,
         text=True,
     )
-
-
-def load_dossier():
-    return json.loads(DOSSIER.read_text())
-
-
-def load_replay():
-    lines = [ln for ln in REPLAY.read_text().splitlines() if ln.strip()]
-    return [json.loads(ln) for ln in lines]
-
-
-def _enc_str(s: str) -> bytes:
-    b = s.encode()
-    return len(b).to_bytes(2, "little") + b
-
-
-def _parse_restart(data: bytes):
-    assert data[:4] == b"GSJR"
-    ver = _u16(data, 4)
-    assert ver == int("1")
-    hdr_crc = _u32(data, 8)
-    body = data[12:]
-    assert _fnv1a32(body) == hdr_crc
-    off = 0
-    walk_base = _u32(body, off)
-    off += 4
-    gate_first = body[off]
-    off += 2
-    act_done = _u16(body, off)
-    off += 2
-    n_comp = _u16(body, off)
-    off += 2
-
-    def dec_str(o):
-        n = _u16(body, o)
-        o += 2
-        return body[o : o + n].decode(), o + n
-
-    seed, off = dec_str(off)
-    index_crc, off = dec_str(off)
-    rbase = _u32(body, off)
-    off += 4
-    rows = []
-    for _ in range(n_comp):
-        gem_id, off = dec_str(off)
-        ver_s, off = dec_str(off)
-        edge, off = dec_str(off)
-        ov, off = dec_str(off)
-        plat, off = dec_str(off)
-        side, off = dec_str(off)
-        act_ord = _u32(body, off)
-        reloc = _u32(body, off + 4)
-        poff = _u32(body, off + 8)
-        off += 12
-        bind, off = dec_str(off)
-        rows.append(
-            {
-                "gem_id": gem_id,
-                "ver": ver_s,
-                "edge_digest": edge,
-                "overlay_ref": ov,
-                "platform": plat,
-                "opt_side": side,
-                "act_ord": act_ord,
-                "reloc_off": reloc,
-                "poff": poff,
-                "bind_token": bind,
-            }
-        )
-    n_pend = _u16(body, off)
-    off += 2
-    pending = []
-    for _ in range(n_pend):
-        gid, off = dec_str(off)
-        pending.append(gid)
-    n_led = _u16(body, off)
-    off += 2
-    ledger = []
-    canon = b""
-    for _ in range(n_led):
-        op = _u32(body, off)
-        seq = _u32(body, off + 4)
-        off += 8
-        gid, off = dec_str(off)
-        ledger.append((op, seq, gid))
-        canon += int(op).to_bytes(4, "little") + int(seq).to_bytes(4, "little") + _enc_str(gid)
-    stored = _u32(body, off)
-    expect = _fnv1a32(canon)
-    return (
-        {
-            "walk_base": walk_base,
-            "gate_first": gate_first,
-            "act_done": act_done,
-            "seed": seed,
-            "index_crc": index_crc,
-            "rbase": rbase,
-            "rows": rows,
-            "pending": pending,
-            "ledger": ledger,
-        },
-        stored == expect,
-    )
-
-
-@pytest.fixture(scope="module")
-def built():
-    _clean_outputs(DOSSIER, REPLAY, RESTART)
-    run_kw()
-    return load_dossier(), load_replay()
-
-
-def test_r1_ix_layout(built):
-    """Index record count and gem ids match dossier rows."""
-    dossier, _ = built
-    ver, count, _rb, _crc, rows = parse_blob(BLOB.read_bytes())
-    assert count == len(dossier["rows"])
-    assert ver == int("1")
-    names = {r[8] for r in rows}
-    assert names == {r["gem_id"] for r in dossier["rows"]}
-
-
-def test_r2_ix_bound(built):
-    """reloc_off matches payload_offset - reloc_base + walk_base."""
-    dossier, _ = built
-    _ver, _count, rb, _crc, rows = parse_blob(BLOB.read_bytes())
-    by = {r[8]: r for r in rows}
-    seed_base = int(extra_doc()["training_walk_base"])
-    for row in dossier["rows"]:
-        rec = by[row["gem_id"]]
-        expect = rec[4] - rb + seed_base
-        assert row["reloc_off"] == expect
-
-
-def test_r3_ix_crc(built):
-    """index_crc matches CRC32 of post-header index bytes."""
-    dossier, _ = built
-    _ver, _count, _rb, crc, _rows = parse_blob(BLOB.read_bytes())
-    assert dossier["index_crc"] == f"{crc:08x}"
-
-
-def test_r4_ix_payload(built):
-    """Row versions and platforms match decoded index payloads."""
-    dossier, _ = built
-    _ver, _count, _rb, _crc, rows = parse_blob(BLOB.read_bytes())
-    by = {r[8]: r for r in rows}
-    for row in dossier["rows"]:
-        rec = by[row["gem_id"]]
-        assert row["ver"] == rec[9]
-        assert row["platform"] == rec[10]
-
-
-def test_r5_fl_digest(built):
-    """edge_digest follows the public sha256 edge formula."""
-    dossier, _ = built
-    for row in dossier["rows"]:
-        assert row["edge_digest"] == edge_digest(row["gem_id"], row["ver"])
-
-
-def test_r6_fl_perm(built):
-    """Closure digest is stable under edge-tag permutation."""
-    dossier, _ = built
-    seed = SEED.read_text().strip()
-    tags = [r["edge_digest"] for r in dossier["rows"]]
-    assert dossier["closure_digest"] == closure_digest(seed, tags)
-    assert dossier["closure_digest"] == closure_digest(seed, list(reversed(tags)))
-    assert dossier["closure_digest"] == closure_digest(seed, sorted(tags))
-
-
-def test_r7_fl_unit(built):
-    """Training annex order yields the dossier closure digest."""
-    dossier, _ = built
-    seed = SEED.read_text().strip()
-    extra = extra_doc()
-    tags = [
-        edge_digest(n, next(r["ver"] for r in dossier["rows"] if r["gem_id"] == n))
-        for n in extra["training_annex_order"]
-    ]
-    assert dossier["closure_digest"] == closure_digest(seed, tags)
-
-
-def test_r8_or_mx(built):
-    """act_ord matches gate-first matrix ordering."""
-    dossier, _ = built
-    mx = _load_simple_yaml(MX)["rows"]
-    ordered = expected_order(mx, gate_first=True)
-    got = sorted(dossier["rows"], key=lambda r: r["act_ord"])
-    assert [r["gem_id"] for r in got] == [r["gem_id"] for r in ordered]
-    for i, row in enumerate(got):
-        assert row["act_ord"] == i
-
-
-def test_r9_or_opt(built):
-    """opt_side copies matrix opt_class for each gem."""
-    dossier, _ = built
-    mx = {r["gem_id"]: r for r in _load_simple_yaml(MX)["rows"]}
-    for row in dossier["rows"]:
-        assert row["opt_side"] == mx[row["gem_id"]]["opt_class"]
-
-
-def test_r10_or_tie(built):
-    """Priority and gate/side ties match the matrix rules."""
-    dossier, _ = built
-    mx = mx_by_id()
-    ordered = sorted(dossier["rows"], key=lambda r: r["act_ord"])
-
-    def rank(gid: str):
-        row = mx[gid]
-        return (int(row["priority"]), 0 if row["opt_class"] == "gate" else 1, gid)
-
-    ranks = [rank(r["gem_id"]) for r in ordered]
-    assert ranks == sorted(ranks)
-
-
-def test_r12_em_shape(built):
-    """Dossier and transcript expose the required schema fields."""
-    dossier, replay = built
-    assert dossier["schema"] == "gem-shelf-dossier" + "/" + "v1"
-    assert dossier["walk_seed"] == SEED.read_text().strip()
-    assert isinstance(dossier["closure_digest"], str) and len(dossier["closure_digest"]) == 64
-    assert isinstance(dossier["index_crc"], str) and len(dossier["index_crc"]) == 8
-    assert isinstance(dossier["rows"], list) and len(dossier["rows"]) >= 1
-    for row in dossier["rows"]:
-        for k in (
-            "gem_id",
-            "edge_digest",
-            "platform",
-            "overlay_ref",
-            "act_ord",
-            "opt_side",
-            "reloc_off",
-            "bind_token",
-            "ver",
-        ):
-            assert k in row
-        assert "poff" not in row
-    assert isinstance(replay, list) and len(replay) == len(dossier["rows"])
-
-
-def test_r13_em_bind(built):
-    """bind_token matches the public binding formula."""
-    dossier, _ = built
-    for row in dossier["rows"]:
-        assert row["bind_token"] == bind_token(
-            row["edge_digest"], row["overlay_ref"], int(row["reloc_off"])
-        )
-
-
-def test_r14_em_twice(built):
-    """Second driver run is byte-identical to the first."""
-    first = DOSSIER.read_bytes()
-    first_r = REPLAY.read_bytes()
-    run_kw()
-    assert DOSSIER.read_bytes() == first
-    assert REPLAY.read_bytes() == first_r
-
-
-def test_r15_em_crc(built):
-    """Emitted index_crc is non-zero and matches the blob CRC."""
-    dossier, _ = built
-    _ver, _count, _rb, crc, _rows = parse_blob(BLOB.read_bytes())
-    assert dossier["index_crc"] == f"{crc:08x}"
-    assert int(dossier["index_crc"], 16) != 0
-
-
-def test_r16_em_zero(built):
-    """held_out_violations is zero on the closed algebra."""
-    dossier, _ = built
-    assert dossier["held_out_violations"] == len([])
-
-
-def test_r17_ix_held_walk(built):
-    """Held-out walk windows must still decode every annex name."""
-    _ = built
-    _ver, _count, rb, _crc, rows = parse_blob(BLOB.read_bytes())
-    extra = extra_doc()
-    names = {r[8] for r in rows}
-    for sl in extra["slices"]:
-        assert set(sl["annex_order"]) == names
-        base = int(sl["walk_base"])
-        for rec in rows:
-            loff = rec[4] - rb + base
-            assert isinstance(loff, int)
-            raw = BLOB.read_bytes()[rec[4] : rec[4] + rec[5]]
-            assert b"|" in raw
-
-
-def test_r18_ix_reloc_field(built):
-    """reloc_off agrees with the reloc rebasing law on training walk."""
-    dossier, _ = built
-    _ver, _count, rb, _crc, rows = parse_blob(BLOB.read_bytes())
-    base = int(extra_doc()["training_walk_base"])
-    by = {r[8]: r for r in rows}
-    for row in dossier["rows"]:
-        rec = by[row["gem_id"]]
-        assert row["reloc_off"] == rec[4] - rb + base
-        if rb == base:
-            assert row["reloc_off"] == rec[4]
-
-
-def test_r19_fl_held_closure(built):
-    """Held-out annex orders keep the same closure digest."""
-    dossier, _ = built
-    seed = SEED.read_text().strip()
-    tags = [r["edge_digest"] for r in dossier["rows"]]
-    expect = closure_digest(seed, tags)
-    extra = extra_doc()
-    for sl in extra["slices"]:
-        perm_tags = [
-            next(r["edge_digest"] for r in dossier["rows"] if r["gem_id"] == n)
-            for n in sl["annex_order"]
-        ]
-        assert closure_digest(seed, perm_tags) == expect
-
-
-def test_r20_or_sides_first():
-    """--sides-first reverses gate/side ordering on priority ties."""
-    _clean_outputs(DOSSIER, REPLAY)
-    run_kw("--sides-first")
-    dossier = load_dossier()
-    mx = _load_simple_yaml(MX)["rows"]
-    ordered = expected_order(mx, gate_first=False)
-    got = sorted(dossier["rows"], key=lambda r: r["act_ord"])
-    assert [r["gem_id"] for r in got] == [r["gem_id"] for r in ordered]
-    _clean_outputs(DOSSIER, REPLAY)
-    run_kw()
-
-
-def test_r21_or_priority(built):
-    """Activation order is nondecreasing by matrix priority."""
-    dossier, _ = built
-    mx = {r["gem_id"]: r for r in _load_simple_yaml(MX)["rows"]}
-    ordered = sorted(dossier["rows"], key=lambda r: r["act_ord"])
-    pris = [int(mx[r["gem_id"]]["priority"]) for r in ordered]
-    assert pris == sorted(pris)
-
-
-def test_r22_em_replay(built):
-    """replay.jsonl rows bind 1:1 to dossier rows in act_ord order."""
-    dossier, replay = built
-    rows = sorted(dossier["rows"], key=lambda r: r["act_ord"])
-    assert len(replay) == len(rows)
-    for i, (row, ev) in enumerate(zip(rows, replay)):
-        assert ev["phase"] == "r" + "ow"
-        assert ev["gem_id"] == row["gem_id"]
-        assert ev["edge_digest"] == row["edge_digest"]
-        assert ev["act_ord"] == row["act_ord"] == i
-        assert ev["bind_token"] == row["bind_token"]
-        assert ev["overlay_ref"] == row["overlay_ref"]
-        assert ev["reloc_off"] == row["reloc_off"]
-
-
-def test_r23_em_no_static(built):
-    """Driver must own the outputs: content stays valid after regeneration."""
-    dossier, _ = built
-    run_kw()
-    d2 = load_dossier()
-    assert d2["schema"] == "gem-shelf-dossier" + "/" + "v1"
-    assert d2["held_out_violations"] == len([])
-    assert d2["closure_digest"] == dossier["closure_digest"]
-
-
-def test_r24_em_row_cover(built):
-    """Every matrix gem appears once with a matching overlay pin."""
-    dossier, _ = built
-    mx = _load_simple_yaml(MX)["rows"]
-    pins = load_overlays()
-    ids = [r["gem_id"] for r in dossier["rows"]]
-    assert len(ids) == len(set(ids))
-    assert set(ids) == {r["gem_id"] for r in mx}
-    for row in dossier["rows"]:
-        assert pins[row["overlay_ref"]][row["gem_id"]] == row["ver"]
-
-
-def test_r25_ov_lock_bind(built):
-    """overlay_ref values resolve to lock overlay pin maps."""
-    dossier, _ = built
-    pins = load_overlays()
-    for row in dossier["rows"]:
-        assert row["overlay_ref"] in pins
-        assert row["gem_id"] in pins[row["overlay_ref"]]
-
-
-def test_r26_seed_echo(built):
-    """walk_seed echoes the seeded walk seed file."""
-    dossier, _ = built
-    assert dossier["walk_seed"] == SEED.read_text().strip()
-
-
-def test_r27_java_platform(built):
-    """Non-ruby matrix platforms and overlays survive into the dossier."""
-    dossier, _ = built
-    mx = mx_by_id()
-    for row in dossier["rows"]:
-        assert row["platform"] == mx[row["gem_id"]]["platform"]
-        assert row["overlay_ref"] == mx[row["gem_id"]]["overlay_ref"]
-
-
-def test_r28_hex_case(built):
-    """Digest and CRC hex fields are lowercase hexadecimal."""
-    dossier, replay = built
-    for row in dossier["rows"]:
-        assert row["edge_digest"] == row["edge_digest"].lower()
-        assert row["bind_token"] == row["bind_token"].lower()
-        int(row["edge_digest"], 16)
-        int(row["bind_token"], 16)
-    assert dossier["closure_digest"] == dossier["closure_digest"].lower()
-    assert dossier["index_crc"] == dossier["index_crc"].lower()
-    int(dossier["closure_digest"], 16)
-    int(dossier["index_crc"], 16)
-    for ev in replay:
-        assert ev["bind_token"] == ev["bind_token"].lower()
-        int(ev["bind_token"], 16)
-
-
-def test_r29_walk_base_reloc_delta(built):
-    """KW_WALK_BASE shifts reloc_off by delta; payloads and identity stay valid."""
-    dossier, _ = built
-    train_base = int(extra_doc()["training_walk_base"])
-    delta = 2048
-    probe = train_base + delta
-    by_train = {r["gem_id"]: r for r in dossier["rows"]}
-    closure = dossier["closure_digest"]
-    seed = dossier["walk_seed"]
-    crc = dossier["index_crc"]
-
-    _clean_outputs(DOSSIER, REPLAY)
-    run_kw(env_extra={"KW_WALK_BASE": str(probe)})
-    probed = load_dossier()
-    identity_ok = (
-        probed["walk_seed"] == seed
-        and probed["index_crc"] == crc
-        and probed["closure_digest"] == closure
-        and probed["held_out_violations"] == len([])
-        and {r["gem_id"] for r in probed["rows"]} == set(by_train)
-        and all(
-            row["ver"] == by_train[row["gem_id"]]["ver"]
-            and row["edge_digest"] == by_train[row["gem_id"]]["edge_digest"]
-            and row["platform"] == by_train[row["gem_id"]]["platform"]
-            and row["overlay_ref"] == by_train[row["gem_id"]]["overlay_ref"]
-            and row["act_ord"] == by_train[row["gem_id"]]["act_ord"]
-            and row["bind_token"]
-            == bind_token(row["edge_digest"], row["overlay_ref"], int(row["reloc_off"]))
-            and row["bind_token"] != by_train[row["gem_id"]]["bind_token"]
-            for row in probed["rows"]
-        )
-    )
-    assert identity_ok
-    reloc_off_pairs = [
-        (row["reloc_off"], by_train[row["gem_id"]]["reloc_off"]) for row in probed["rows"]
-    ]
-    assert all(got == reloc_off + delta for got, reloc_off in reloc_off_pairs)
-
-    _clean_outputs(DOSSIER, REPLAY)
-    run_kw()
-
-
-def test_r30_closure_independent_of_activation(built):
-    """Closure digest ignores activation order and depends on sorted edges only."""
-    dossier, _ = built
-    seed = SEED.read_text().strip()
-    tags = [r["edge_digest"] for r in dossier["rows"]]
-    by_act = [r["edge_digest"] for r in sorted(dossier["rows"], key=lambda r: r["act_ord"])]
-    mx_order = [r["gem_id"] for r in _load_simple_yaml(MX)["rows"]]
-    mx_tags = [
-        next(r["edge_digest"] for r in dossier["rows"] if r["gem_id"] == g) for g in mx_order
-    ]
-    expect = closure_digest(seed, tags)
-    assert dossier["closure_digest"] == expect and all(
-        closure_digest(seed, sample) == expect
-        for sample in (by_act, list(reversed(by_act)), mx_tags)
-    )
-
-
-def test_r31_split_agree_full():
-    """split_a + split_b agrees with a clean full resolve."""
-    _clean_outputs(DOSSIER, REPLAY, RESTART)
-    run_kw()
-    full_d = DOSSIER.read_bytes()
-    full_r = REPLAY.read_bytes()
-
-    _clean_outputs(DOSSIER, REPLAY, RESTART)
-    run_kw("--mode", "split_a", "--cut", "4")
-    assert RESTART.exists()
-    assert not DOSSIER.exists()
-
-    run_kw("--mode", "split_b")
-    assert DOSSIER.read_bytes() == full_d
-    assert REPLAY.read_bytes() == full_r
-
-
-def test_r32_restart_ledger():
-    """restart.bin ledger trailer matches the canonical FNV digest."""
-    _clean_outputs(DOSSIER, REPLAY, RESTART)
-    run_kw("--mode", "split_a", "--cut", "3")
-    st, ledger_digest_matches = _parse_restart(RESTART.read_bytes())
-    assert st["act_done"] == sum((1, 1, 1))
-    assert len(st["rows"]) == 3
-    assert ledger_digest_matches
-    assert any(op == 2 for op, _seq, _gid in st["ledger"])  # cut
-    # Logical reloc on training base equals absolute poff when rbase == walk_base,
-    # but the stored reloc_off must equal poff - rbase + walk_base either way.
-    for row in st["rows"]:
-        expect = row["poff"] - st["rbase"] + st["walk_base"]
-        assert row["reloc_off"] == expect
-        assert row["bind_token"] == bind_token(row["edge_digest"], row["overlay_ref"], row["reloc_off"])
-
-
-def test_r33_resume_walk_base_rebase():
-    """split_b under KW_WALK_BASE rebases completed reloc/bind; closure stable."""
-    train_base = int(extra_doc()["training_walk_base"])
-    delta = 2048
-    probe = train_base + delta
-
-    _clean_outputs(DOSSIER, REPLAY, RESTART)
-    run_kw(env_extra={"KW_WALK_BASE": str(probe)})
-    full = load_dossier()
-
-    _clean_outputs(DOSSIER, REPLAY, RESTART)
-    run_kw("--mode", "split_a", "--cut", "5")
-    run_kw("--mode", "split_b", env_extra={"KW_WALK_BASE": str(probe)})
-    resumed = load_dossier()
-
-    assert resumed["closure_digest"] == full["closure_digest"]
-    assert resumed["held_out_violations"] == len([])
-    by_full = {r["gem_id"]: r for r in full["rows"]}
-    for row in resumed["rows"]:
-        fr = by_full[row["gem_id"]]
-        assert row["reloc_off"] == fr["reloc_off"]
-        assert row["bind_token"] == fr["bind_token"]
-        assert row["act_ord"] == fr["act_ord"]
-        assert row["edge_digest"] == fr["edge_digest"]
-
-
-def test_r34_split_sides_first_agree():
-    """sides-first split_a/split_b agrees with sides-first full run."""
-    _clean_outputs(DOSSIER, REPLAY, RESTART)
-    run_kw("--sides-first")
-    full_d = DOSSIER.read_bytes()
-    full_r = REPLAY.read_bytes()
-
-    _clean_outputs(DOSSIER, REPLAY, RESTART)
-    run_kw("--mode", "split_a", "--cut", "4", "--sides-first")
-    run_kw("--mode", "split_b", "--sides-first")
-    assert DOSSIER.read_bytes() == full_d
-    assert REPLAY.read_bytes() == full_r
-
-
-def test_r35_corrupt_ledger_rejected():
-    """Absorb must reject a restart image with a corrupted ledger digest."""
-    _clean_outputs(DOSSIER, REPLAY, RESTART)
-    run_kw("--mode", "split_a", "--cut", "4")
-    raw = bytearray(RESTART.read_bytes())
-    # Flip low byte of trailing u32 ledger digest.
-    raw[-1] ^= 0xFF
-    RESTART.write_bytes(bytes(raw))
-    env = os.environ.copy()
-    env["KW_ROOT"] = str(ENV)
-    env["KW_OUT"] = str(OUT)
-    proc = subprocess.run(
-        [str(KW), "--mode", "split_b"],
-        cwd=str(APP),
-        env=env,
-        capture_output=True,
-        text=True,
+    return destination
+
+
+def copy_case(tmp_path: Path) -> tuple[Path, Path, Path]:
+    units = tmp_path / "units"
+    state = tmp_path / "state"
+    clock = tmp_path / "clock.jsonl"
+    shutil.copytree(PUBLIC_FIXTURE_ROOT / "units", units)
+    shutil.copytree(PUBLIC_FIXTURE_ROOT / "state", state)
+    (state / "spool").mkdir(exist_ok=True)
+    shutil.copy2(PUBLIC_FIXTURE_ROOT / "clock" / "trace.jsonl", clock)
+    return units, state, clock
+
+
+def run_candidate(
+    binary: Path,
+    units: Path,
+    state: Path,
+    clock: Path,
+    output: Path,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(binary),
+            "reconcile",
+            "--units",
+            str(units),
+            "--state",
+            str(state),
+            "--clock",
+            str(clock),
+            "--output",
+            str(output),
+        ],
         check=False,
+        capture_output=True,
+        text=True,
     )
-    assert proc.returncode != 0
 
 
-def test_r36_resume_cli_overrides_frozen_schedule():
-    """split_b CLI gate/side flag reorders pending gems; completed prefix stays."""
-    mx = _load_simple_yaml(MX)["rows"]
-    gate_ordered = expected_order(mx, gate_first=True)
-    prefix = [r["gem_id"] for r in gate_ordered[:4]]
-    pending_ids = [r["gem_id"] for r in gate_ordered[4:]]
-    pending_mx = [r for r in mx if r["gem_id"] in set(pending_ids)]
-    pending_expect = expected_order(pending_mx, gate_first=False)
+def assert_matches_reference(
+    binary: Path,
+    units: Path,
+    state: Path,
+    clock: Path,
+    output: Path,
+) -> dict[str, object]:
+    expected_report, expected_state, expected_journal, expected_spools = reconcile(
+        units, state, clock
+    )
+    result = run_candidate(binary, units, state, clock, output)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert json.loads(output.read_text()) == expected_report
+    assert json.loads((state / "snapshot.json").read_text()) == expected_state
+    actual_journal = [
+        json.loads(line)
+        for line in (state / "journal.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert actual_journal == expected_journal
+    for activation_id, spool in expected_spools.items():
+        assert json.loads((state / "spool" / f"{activation_id}.json").read_text()) == spool
+    assert output.read_bytes().endswith(b"\n")
+    return expected_report
 
-    _clean_outputs(DOSSIER, REPLAY, RESTART)
-    run_kw("--mode", "split_a", "--cut", "4")
-    run_kw("--mode", "split_b", "--sides-first")
-    dossier = load_dossier()
-    got = sorted(dossier["rows"], key=lambda r: r["act_ord"])
-    assert [r["gem_id"] for r in got[:4]] == prefix
-    assert [r["gem_id"] for r in got[4:]] == [r["gem_id"] for r in pending_expect]
-    for i, row in enumerate(got):
-        assert row["act_ord"] == i
+
+def write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2) + "\n")
+
+
+def write_trace(path: Path, events: list[dict[str, object]]) -> None:
+    path.write_text("".join(json.dumps(item, separators=(",", ":")) + "\n" for item in events))
+
+
+def initial_state(utc: str) -> dict[str, object]:
+    return {
+        "schema_version": "wakeclock.state.v1",
+        "trace_seq": 0,
+        "clock_utc": utc,
+        "high_water_utc": utc,
+        "boot_id": "initial",
+        "pending": [],
+        "committed_ids": [],
+        "last_activation": {},
+        "cursors": {},
+    }
+
+
+def unit(
+    unit_id: str,
+    timezone: str,
+    hour: int,
+    minute: int,
+    *,
+    delay: int = 0,
+    accuracy: int = 0,
+    depends_on: list[str] | None = None,
+    priority: int = 0,
+    persistent: bool = True,
+    cap: int = 8,
+) -> dict[str, object]:
+    return {
+        "schema_version": "wakeclock.unit.v1",
+        "unit_id": unit_id,
+        "timezone": timezone,
+        "hour": hour,
+        "minute": minute,
+        "weekdays": [0, 1, 2, 3, 4, 5, 6],
+        "persistent": persistent,
+        "random_delay_sec": delay,
+        "accuracy_sec": accuracy,
+        "depends_on": depends_on or [],
+        "priority": priority,
+        "enabled": True,
+        "catch_up_cap": cap,
+        "salt": f"{unit_id}-salt",
+    }
+
+
+def test_public_fold_recovery_contract_matches_independent_model(
+    binary: Path, tmp_path: Path
+) -> None:
+    """The bundled fold, dependency, and recovery stream matches an independent model."""
+    units, state, clock = copy_case(tmp_path)
+    report = assert_matches_reference(binary, units, state, clock, tmp_path / "out/report.json")
+    fold_ids = [
+        occurrence_id
+        for activation in report["activations"]
+        for occurrence_id in activation["occurrence_ids"]
+        if occurrence_id.startswith("index|2026-11-01T01:30:00|")
+    ]
+    assert len(fold_ids) == 2
+    assert len(set(fold_ids)) == 2
+    paired = [
+        activation
+        for activation in report["activations"]
+        if set(activation["unit_ids"]) == {"index", "archive"}
+    ]
+    assert all(activation["unit_ids"] == ["index", "archive"] for activation in paired)
+
+
+def test_spring_gap_and_fall_fold_are_utc_first(binary: Path, tmp_path: Path) -> None:
+    """UTC-first enumeration must omit a spring gap and preserve both fall-fold instants."""
+    units = tmp_path / "units"
+    units.mkdir()
+    write_json(units / "fold.timer.json", unit("fold", "America/New_York", 1, 30))
+    write_json(units / "gap.timer.json", unit("gap", "America/New_York", 2, 30))
+    state = tmp_path / "state"
+    (state / "spool").mkdir(parents=True)
+    write_json(state / "snapshot.json", initial_state("2026-03-08T05:00:00Z"))
+    (state / "journal.jsonl").write_text("")
+    clock = tmp_path / "clock.jsonl"
+    write_trace(
+        clock,
+        [
+            {"seq": 1, "kind": "advance", "utc": "2026-03-08T08:00:00Z"},
+            {"seq": 2, "kind": "advance", "utc": "2026-11-01T07:00:00Z"},
+        ],
+    )
+    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
+    all_ids = [
+        occurrence_id
+        for activation in report["activations"]
+        for occurrence_id in activation["occurrence_ids"]
+    ]
+    assert not any(item.startswith("gap|2026-03-08T02:30:00|") for item in all_ids)
+    assert sum(item.startswith("fold|2026-11-01T01:30:00|") for item in all_ids) == 2
+
+
+def test_delay_and_results_ignore_unit_filename_order(binary: Path, tmp_path: Path) -> None:
+    """Stable delay and relevant activations must ignore filenames and unrelated units."""
+    units_a, state_a, clock_a = copy_case(tmp_path / "a")
+    units_b, state_b, clock_b = copy_case(tmp_path / "b")
+    for index, path in enumerate(sorted(units_b.glob("*.timer.json"), reverse=True)):
+        path.rename(units_b / f"renamed-{index}.timer.json")
+    write_json(
+        units_b / "unrelated.timer.json",
+        unit("unrelated", "UTC", 23, 59, delay=999, accuracy=1),
+    )
+    out_a = tmp_path / "a.json"
+    out_b = tmp_path / "b.json"
+    report_a = assert_matches_reference(binary, units_a, state_a, clock_a, out_a)
+    report_b = assert_matches_reference(binary, units_b, state_b, clock_b, out_b)
+    relevant_a = [item for item in report_a["activations"] if "unrelated" not in item["unit_ids"]]
+    relevant_b = [item for item in report_b["activations"] if "unrelated" not in item["unit_ids"]]
+    assert relevant_a == relevant_b
+
+
+def test_coalescing_uses_delayed_windows_and_dependency_topology(
+    binary: Path, tmp_path: Path
+) -> None:
+    """Delayed-window intersection and dependency topology determine one dispatch order."""
+    units = tmp_path / "units"
+    units.mkdir()
+    write_json(units / "base.timer.json", unit("base", "UTC", 0, 1, accuracy=30, priority=1))
+    write_json(
+        units / "child.timer.json",
+        unit("child", "UTC", 0, 2, accuracy=30, depends_on=["base"], priority=99),
+    )
+    state = tmp_path / "state"
+    (state / "spool").mkdir(parents=True)
+    snapshot = initial_state("2026-01-01T00:04:00Z")
+    snapshot["pending"] = [
+        {
+            "unit_id": "base",
+            "occurrence_id": "base|2026-01-01T00:01:00|0|2026-01-01T00:01:00Z",
+            "scheduled_local": "2026-01-01T00:01:00",
+            "scheduled_utc": "2026-01-01T00:01:00Z",
+            "offset_sec": 0,
+            "delayed_utc": "2026-01-01T00:02:10Z",
+            "accuracy_sec": 30,
+            "priority": 1,
+            "depends_on": [],
+        },
+        {
+            "unit_id": "child",
+            "occurrence_id": "child|2026-01-01T00:02:00|0|2026-01-01T00:02:00Z",
+            "scheduled_local": "2026-01-01T00:02:00",
+            "scheduled_utc": "2026-01-01T00:02:00Z",
+            "offset_sec": 0,
+            "delayed_utc": "2026-01-01T00:02:20Z",
+            "accuracy_sec": 30,
+            "priority": 99,
+            "depends_on": ["base"],
+        },
+    ]
+    write_json(state / "snapshot.json", snapshot)
+    (state / "journal.jsonl").write_text("")
+    clock = tmp_path / "clock.jsonl"
+    write_trace(clock, [{"seq": 1, "kind": "set", "utc": "2026-01-01T00:04:00Z"}])
+    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
+    assert report["activations"][0]["unit_ids"] == ["base", "child"]
+
+
+def test_prepare_only_is_discarded_and_retried(binary: Path, tmp_path: Path) -> None:
+    """A lone prepare is removed while its occurrence remains available for one retry."""
+    units = tmp_path / "units"
+    units.mkdir()
+    write_json(units / "job.timer.json", unit("job", "UTC", 0, 0))
+    state = tmp_path / "state"
+    (state / "spool").mkdir(parents=True)
+    pending = {
+        "unit_id": "job",
+        "occurrence_id": "job|2026-01-01T00:00:00|0|2026-01-01T00:00:00Z",
+        "scheduled_local": "2026-01-01T00:00:00",
+        "scheduled_utc": "2026-01-01T00:00:00Z",
+        "offset_sec": 0,
+        "delayed_utc": "2026-01-01T00:00:00Z",
+        "accuracy_sec": 0,
+        "priority": 0,
+        "depends_on": [],
+    }
+    snapshot = initial_state("2026-01-01T00:00:00Z")
+    snapshot["pending"] = [pending]
+    write_json(state / "snapshot.json", snapshot)
+    prepare = {
+        "activation_id": "orphan-prepare",
+        "phase": "prepare",
+        "group_id": "orphan-group",
+        "occurrence_ids": [pending["occurrence_id"]],
+    }
+    (state / "journal.jsonl").write_text(json.dumps(prepare, separators=(",", ":")) + "\n")
+    clock = tmp_path / "clock.jsonl"
+    write_trace(clock, [{"seq": 1, "kind": "advance", "utc": "2026-01-01T00:00:01Z"}])
+    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
+    assert report["recovered"] == [
+        {"activation_id": "orphan-prepare", "decision": "discarded_prepare"}
+    ]
+    assert len(report["activations"]) == 1
+
+
+@pytest.mark.parametrize("phase_count", [2, 3])
+def test_spooled_and_committed_partial_state_recovers_once(
+    binary: Path, tmp_path: Path, phase_count: int
+) -> None:
+    """Spooled and committed partial dispatches recover exactly once from durable evidence."""
+    units = tmp_path / "units"
+    units.mkdir()
+    write_json(units / "job.timer.json", unit("job", "UTC", 0, 0))
+    state = tmp_path / "state"
+    (state / "spool").mkdir(parents=True)
+    pending = {
+        "unit_id": "job",
+        "occurrence_id": "job|2026-01-01T00:00:00|0|2026-01-01T00:00:00Z",
+        "scheduled_local": "2026-01-01T00:00:00",
+        "scheduled_utc": "2026-01-01T00:00:00Z",
+        "offset_sec": 0,
+        "delayed_utc": "2026-01-01T00:00:00Z",
+        "accuracy_sec": 0,
+        "priority": 0,
+        "depends_on": [],
+    }
+    snapshot = initial_state("2026-01-01T00:00:00Z")
+    snapshot["pending"] = [pending]
+    write_json(state / "snapshot.json", snapshot)
+    activation_id = "partial-activation"
+    group_id = "partial-group"
+    records = [
+        {
+            "activation_id": activation_id,
+            "phase": phase,
+            "group_id": group_id,
+            "occurrence_ids": [pending["occurrence_id"]],
+        }
+        for phase in ("prepare", "spool", "commit")[:phase_count]
+    ]
+    (state / "journal.jsonl").write_text(
+        "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records)
+    )
+    write_json(
+        state / "spool" / f"{activation_id}.json",
+        {
+            "activation_id": activation_id,
+            "group_id": group_id,
+            "effective_utc": "2026-01-01T00:00:00Z",
+            "unit_ids": ["job"],
+            "occurrence_ids": [pending["occurrence_id"]],
+        },
+    )
+    clock = tmp_path / "clock.jsonl"
+    clock.write_text("")
+    report = assert_matches_reference(binary, units, state, clock, tmp_path / "report.json")
+    expected = "completed_spool" if phase_count == 2 else "replayed_commit"
+    assert report["recovered"] == [{"activation_id": activation_id, "decision": expected}]
+    first_state = (state / "snapshot.json").read_bytes()
+    first_journal = (state / "journal.jsonl").read_bytes()
+    second = run_candidate(binary, units, state, clock, tmp_path / "second.json")
+    assert second.returncode == 0
+    assert (state / "snapshot.json").read_bytes() == first_state
+    assert (state / "journal.jsonl").read_bytes() == first_journal
+    assert json.loads((tmp_path / "second.json").read_text())["recovered"] == []
+
+
+def test_backward_clock_rerun_is_idempotent(binary: Path, tmp_path: Path) -> None:
+    """Backward clock history and a completed rerun must not recreate durable work."""
+    units, state, clock = copy_case(tmp_path)
+    output = tmp_path / "first.json"
+    assert_matches_reference(binary, units, state, clock, output)
+    snapshot = (state / "snapshot.json").read_bytes()
+    journal = (state / "journal.jsonl").read_bytes()
+    spool_bytes = {path.name: path.read_bytes() for path in (state / "spool").glob("*.json")}
+    second = run_candidate(binary, units, state, clock, tmp_path / "second.json")
+    assert second.returncode == 0
+    assert (state / "snapshot.json").read_bytes() == snapshot
+    assert (state / "journal.jsonl").read_bytes() == journal
+    assert {path.name: path.read_bytes() for path in (state / "spool").glob("*.json")} == spool_bytes
+    second_report = json.loads((tmp_path / "second.json").read_text())
+    assert second_report["activations"] == []
+    assert second_report["recovered"] == []
+
+
+@pytest.mark.parametrize("invalid_kind", ["cycle", "trace"])
+def test_invalid_inputs_preserve_state_and_output(
+    binary: Path, tmp_path: Path, invalid_kind: str
+) -> None:
+    """Invalid dependencies and traces must preserve every durable byte and report sentinel."""
+    units, state, clock = copy_case(tmp_path)
+    if invalid_kind == "cycle":
+        index_path = units / "10-index.timer.json"
+        index = json.loads(index_path.read_text())
+        index["depends_on"] = ["archive"]
+        write_json(index_path, index)
+    else:
+        write_trace(
+            clock,
+            [
+                {"seq": 2, "kind": "advance", "utc": "2026-11-01T05:00:00Z"},
+                {"seq": 1, "kind": "advance", "utc": "2026-11-01T06:00:00Z"},
+            ],
+        )
+    before = {path.relative_to(state): path.read_bytes() for path in state.rglob("*") if path.is_file()}
+    output = tmp_path / "report.json"
+    output.write_bytes(b"sentinel\n")
+    result = run_candidate(binary, units, state, clock, output)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr.startswith("wakeclock: ")
+    assert result.stderr.count("\n") == 1
+    after = {path.relative_to(state): path.read_bytes() for path in state.rglob("*") if path.is_file()}
+    assert after == before
+    assert output.read_bytes() == b"sentinel\n"
