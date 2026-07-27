@@ -1,0 +1,4 @@
+type mesh_hold_t;
+type mesh_open_t;
+allow mesh_hold_t self:process { fork sigchld };
+allow mesh_open_t self:process { fork sigchld getattr };

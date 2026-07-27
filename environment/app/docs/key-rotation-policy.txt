@@ -1,1 +1,0 @@
-Recovery authorization is incident-scoped. A signer is usable only while trusted, within its credential window, fingerprint-consistent, and free of an uncleared compromise effective by the recovery date. The panel must satisfy the request as a whole, and the compromised release signer remains revoked.
