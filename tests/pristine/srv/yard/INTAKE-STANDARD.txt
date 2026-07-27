@@ -1,0 +1,33 @@
+FALLOWFIELD COMMISSIONING YARD -- INTAKE STANDARD (IS-11, in force)
+
+Qualification. A host graduates when it has banked at least 120 qualified
+hours in each load class (hammer, carousel, flood). An hour is qualified
+only if it is a full wall-clock hour during which the host's pod was under
+all-three-class concurrent load and the host was in load phase. Partial
+hours do not count, in either direction. A pod receiving partial or
+degraded delivery of any class is not under load for qualification
+purposes. Hosts not in load phase accrue nothing. Shifts are 8 hours,
+hour-aligned, three per day, continuous. Phase transitions occur only at
+shift boundaries.
+
+Yard limit. A host must complete qualification no later than the 54th
+shift counting from and including its racking shift. A host that cannot
+complete within its limit restarts intake from zero. There is no
+adjustment of the limit for equipment faults, schedule gaps, or yard
+incidents, whatever their cause.
+
+Continuation slots. A continuing host is assigned the shifts it will run,
+starting from the earliest future shift, skipping that host's planned
+reimage shifts, at most 8 hosts of the same pod per shift. When more than
+8 same-pod hosts need a shift, hosts with more remaining hours go first;
+equal remainders order by host id. A host's final slot is the shift in
+which its remaining requirement is met.
+
+Boundaries. "At least 120" is inclusive. "No later than the 54th shift"
+is inclusive: a final slot equal to the limit completes in time; one past
+it does not.
+
+Placement. A graduating host enters its pod's production cell at the next
+free position in rack order.
+
+IS-11 supersedes IS-10 (carousel co-ration clause removed).   -- Yard eng.

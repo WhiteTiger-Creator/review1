@@ -1,0 +1,10 @@
+# calendar m08 (whole shifts; transitions at shift boundaries only)
+S1..S26	racked-idle
+S27..S37	load
+S38	reimage
+S39..S44	load
+S45	reimage
+S46..S48	load
+S49..S54	load
+S55	reimage
+S56..S88	load

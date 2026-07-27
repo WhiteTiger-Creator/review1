@@ -1,0 +1,8 @@
+yard shift plan (standing)
+
+Three shifts per day, S-numbered consecutively, 8 hours each,
+hour-aligned. All three load classes (hammer, carousel, flood) are
+scheduled every shift across all pods. Hammer and flood drive yard-wide;
+carousel drives per pod from that pod's CS-9 feeder. Planned host reimages
+per the switchboard calendars. Future shifts continue the numbering
+(S49 onward) under the same plan.

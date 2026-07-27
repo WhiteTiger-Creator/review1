@@ -1,0 +1,8 @@
+yard load exporter -- accounting notes (rev 6)
+
+Figures are scheduler-confirmed delivery: host_minutes for a shift/class is
+the sum, over rostered hosts in load phase that shift, of minutes the class
+generator confirmed delivery to the host's pod. Confirmation is per-minute,
+deterministic bookkeeping from the generator control loop, not sampled
+telemetry. One row per shift per class. Written at shift close by the
+exporter on this collector; retained locally for the current intake cycle.
