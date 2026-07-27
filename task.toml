@@ -4,29 +4,28 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-languages = ["go"]
-tags = ["train", "inference", "loss", "checkpoint", "calibration", "held-out"]
-subcategories = ["tool_specific"]
-codebase_size = "small"
+category = "system-administration"
+subcategories = []
 number_of_milestones = 0
-title = "Plastics Quality Model Fit-Score"
-expert_time_estimate_min = 120
-junior_time_estimate_min = 300
-
-[agent]
-timeout_sec = 1800
-user = 65534
+codebase_size = "small"
+languages = ["go", "bash"]
+tags = ["linux", "systemd", "timer-units", "journal-recovery", "spool-recovery", "timezone-scheduling"]
+expert_time_estimate_min = 270
+junior_time_estimate_min = 600
 
 [verifier]
 timeout_sec = 900
 
+[agent]
+timeout_sec = 1800
+
 [environment]
-build_timeout_sec = 300
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+gpus = 0
+gpu_types = []
+docker_flags = []
 allow_internet = false
-
-[reference_pattern]
-justification_if_none = "docs/reference_tasks/index.json has no promoted references; none fit Go plastics quality-model fit-score with primary/held-out inference, alert-fatigue evaluation loss, and COMMIT eval-run seal recover"
+workdir = "/app"

@@ -1,0 +1,20 @@
+{
+  "schema_version": "wakeclock.unit.v1",
+  "unit_id": "cleanup",
+  "timezone": "UTC",
+  "hour": 6,
+  "minute": 0,
+  "weekdays": [
+    0
+  ],
+  "persistent": true,
+  "random_delay_sec": 0,
+  "accuracy_sec": 0,
+  "depends_on": [
+    "archive"
+  ],
+  "priority": 40,
+  "enabled": true,
+  "catch_up_cap": 2,
+  "salt": "cleanup-v1"
+}

@@ -1,6 +1,0 @@
-{
-  "family": "prefix_mean_slope_quality",
-  "loss_decay": 0.97,
-  "flood_cost": 0.15,
-  "note": "Per-channel sl and cuts remain on fixture packs"
-}

@@ -1,9 +1,0 @@
-{
-  "model_id": "psr-quality-k4",
-  "seed": 4,
-  "train_split": "primary",
-  "eval_split": "hold",
-  "loss": "alert_fatigue_q",
-  "metric": "quality_ladder",
-  "version": "k4-1"
-}
