@@ -1,18 +1,29 @@
-FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c
+FROM public.ecr.aws/docker/library/gcc:13-bookworm@sha256:930f2ebe239275fa67226654cb79273ea34eee672ae61c8a39f689c37fb7ac5c AS builder
+WORKDIR /build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libsqlite3-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY app/src/screening_gate.c /build/screening_gate.c
+COPY app/include/screening_gate.h /build/screening_gate.h
+RUN gcc -std=c17 -O2 -Wall -Wextra -Werror -I/build /build/screening_gate.c -o /build/screening-gate -lsqlite3 -lm
 
-ENV DEBIAN_FRONTEND=noninteractive
-
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 WORKDIR /app
-
-COPY requirements.txt /tmp/requirements.txt
-
-RUN apt-get update && apt-get install -y --no-install-recommends tmux asciinema python3 python3-venv make binutils util-linux ca-certificates && python3 -m venv /opt/pytools && /opt/pytools/bin/pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/requirements.txt && rm -rf /var/lib/apt/lists/* /tmp/requirements.txt
-
-ENV PATH="/opt/pytools/bin:${PATH}"
-
-COPY Makefile /app/Makefile
-COPY src/ /app/src/
-COPY --chmod=755 bin/ /app/bin/
-COPY --chmod=755 harness/ /app/harness/
-COPY inputs/ /app/inputs/
-COPY docs/ /app/docs/
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      asciinema \
+      ca-certificates \
+      jq \
+      lua5.4 \
+      openssl \
+      perl \
+      sqlite3 \
+      tmux \
+ && rm -rf /var/lib/apt/lists/*
+COPY requirements.lock /tmp/requirements.lock
+RUN pip install --no-cache-dir -r /tmp/requirements.lock
+COPY app/ /app/
+COPY --from=builder /build/screening-gate /app/bin/screening-core
+RUN chmod 0755 /app/bin/screening-gate /app/bin/screening-core /app/tools/*.pl /app/tools/*.lua \
+ && chmod 0600 /app/recovery/candidates/*-signing.material \
+ && mkdir -p /app/output

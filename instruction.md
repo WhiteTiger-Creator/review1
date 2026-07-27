@@ -1,22 +1,3 @@
-The question here is a timing one. A clock, deadlines armed against it, a
-stream of advances, and the account the run gives of itself as it goes.
-The only surviving evidence is a stripped x86-64 executable at /app/bin/timers,
-optimized and carrying no symbols. Its source is gone, so the discipline it
-settled on has to be recovered by analysing it and running it on traces of your
-choosing.
+The image-screening release is quarantined after a credential incident. Reconcile `/app/recovery/recovery-request.json`, the candidate snapshot, compromise ledger, delegation state, candidate materials, and `/app/data/features.db`; do not change protected evidence, model files, candidate materials, gate files, C source, or baseline database rows. Recover `/app/tools/compromise_reduce.pl` with CLI `LEDGER SNAPSHOT INCIDENT DATE OUTPUT`; the latest matching record effective by DATE controls each signer, a later clearance overrides a block, and no record means `clear` with empty `effective_on` and `reason`. Recover `/app/tools/delegation_verify.lua` with CLI `STATE PATHS INCIDENT DATE MAX_HOPS OUTPUT`; it must validate trusted roots, active incident-scoped edges, dates, cycles, and hop limits. Select the smallest valid panel, then lower total priority, lower total risk, then the alphabetically sorted signer list, while satisfying every role, security-signer, assurance, region, root, custody, key-family, custodian, and pair-denial rule.
 
-The framing is settled in /app/docs/io-contract.txt: an ASCII trace that sets a
-starting clock and then arms, cancels and advances, answered by two lines per
-advance and closed by a digest. That document gives every field range, every
-output line and every error token, and nothing past them.
-
-Nothing about the internal timing is written down. How the executable treats
-each operation it accepts, what it puts on those two lines, and what it carries
-from one advance to the next are deterministic, and the executable is their
-only account.
-
-/app/harness/run.sh feeds a trace in, /app/harness/diff.py compares the two,
-and /app/inputs holds examples that do not reach everywhere the grading traces
-reach. Write the recovered C to /app/src/recovered.c; running make from /app
-compiles it to /app/build/recovered. Grading recompiles that source alone,
-where no copy of the executable exists.
+Write these exact TSV headers: `compromise_decisions.tsv`: `signer_id\tstate\teffective_on\treason`; `signer_quorum.tsv`: `role\tsigner_id\tpriority\tregion\tkey_family\tassurance_weight\tpublic_key_sha256`; `delegation_paths.tsv`: `role\tsigner_id\troot_id\thops\tdelegation_path\tcustodian\trisk_score`; `delegation_witnesses.tsv`: `signer_id\troot_id\tedge_count\tstatus`. Sort quorum and path rows by role, then signer ID; join path nodes with `>` and no spaces. Update `/app/trust/release-policy.json` in place with fields `allowed_model_kind, assurance_weight, candidate_snapshot_sha256, compromise_decisions_sha256, compromise_ledger_sha256, delegation_state_sha256, delegation_witnesses_sha256, incident_id, maximum_threshold, minimum_threshold, model_sha256, previous_policy_sha256, regions, release_sequence, signer_id, signer_ids, trust_roots`. Create `/app/output/quorum_summary.json` with `assurance_weight, delegation_roots, regions, signer_count, signer_ids, total_priority, total_risk`; create `/app/output/recovery_audit.json` with `candidate_snapshot_sha256, compromise_decisions_sha256, compromise_ledger_sha256, delegation_state_sha256, delegation_witnesses_sha256, incident_id, policy_sha256, previous_policy_sha256, release_sequence, signature_count, signer_ids`. Create all signatures, preserve history in one SQLite transaction, keep the exposed signer revoked, and leave `/app/output/gate.json` from the gate.
