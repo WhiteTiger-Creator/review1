@@ -1,0 +1,112 @@
+--- environment/gate/deploy_gate.go
++++ environment/gate/deploy_gate.go
+@@ -18,14 +18,15 @@
+ }
+ 
+ func accOf(cls []int) string {
+-	if len(cls) == 0 {
+-		return "full"
+-	}
++	m := 0
+ 	for _, c := range cls {
+-		if c < 2 {
+-			return "full"
++		if c > m {
++			m = c
+ 		}
+ 	}
++	if m < 2 {
++		return "full"
++	}
+ 	return "limited"
+ }
+ 
+@@ -55,15 +56,10 @@
+ func negSet(rows []Row) []string {
+ 	seen := map[int]struct{}{}
+ 	for _, r := range rows {
+-		prev := -1
+ 		for _, c := range r.Cls {
+-			if prev >= 0 && c != prev {
+-				break
+-			}
+ 			if c >= 2 {
+ 				seen[c] = struct{}{}
+ 			}
+-			prev = c
+ 		}
+ 	}
+ 	keys := make([]int, 0, len(seen))
+@@ -78,6 +74,44 @@
+ 	return out
+ }
+ 
++func mergeNeg(caller, derived []string) []string {
++	merged := map[string]struct{}{}
++	for _, n := range caller {
++		if n != "" {
++			merged[n] = struct{}{}
++		}
++	}
++	for _, n := range derived {
++		merged[n] = struct{}{}
++	}
++	keys := make([]string, 0, len(merged))
++	for k := range merged {
++		keys = append(keys, k)
++	}
++	sort.Slice(keys, func(i, j int) bool {
++		return keys[i] < keys[j]
++	})
++	return keys
++}
++
++func buildGrants(rows []Row) ([]map[string]string, int) {
++	grants := make([]map[string]string, 0, len(rows))
++	seenSid := map[string]struct{}{}
++	fldAny := 0
++	for _, r := range rows {
++		if _, ok := seenSid[r.Sid]; ok {
++			continue
++		}
++		seenSid[r.Sid] = struct{}{}
++		grants = append(grants, map[string]string{"sid": r.Sid, "acc": accOf(r.Cls)})
++		if r.Fld == 1 {
++			fldAny = 1
++		}
++	}
++	sort.Slice(grants, func(i, j int) bool { return grants[i]["sid"] < grants[j]["sid"] })
++	return grants, fldAny
++}
++
+ func writeJSON(path string, v any) error {
+ 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+ 		return err
+@@ -109,24 +143,9 @@
+ 
+ // mix_c materializes the promotion sheet and transparency file under out.
+ func mix_c(out string, rows []Row, neg []string) error {
+-	keys := negSet(rows)
+-	if len(neg) > 0 {
+-		keys = neg
+-	}
+-	grants := make([]map[string]string, 0, len(rows))
+-	seenSid := map[string]struct{}{}
+-	fldAny := 0
+-	for _, r := range rows {
+-		if _, ok := seenSid[r.Sid]; ok {
+-			continue
+-		}
+-		seenSid[r.Sid] = struct{}{}
+-		grants = append(grants, map[string]string{"sid": r.Sid, "acc": accOf(r.Cls)})
+-		if r.Fld == 1 {
+-			fldAny = 1
+-		}
+-	}
+-	sort.Slice(grants, func(i, j int) bool { return grants[i]["sid"] < grants[j]["sid"] })
++	derived := negSet(rows)
++	keys := mergeNeg(neg, derived)
++	grants, fldAny := buildGrants(rows)
+ 	doc := map[string]any{
+ 		"version": "k4-1",
+ 		"grants":  grants,

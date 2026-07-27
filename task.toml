@@ -1,29 +1,32 @@
-# Task configuration schema version
 version = "2.0"
 
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = []
-number_of_milestones = 0
+category = "machine-learning"
+languages = ["go"]
+tags = ["train", "inference", "loss", "checkpoint", "calibration", "held-out"]
+subcategories = ["tool_specific"]
 codebase_size = "small"
-languages = ["go", "c", "bash"]
-tags = ["authentication", "peer-credentials", "unix-socket-auth", "identity-binding", "authorization"]
-expert_time_estimate_min = 45
-junior_time_estimate_min = 150
-
-[verifier]
-timeout_sec = 600
+number_of_milestones = 0
+title = "Plastics Quality Model Fit-Score"
+expert_time_estimate_min = 120
+junior_time_estimate_min = 300
 
 [agent]
+timeout_sec = 1800
+user = 65534
+
+[verifier]
 timeout_sec = 900
 
 [environment]
-allow_internet = false
-build_timeout_sec = 900
+build_timeout_sec = 300
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-workdir = "/app"
+allow_internet = false
+
+[reference_pattern]
+justification_if_none = "docs/reference_tasks/index.json has no promoted references; none fit Go plastics quality-model fit-score with primary/held-out inference, alert-fatigue evaluation loss, and COMMIT eval-run seal recover"

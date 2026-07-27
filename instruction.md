@@ -1,17 +1,15 @@
-Security operations staff auditing a Unix-domain peer gateway report authorization drift across a three-cycle principal shift on a shared socket path. Regenerated exports from the replay pipeline disagree with pinned audit samples on bind cookies, mask words, journal row counts, child epoch ordering, and resume stability.
+Train and evaluate a plastics feature-quality model under `/app/environment`.
 
-Restore correct peer-credential authorization authority under `/app/environment` so the replay pipeline regenerates honest exports. Static files under `/app/output` alone are insufficient — the verifier deletes `/app/output` and regenerates artifacts by running `bash /app/environment/scripts/repro_shift_cycle.sh` with the environment variables that script declares (three shift cycles). Rebuild `/app/bin/gated` and `/app/bin/inspect` after source changes per `/app/environment/docs/toolchain.md`.
+Pinned model card and weights live under `/app/environment/models/checkpoint.json` and `/app/environment/models/weights.json`. Feature tensors for the primary train split and held-out eval split live under `/app/environment/fixtures/primary` and `/app/environment/fixtures/hold`. Channel slopes and quality-class cuts stay on those packs. Evaluation loss, calibration ladder, deployment-gate rules, tolerances, schema, and eval-seal lineage live under `/app/environment/docs/pol_n.rst`, `tol_n.rst`, `sch_n.txt`, and `seal_n.rst`.
 
-## Authorization outputs
+Run `bash /app/environment/drive_k4.sh` so the desk fit-scores: fit a quality checkpoint from the primary train split into `/app/var/psr/quality_checkpoint.json`, then run inference on primary and held-out packs. Produce `/app/output/obs_primary.json`, `/app/output/obs_hold.json`, `/app/output/rights_map.json`, and `/app/output/transparency.txt`, overwrite them every run, rewrite `/app/run/psr_ledger.jsonl`, and leave a COMMIT eval seal at `/app/var/psr/eval_seal.json` whose `gen` and `eval_fp` match the observation roots and rights sheet. Static outputs are not enough; training-checkpoint fit, inference, evaluation loss, deployment gating, and seal lineage under `/app/environment` must regenerate matching artifacts.
 
-The pipeline writes binding_transcript to `/app/output/binding_transcript.json`, principal auth_trace to `/app/output/auth_trace.json`, dual-view probe_report lines to `/app/output/probe_report.jsonl`, auth_journal events to `/app/output/auth_journal.jsonl`, and converge_report to `/app/output/converge_report.json`.
+Held-out evaluation must satisfy the published metric on both splits:
 
-Auth_trace rows carry mark_digest_hex with seal_hex, publish supp_mask for the active policy_epoch, and record bind_cookie. Probe lines expose cred_gap beside seal_match and bind_cookie. Auth_journal records intake and at most one rebind per multi-cycle export. Converge_report includes scope_agreement_count.
+- Inference: quality scores, class ladders, and band digests match `pol_n`, including after journal-seeded resume and after class transitions that discard stale resolution-cache entries.
+- Evaluation loss: Q recomputes from current bands and ladder on every call, including campaign replay (`mode >= 1`); a journal prior must not be returned as Q.
+- Deployment gate: grants follow ladder maxima; `neg` and transparency list exactly the `ng:{k}` tokens for degraded classes across both roots.
 
-Digest material for bind cookies (including attach policy_epoch in cookie minting), attach versus child vault lookup keys, lane fingerprints, rematerialization witness rules (including that inode generation starts at 1 and advances by exactly 1 per rematerialization without rewind), hot-transition drop clearing, facet republish on mask-only changes, attach-epoch child ordering, journal once-semantics with seal-gated rebind, and resume behavior, are in `/app/environment/docs/peer_model.md` and `/app/environment/docs/export_contract.md`.
+The same obligations apply after fixture pack values change; digests and journals must track live packs, including each pack `gen`. `/app/environment/recover_k4.sh` rebuilds the four artifacts from the ledger under a COMMIT seal whose `eval_fp` matches the live fixture tree. Missing, OPEN, or fingerprint-mismatched seals exit non-zero. Recover does not re-run inference on fixture packs.
 
-## Context
-
-Marks `kairo` and `vexa`, drop_mask, and supplemental masks live in `/app/environment/config/principals.toml`. Socket refs `alpha-sock` and `beta-child` both use `/app/environment/state/run.sock` via `/app/environment/config/endpoints.toml`.
-
-If `/app/output/binding_transcript.json` already contains rows, re-invoking gated must leave all five exports unchanged per the resume rules in `/app/environment/docs/peer_model.md`.
+Each evaluate fit must rewrite `/app/var/psr/quality_checkpoint.json` from the live primary train split so `checkpoint_digest` tracks primary fixture bytes. Journal seeds may exist under `/app/environment/var/journal`. Rights sheet `version` stays `k4-1`. Optional argv: `bash /app/environment/drive_k4.sh --help` and `bash /app/environment/drive_k4.sh --root /app/environment --out /app/output`. Unknown flags exit 2.
