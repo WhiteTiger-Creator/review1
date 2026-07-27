@@ -1,7 +1,0 @@
-{
-  "c01": ["/var/www", "/opt/svc"],
-  "c02": ["/etc/myapp", "/tmp/lane"],
-  "c03": ["/opt/svc", "/home/run"],
-  "c04": ["/var/www", "/tmp/lane", "/etc/myapp"],
-  "c05": ["/srv/box", "/home/run", "/opt/svc"]
-}

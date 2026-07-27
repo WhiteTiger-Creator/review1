@@ -1,4 +1,0 @@
-{
-  "h01": ["/srv/box", "/tmp/lane"],
-  "h02": ["/var/www", "/home/run", "/etc/myapp"]
-}

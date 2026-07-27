@@ -1,4 +1,0 @@
-/opt/svc(/.*)?	u:o:t_exec:s0
-/tmp/lane(/.*)?	u:o:t_lane:s0
-/home/run(/.*)?	u:o:t_home:s0
-/srv/box(/.*)?	u:o:t_box_top:s0

@@ -1,7 +1,0 @@
-{
-  "c01": [{"slot": "s1", "path": "/opt/svc"}, {"slot": "s0", "path": "/var/www"}],
-  "c02": [{"slot": "s1", "path": "/tmp/lane"}, {"slot": "s0", "path": "/etc/myapp"}],
-  "c03": [{"slot": "s0", "path": "/opt/svc"}, {"slot": "s1", "path": "/home/run"}],
-  "c04": [{"slot": "s2", "path": "/etc/myapp"}, {"slot": "s0", "path": "/var/www"}, {"slot": "s1", "path": "/tmp/lane"}],
-  "c05": [{"slot": "s2", "path": "/opt/svc"}, {"slot": "s0", "path": "/srv/box"}, {"slot": "s1", "path": "/home/run"}]
-}

@@ -1,5 +1,0 @@
-/var/www
-/etc/myapp
-/opt/svc
-/tmp/lane
-/home/run

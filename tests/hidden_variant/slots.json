@@ -1,4 +1,0 @@
-{
-  "h01": [{"slot": "s1", "path": "/tmp/lane"}, {"slot": "s0", "path": "/srv/box"}],
-  "h02": [{"slot": "s0", "path": "/var/www"}, {"slot": "s2", "path": "/etc/myapp"}, {"slot": "s1", "path": "/home/run"}]
-}

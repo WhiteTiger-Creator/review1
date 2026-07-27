@@ -1,62 +1,45 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# Terminal-Bench Canary 7f3a9c2e
 set -euo pipefail
 
-if ! command -v python3 >/dev/null 2>&1 && [[ -x /usr/bin/python3 ]]; then
-  export PATH="/usr/bin:${PATH}"
+export HOME="${HOME:-/tmp}"
+if [ ! -d "$HOME" ] || [ ! -w "$HOME" ]; then
+  export HOME=/tmp
 fi
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 not found on PATH" >&2
-  exit 127
-fi
+export GOCACHE="${GOCACHE:-/tmp/go-cache}"
+mkdir -p "$GOCACHE" 2>/dev/null || true
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$ROOT_DIR"
+cd /app
 
-install -m 0755 "$ROOT_DIR/fixed_op_k7.sh" /app/environment/n4/harbor/op_k7.sh
-install -m 0755 "$ROOT_DIR/fixed_merge_q3.sh" /app/environment/r9/lattice/merge_q3.sh
-install -m 0755 "$ROOT_DIR/fixed_recalc_v2.sh" /app/environment/w2/vapor/recalc_v2.sh
-install -m 0755 "$ROOT_DIR/fixed_a3.sh" /app/environment/cmd/a3.sh
-install -m 0755 "$ROOT_DIR/fixed_a1.sh" /app/environment/cmd/a1.sh
-install -m 0755 "$ROOT_DIR/fixed_s1.sh" /app/environment/scripts/s1.sh
-install -m 0755 "$ROOT_DIR/fixed_s3.sh" /app/environment/scripts/s3.sh
+for d in /app/environment /app/bin /app/output "$GOCACHE"; do
+  chmod -R u+rwX,g+rwX,o+rwX "$d" 2>/dev/null || true
+done
 
-# Ensure companion wrappers stay executable after module swaps.
-python3 <<'PY'
+cp -f "${ROOT_DIR}/knot_p.go" /app/environment/knot/knot_p.go
+cp -f "${ROOT_DIR}/vault_w.go" /app/environment/vault/vault_w.go
+cp -f "${ROOT_DIR}/sieve_z.go" /app/environment/sieve/sieve_z.go
+
+bash /app/environment/scripts/build_cqrun.sh
+test -x /app/bin/cqrun
+
+rm -rf /app/output/cohort_state
+/app/bin/cqrun run --packs /app/packs --out /app/output/cohort_trace.json --state /app/output/cohort_state
+test -s /app/output/cohort_trace.json
+
+python3 - <<'PY'
+import json
+import sys
 from pathlib import Path
 
-root = Path("/app/environment")
-for rel in (
-    "cmd/z1.sh",
-    "cmd/z2.sh",
-    "cmd/z3.sh",
-    "cmd/a1.sh",
-    "cmd/a2.sh",
-    "cmd/a3.sh",
-    "scripts/s1.sh",
-    "scripts/s2.sh",
-    "scripts/s3.sh",
-):
-    path = root / rel
-    path.chmod(path.stat().st_mode | 0o111)
-for folder in ("n4/harbor", "r9/lattice", "w2/vapor"):
-    for path in (root / folder).glob("*.sh"):
-        path.chmod(path.stat().st_mode | 0o111)
+sys.path.insert(0, "/app/environment/scripts")
+from ref_kit import expected_trace
 
-scratch = root / "scratch"
-if scratch.exists():
-    for child in scratch.iterdir():
-        if child.name == ".gitkeep":
-            continue
-        if child.is_dir():
-            import shutil
-            shutil.rmtree(child)
-        else:
-            child.unlink()
-scratch.mkdir(parents=True, exist_ok=True)
-out = Path("/app/output")
-out.mkdir(parents=True, exist_ok=True)
-for cache in out.glob("vz/*.cache"):
-    cache.unlink()
+got = json.loads(Path("/app/output/cohort_trace.json").read_text(encoding="utf-8"))
+exp = expected_trace()
+assert got["summary"]["fence_status"] == "sealed"
+assert got["summary"]["cohort_digest"] == exp["summary"]["cohort_digest"]
+assert got["summary"]["resume_digest"] == exp["summary"]["resume_digest"]
+assert got["summary"]["rows_total"] == exp["summary"]["rows_total"]
+print("oracle emit ok", got["summary"]["cohort_digest"])
 PY
-
-ROOT=/app/environment bash /app/environment/scripts/s1.sh

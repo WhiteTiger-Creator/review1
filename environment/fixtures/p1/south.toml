@@ -1,8 +1,0 @@
-[profile]
-name = "south"
-
-[rank_boost]
-"10-core.fc" = 22
-"15-mid.fc" = -5
-"20-side.fc" = 0
-"30-top.fc" = -8

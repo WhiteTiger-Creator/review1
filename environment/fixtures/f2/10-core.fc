@@ -1,4 +1,0 @@
-/var/www(/.*)?	u:o:t_www:s0
-/etc/myapp(/.*)?	u:o:t_etc:s0
-/opt/svc(/.*)?	u:o:t_bin:s0
-/srv/box(/.*)?	u:o:t_box:s0

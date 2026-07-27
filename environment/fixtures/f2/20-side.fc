@@ -1,4 +1,0 @@
-/var/www(/.*)?	u:o:t_www_rw:s0
-/opt/svc(/.*)?	u:o:t_svc:s0
-/tmp/lane(/.*)?	u:o:t_tmp:s0
-/home/run(/.*)?	u:o:t_home_side:s0

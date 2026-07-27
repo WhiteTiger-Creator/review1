@@ -1,33 +1,52 @@
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
+# Canonical Go runtime base (docs/PLATFORM_AUTO_EVAL.md).
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        bash=5.2.15-2+b13 \
-        coreutils=9.1-1 \
-        grep=3.8-5 \
-        sed=4.9-1+deb12u1 \
-        python3=3.11.2-1+b1 \
-        python3-venv=3.11.2-1+b1 \
-        tmux=3.3a-3 \
-        asciinema=2.2.0-1 \
-        ca-certificates=20230311+deb12u1 \
+ENV DEBIAN_FRONTEND=noninteractive \
+    GOTOOLCHAIN=local \
+    GOPROXY=off \
+    CGO_ENABLED=0 \
+    HOME=/tmp \
+    GOCACHE=/tmp/go-cache
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3=3.11.2-1+b1 \
+    python3-venv=3.11.2-1+b1 \
+    tmux=3.3a-3 \
+    asciinema=2.2.0-1 \
+    ca-certificates=20230311+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 
+COPY requirements.lock /tmp/deps.in
 RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5
+    && /opt/verifier/bin/pip install --no-cache-dir --require-hashes --no-deps -r /tmp/deps.in
 
-ENV PATH="/opt/verifier/bin:${PATH}"
-ENV PYTHONPATH="/app"
+RUN ln -sf /opt/verifier/bin/pytest /usr/local/bin/pytest \
+    && ln -sf /usr/local/go/bin/go /usr/local/bin/go
 
-COPY . /app/environment
+ENV PATH=/opt/verifier/bin:/usr/local/go/bin:${PATH}
 
-RUN chmod +x /app/environment/cmd/*.sh /app/environment/scripts/*.sh \
-        /app/environment/n4/harbor/*.sh /app/environment/r9/lattice/*.sh \
-        /app/environment/w2/vapor/*.sh /app/environment/lib/*.sh \
-    && mkdir -p /app/output /app/environment/scratch
+COPY go.mod /app/environment/go.mod
+COPY cmd /app/environment/cmd
+COPY docs /app/environment/docs
+COPY knot /app/environment/knot
+COPY vault /app/environment/vault
+COPY sieve /app/environment/sieve
+COPY internal /app/environment/internal
+COPY packs /app/environment/packs
+COPY run /app/environment/run
+COPY scripts /app/environment/scripts
 
-CMD ["/bin/bash"]
+RUN mkdir -p /app/bin /app/output /tmp/go-cache \
+    && ln -sfn /app/environment/packs /app/packs \
+    && ln -sfn /app/environment/docs /app/docs \
+    && ln -sfn /app/environment/scripts /app/scripts \
+    && chmod +x /app/environment/scripts/build_cqrun.sh \
+    && /app/environment/scripts/build_cqrun.sh \
+    && chmod a+rwX /app/environment /app/environment/knot /app/environment/vault /app/environment/sieve \
+    && chmod a+rwX /app/environment/run /app/environment/cmd /app/environment/internal /app/environment/scripts \
+    && chmod a+rwX /app/bin /app/output /tmp /tmp/go-cache \
+    && chmod 1777 /app/output /tmp /tmp/go-cache /app/bin
+
+WORKDIR /app
