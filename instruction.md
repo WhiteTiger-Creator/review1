@@ -1,5 +1,22 @@
-Operators rely on the local wakeclock timer administrator under `/app` to reconcile persistent systemd-style timer units against a durable logical clock without reading the host wall clock. Restore `/app/bin/wakeclock` so it runs `/app/bin/wakeclock reconcile --units /app/units --state /app/state --clock /app/clock/trace.jsonl --output /app/out/report.json`. The command must create missing destination parents, remain silent on success, and leave the prior durable administration state and report unchanged when validation fails.
+The question here is a timing one. A clock, deadlines armed against it, a
+stream of advances, and the account the run gives of itself as it goes.
+The only surviving evidence is a stripped x86-64 executable at /app/bin/timers,
+optimized and carrying no symbols. Its source is gone, so the discipline it
+settled on has to be recovered by analysing it and running it on traces of your
+choosing.
 
-Persistent unit files under `/app/units`, the logical-clock trace, administration snapshot, journal, and spool surfaces govern timezone-aware calendar firing, deterministic per-occurrence delay, accuracy-window coalescing, unit dependency ordering, forward and backward logical-clock transitions, and recovery of interrupted prepare, spool, and commit dispatches. Reconciliation must preserve distinct occurrences through civil-time folds and gaps, avoid recreating work after backward steps, recover durable partial dispatches exactly once, and remain stable under unit-file reordering and completed reruns. `/app/docs/wakeclock_contract.md` is normative.
+The framing is settled in /app/docs/io-contract.txt: an ASCII trace that sets a
+starting clock and then arms, cancels and advances, answered by two lines per
+advance and closed by a digest. That document gives every field range, every
+output line and every error token, and nothing past them.
 
-The administration report at the output path uses schema `wakeclock.reconcile.v1` with members `schema_version`, `trace_seq`, `recovered`, `activations`, `skipped`, `coalescing_groups`, `dependency_decisions`, `final_cursors`, and `state_digest`, using the documented types and member order, two-space indentation, UTF-8, and one trailing newline. Malformed units or state, invalid zones or schedules, dependency cycles, inconsistent journal or spool evidence, nonmonotonic trace sequences, or unsupported trace events must return nonzero, produce no stdout, write exactly one stderr line beginning `wakeclock: `, and preserve `/app/out/report.json` and every existing file under `/app/state` byte-for-byte.
+Nothing about the internal timing is written down. How the executable treats
+each operation it accepts, what it puts on those two lines, and what it carries
+from one advance to the next are deterministic, and the executable is their
+only account.
+
+/app/harness/run.sh feeds a trace in, /app/harness/diff.py compares the two,
+and /app/inputs holds examples that do not reach everywhere the grading traces
+reach. Write the recovered C to /app/src/recovered.c; running make from /app
+compiles it to /app/build/recovered. Grading recompiles that source alone,
+where no copy of the executable exists.
