@@ -1,0 +1,9 @@
+[package]
+name = "m04"
+edition = "2024"
+
+[dependencies]
+m00 = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

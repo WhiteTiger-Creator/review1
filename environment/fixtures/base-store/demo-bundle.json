@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "name": "demo",
+  "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+  "layers": [
+    {
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size": 4,
+      "media_type": "application/vnd.oci.image.layer.v1.tar+gzip"
+    }
+  ],
+  "root_snapshot_id": "snap-demo-root"
+}

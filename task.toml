@@ -4,35 +4,32 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-subcategories = ["tool_specific"]
+category = "build-and-dependency-management"
+subcategories = []
 number_of_milestones = 0
-codebase_size = "large"
-languages = ["java", "bash"]
+codebase_size = "small"
+languages = ["rust", "bash"]
 tags = [
-  "ensemble-model-evaluation",
-  "roc-auc",
-  "feature-calibration",
-  "model-lineage",
-  "model-risk-review",
-  "training-metrics",
+  "content-addressed-artifacts",
+  "vendored-build",
+  "generation-retention",
+  "cargo",
+  "garbage-collection",
 ]
-category_profile = "ml_ensemble_model_risk_evaluation"
 expert_time_estimate_min = 270
-junior_time_estimate_min = 660
-
-[verifier]
-timeout_sec = 600
+junior_time_estimate_min = 600
 
 [agent]
 timeout_sec = 1800
 
-[environment]
-build_timeout_sec = 1200
-cpus = 4
-memory_mb = 8192
-storage_mb = 16384
-allow_internet = false
+[verifier]
+timeout_sec = 1200
 
-[reference_pattern]
-justification_if_none = "No promoted reference combines dual candidate model lineages, ledger-resolved ensemble training-run identity, a model-risk dossier for calibration provenance and AUC baselines, and deterministic dual lineage/discrepancy evaluation artifacts."
+[environment]
+build_timeout_sec = 900
+cpus = 2
+memory_mb = 4096
+storage_mb = 12288
+gpus = 0
+gpu_types = []
+allow_internet = false

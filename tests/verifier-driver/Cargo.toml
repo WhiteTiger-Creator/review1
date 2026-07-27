@@ -1,0 +1,15 @@
+[package]
+name = "rstore-verifier"
+edition = "2024"
+
+[[bin]]
+name = "rstore-verifier"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.98"
+hex = "0.4.3"
+rusqlite = { version = "0.34.0", features = ["bundled"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+sha2 = "0.10.9"

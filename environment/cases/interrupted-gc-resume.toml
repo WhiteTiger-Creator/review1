@@ -1,0 +1,8 @@
+seed = 123
+steps = []
+
+[[steps]]
+cmd = ["cargo", "run", "--release", "-p", "m07", "--", "recover", "--root", "/var/lib/mint", "--output", "/output/store-inventory.json", "--interrupt-after", "validation"]
+
+[[steps]]
+cmd = ["cargo", "run", "--release", "-p", "m07", "--", "recover", "--root", "/var/lib/mint", "--output", "/output/store-inventory.json"]
