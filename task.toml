@@ -3,25 +3,25 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "hard"
-category = "games"
+category = "machine-learning"
 subcategories = []
+difficulty = "hard"
+codebase_size = "minimal"
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["java"]
-tags = ["rollback-netcode", "deterministic-physics", "input-prediction", "subframe-collisions", "immutable-snapshots", "late-input-resimulation"]
-expert_time_estimate_min = 290
-junior_time_estimate_min = 650
+languages = ["r"]
+tags = ["handwriting-recognition", "policy-weighted-learning", "calibration", "writer-generalization"]
+expert_time_estimate_min = 260
+junior_time_estimate_min = 620
 
 [verifier]
-timeout_sec = 620.0
+timeout_sec = 900
 
 [agent]
-timeout_sec = 1550.0
+timeout_sec = 900
 
 [environment]
-build_timeout_sec = 900.0
+build_timeout_sec = 1200
 cpus = 2
 memory_mb = 4096
-storage_mb = 10240
+storage_mb = 4096
 allow_internet = false

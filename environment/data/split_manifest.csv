@@ -1,0 +1,3 @@
+split_name,row_count,label_visible,compact_trace,long_sweep,rising_tail
+training_writers,7494,true,3210,4205,79
+writer_independent_evaluation,3498,false,1647,1836,15
