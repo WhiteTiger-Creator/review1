@@ -1,29 +1,41 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3=3.11.2-1+b1 \
-    python3-pip=23.0.1+dfsg-1 \
-    tmux=3.3a-3 \
-    asciinema=2.2.0-1 \
-    patch=2.7.6-7 \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip3 install --break-system-packages --no-cache-dir \
-    pytest==8.4.1 \
-    pytest-json-ctrf==0.3.5
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 
 WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends make=4.3-4.1 gcc=4:12.2.0-3 \
+        libc6-dev=2.36-9+deb12u14 \
+        python3=3.11.2-1+b1 \
+        python3-pip=23.0.1+dfsg-1 \
+        python3-venv=3.11.2-1+b1 \
+        locales=2.36-9+deb12u14 \
+        tmux=3.3a-3 \
+        asciinema=2.2.0-1 \
+        ca-certificates=20230311+deb12u1 \
+        coreutils=9.1-1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
+    && sed -i '/de_DE.UTF-8/s/^# //g' /etc/locale.gen \
+    && sed -i '/C.UTF-8/s/^# //g' /etc/locale.gen \
+    && locale-gen
+
+RUN python3 -m venv /opt/verifier \
+    && /opt/verifier/bin/pip install --no-cache-dir \
+        pytest==8.4.1 \
+        pytest-json-ctrf==0.3.5
+
+ENV PATH=/opt/verifier/bin:/app/bin:${PATH}
+
 COPY . /app/environment
 
-ENV PATH="/usr/local/go/bin:/app/bin:${PATH}"
-ENV GOPATH=/go
-ENV GOPROXY=off
-ENV GOSUMDB=off
+RUN mkdir -p /app/output /app/bin \
+    && ln -sfn /app/environment/scripts /app/scripts \
+    && ln -sfn /app/environment/docs /app/docs \
+    && ln -sfn /app/environment/fixtures /app/fixtures \
+    && ln -sfn /app/environment/svcunit /app/svcunit \
+    && chmod +x /app/environment/scripts/run_ship.sh \
+    && chmod +x /app/environment/scripts/seed_torn.sh \
+    && make -C /app/environment PREFIX=/app install
 
-# Login shells reset PATH and drop /usr/local/go/bin; keep `go` on the
-# default login PATH (/usr/local/bin) and via profile.d so `bash -lc 'go version'` works.
-RUN ln -sf /usr/local/go/bin/go /usr/local/bin/go \
-    && printf '%s\n' 'export PATH="/usr/local/go/bin:${PATH}"' > /etc/profile.d/go-path.sh
-
-RUN mkdir -p /app/bin /app/output \
-    && bash /app/environment/tools/mk_all.sh
+CMD ["bash"]
