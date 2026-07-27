@@ -1,52 +1,44 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS builder
+FROM public.ecr.aws/docker/library/ruby:3.3-slim-bookworm@sha256:e76733e94b3a5893e4a141024ef3a583dc10781dc24becebf74f9c9f9a33e3df
 
-WORKDIR /build
-
-COPY go.mod /build/go.mod
-COPY cmd/ /build/cmd/
-COPY internal/ /build/internal/
-
-RUN mkdir -p /out \
-    && go build -o /out/nfs-acld /build/cmd/nfs-acld
-
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
-
-ENV PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    tmux \
-    asciinema \
-    python3 \
-    python3-pip \
-    python-is-python3 \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --break-system-packages \
-    pytest==8.4.1 \
-    pytest-json-ctrf==0.3.5
+    python3=3.11.2-1+b1 \
+    python3-venv=3.11.2-1+b1 \
+    ca-certificates=20230311+deb12u1 \
+    openssl=3.0.20-1~deb12u2 \
+    tmux=3.3a-3 \
+    asciinema=2.2.0-1 \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local/go /usr/local/go
+RUN python3 -m venv /opt/verifier \
+    && /opt/verifier/bin/pip install --no-cache-dir \
+        pytest==8.4.1 \
+        pytest-json-ctrf==0.3.5 \
+        pyyaml==6.0.2
 
-RUN ln -sf /usr/local/go/bin/go /usr/local/bin/go \
-    && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
-    && printf '%s\n' 'export PATH="/usr/local/go/bin:/usr/local/bin:$PATH"' > /etc/profile.d/go-path.sh \
-    && chmod 644 /etc/profile.d/go-path.sh \
-    && echo 'export PATH="/usr/local/go/bin:/usr/local/bin:$PATH"' >> /root/.bashrc \
-    && echo 'export PATH="/usr/local/go/bin:/usr/local/bin:$PATH"' >> /root/.profile
+ENV PATH=/opt/verifier/bin:${PATH}
+
+RUN ln -sf /opt/verifier/bin/pytest /usr/local/bin/pytest
+
+COPY Gemfile Gemfile.lock /app/environment/
+COPY docs/ /app/environment/docs/
+COPY data/ /app/environment/data/
+COPY fixtures/ /app/environment/fixtures/
+COPY tools/ /app/environment/tools/
+COPY n4k/ /app/environment/n4k/
+COPY p8m/ /app/environment/p8m/
+COPY w2t/ /app/environment/w2t/
+COPY r6x/ /app/environment/r6x/
+COPY jr8/ /app/environment/jr8/
+COPY rp5/ /app/environment/rp5/
+COPY ovk/ /app/environment/ovk/
+COPY q3z/ /app/environment/q3z/
+
+RUN chmod +x /app/environment/tools/kw_run /app/environment/tools/hex_dgst \
+    && mkdir -p /app/output \
+    && ln -sf /app/environment/tools/kw_run /usr/local/bin/kw_run
 
 WORKDIR /app
-
-COPY go.mod /app/go.mod
-COPY config/ /app/config/
-COPY docs/ /app/docs/
-COPY governance/ /app/governance/
-COPY systemd/ /app/systemd/
-COPY --chmod=0755 scripts/ /app/scripts/
-COPY var/ /app/var/
-COPY cmd/ /app/cmd/
-COPY internal/ /app/internal/
-COPY --from=builder --chmod=0755 /out/nfs-acld /app/bin/nfs-acld
-
-RUN mkdir -p /app/bin /app/run
-
-CMD ["sleep", "infinity"]
+ENV KW_ROOT=/app/environment
+ENV KW_OUT=/app/output
