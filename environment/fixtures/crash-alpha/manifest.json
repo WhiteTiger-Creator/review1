@@ -1,0 +1,11 @@
+{
+  "bundle_id": "crash-alpha",
+  "schema_version": 1,
+  "priority": [
+    "tombstone",
+    "wal",
+    "committed-journal",
+    "recovered-primary",
+    "backup"
+  ]
+}
