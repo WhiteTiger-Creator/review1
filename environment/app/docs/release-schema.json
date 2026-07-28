@@ -1,0 +1,7 @@
+{
+  "gates": {"coverage": true, "balanced_accuracy_lower": true, "brier": true, "ece": true, "fpr_gap": true, "feature_drift": true},
+  "heads": [{"head_id": "string", "sha256": "64 lowercase hex"}],
+  "cohorts": [{"site_id": "string", "count": 0, "coverage": 0.0, "tpr": 0.0, "fpr": 0.0}],
+  "feature_drift": [{"feature_index": 0, "feature_name": "string", "observed_mean": 0.0, "reference_mean": 0.0, "score": 0.0}],
+  "samples": [{"sample_index": 0, "sample_id": "string", "site_id": "string", "device_family": "string", "label": 0, "probability": 0.0, "uncertainty": 0.0, "abstained": false, "prediction": 0, "source_etag": "quoted sha256 ETag"}]
+}

@@ -1,0 +1,3 @@
+# Release console contract
+
+The dashboard identifies campaign `orbital-psf-q3`, fetches its current release without cache, and exposes release status through `#release-state`. It renders these six summary metrics in `#metric-grid`: coverage, balanced accuracy, Brier score, ECE, FPR gap, and maximum feature drift. It renders one row per gate in `#gate-table`, one row per site in `#cohort-table`, and one row per evaluated sample in `#sample-table`. Text is created through DOM text content rather than HTML insertion. Network or schema failures leave a visible error state. The layout remains usable on narrow screens.
