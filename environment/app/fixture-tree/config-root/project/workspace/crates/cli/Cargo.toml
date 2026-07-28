@@ -1,0 +1,12 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+adapter = { path = "../adapter" }
+audit-format = "0.1.0"
+audit-proto = "0.1.0"
+audit-bridge = "0.1.0"
+build-helper = { path = "../build-helper" }

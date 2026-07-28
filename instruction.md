@@ -1,5 +1,66 @@
-The orbital imaging group needs an independent release decision for the published PSF anomaly ensemble in `/app/data/orbit.sqlite3`. Complete the mixed Go/C service in `/app` according to the contracts in `/app/docs`. `make build` must produce native ELF binaries at `/app/bin/orbit-api`, `/app/bin/orbit-certify`, and `/app/bin/fft-check`; the certifier must read the supplied SQLite registry and use the system FFTW library. The API must serve the campaign and dashboard on `127.0.0.1:18080` with the documented routes and metadata.
+Effective Cargo configuration for an offline workspace is wrong when hierarchical
+`.cargo/config.toml` discovery, recursive includes, environment overrides,
+left-to-right `--config` flags, config-relative paths, and `[source]`
+replacement chains disagree with the locked package provenance those settings
+are supposed to feed.
 
-Certify the complete campaign using calibrated ensemble inference, abstention, deterministic stratified confidence bounds, cohort error rates, feature drift, and the current database release gates. Finish all catalogue and model validation before any HTTP request. Acquire each sample exactly once in catalogue order and fail closed on route, revision, metadata, digest, PNG, ROI, timeout, or cache inconsistencies. Reserved campaign characters are part of the required route behavior: campaign `orbital/psf q3` must be requested as the single segment `orbital%2Fpsf%20q3`, and the API must split the escaped path before decoding that segment exactly once. Body ETags use the exact quoted form `"sha256:<64 lowercase hexadecimal characters>"`.
+Rebuild the Rust auditor at `/app/auditor` so it reconstructs the effective
+configuration for each audit request under `/app/fixture-tree/config-root`,
+validates directory and local-registry terminal sources against `Cargo.lock`,
+optionally performs a locked offline build from the resolved terminal sources,
+and writes one deterministic JSON report.
 
-Publish under `/app/out` using the exact `orbital-ensemble-release/v1` JSON, Graphviz provenance, and atomic current manifest defined in `/app/docs/publication-contract.md`. Invalid arguments exit 2; operational failures exit 3, preserve the previous current release, and leave no staging files. Repeated and concurrent unchanged runs must converge on one byte-identical generation. Do not alter the registry, schema, contracts, seed manifest, audit archive, dashboard source, or PNG tiles. The odd- and even-dimension radial helper must also satisfy the documented guard-page and fatal UndefinedBehaviorSanitizer checks.
+## Deliverable
+
+```bash
+cargo build \
+  --release \
+  --locked \
+  --offline \
+  --manifest-path /app/auditor/Cargo.toml
+```
+
+Required executable:
+
+`/app/auditor/target/release/cargo-config-source-replacement-precedence-auditor`
+
+Run:
+
+```bash
+/app/auditor/target/release/cargo-config-source-replacement-precedence-auditor \
+  --fixture-root /app/fixture-tree/config-root \
+  --requests /app/data/audit_requests.ndjson \
+  --environment-overrides /app/data/environment_overrides.json \
+  --cli-overrides /app/data/cli_overrides.ndjson \
+  --source-profiles /app/data/source_profiles.json \
+  --solver-config /app/data/solver_config.json \
+  --output /app/output/audit_report.json
+```
+
+The verifier rebuilds the candidate with a clean locked offline Cargo release
+build and executes that native binary directly.
+
+Do not replace the auditor with Python/shell wrappers, precomputed reports,
+copied Oracle/reference code, or `cargo config` / network registry queries.
+Modify only `/app/auditor`. Fixture tree, data files, and docs are immutable.
+
+## Scope
+
+Bounded contracts live under `/app/docs/`:
+
+- `/app/docs/data_contract.md`
+- `/app/docs/discovery_contract.md`
+- `/app/docs/include_contract.md`
+- `/app/docs/merge_contract.md`
+- `/app/docs/path_contract.md`
+- `/app/docs/source_replacement_contract.md`
+- `/app/docs/report_schema.md`
+- `/app/docs/report.schema.json`
+
+The exact report row schemas, enum values, index bases, canonical value
+encoding, provenance strings, row populations, sorting, integrity vocabulary,
+JSON serialization, temporary sibling path, and whole-run fatal exit behavior
+are normative in `/app/docs/report_schema.md` and `/app/docs/report.schema.json`.
+
+Frozen Cargo Book excerpts are in the task `SOURCES.md` / `source_snapshots/`
+tree for authoring provenance; runtime stays offline.

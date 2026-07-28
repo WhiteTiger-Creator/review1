@@ -1,0 +1,5 @@
+[source.vendor-secondary]
+directory = "workspace/vendor-secondary"
+
+[source.local-registry]
+local-registry = "workspace/local-registry"

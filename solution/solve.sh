@@ -1,46 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
+APP_ROOT="${APP_ROOT:-/app}"
 SOLUTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PATCH_FILE=""
-for candidate in "$SOLUTION_DIR/solution.patch" /oracle/solution.patch /solution/solution.patch; do
-  if [ -f "$candidate" ]; then PATCH_FILE="$candidate"; break; fi
-done
-if [ -z "$PATCH_FILE" ]; then
-  echo "Oracle source patch is unavailable" >&2
-  exit 1
+
+rm -rf "${APP_ROOT}/auditor/target"
+rm -rf "${APP_ROOT}/auditor/src"
+mkdir -p "${APP_ROOT}/auditor/src"
+
+cp -a "${SOLUTION_DIR}/oracle_src/src/." "${APP_ROOT}/auditor/src/"
+cp -a "${SOLUTION_DIR}/oracle_src/Cargo.toml" "${APP_ROOT}/auditor/Cargo.toml"
+if ! cmp -s "${SOLUTION_DIR}/oracle_src/Cargo.lock" "${APP_ROOT}/auditor/Cargo.lock"; then
+  cp -a "${SOLUTION_DIR}/oracle_src/Cargo.lock" "${APP_ROOT}/auditor/Cargo.lock"
+  rm -rf "${APP_ROOT}/auditor/vendor" "${APP_ROOT}/auditor/.cargo"
+  cp -a "${SOLUTION_DIR}/oracle_src/vendor" "${APP_ROOT}/auditor/vendor"
+  cp -a "${SOLUTION_DIR}/oracle_src/.cargo" "${APP_ROOT}/auditor/.cargo"
 fi
 
-cd /app
-if patch --dry-run --batch --forward -p1 < "$PATCH_FILE" >/dev/null; then
-  patch --batch --forward -p1 < "$PATCH_FILE"
-elif patch --dry-run --batch --reverse -p1 < "$PATCH_FILE" >/dev/null; then
-  echo "Oracle patch is already applied"
-else
-  echo "Oracle patch does not match /app" >&2
-  exit 1
-fi
+cd "${APP_ROOT}/auditor"
+cargo build --release --locked --offline
 
-gofmt -w /app/cmd /app/internal
-go mod verify
-make clean
-make build
+rm -f "${APP_ROOT}/output/audit_report.json"
+mkdir -p "${APP_ROOT}/output"
 
-find /app/out -mindepth 1 -maxdepth 1 -not -name '.gitkeep' -exec rm -rf {} +
-/app/bin/orbit-api --db /app/data/orbit.sqlite3 --publish-dir /app/out --web /app/web --listen 127.0.0.1:18080 >/tmp/orbit-api.log 2>&1 &
-api_pid=$!
-cleanup() { kill "$api_pid" 2>/dev/null || true; wait "$api_pid" 2>/dev/null || true; }
-trap cleanup EXIT
-for _ in $(seq 1 100); do
-  if python3 - <<'PY' >/dev/null 2>&1
-import urllib.request
-with urllib.request.urlopen('http://127.0.0.1:18080/health', timeout=0.2) as response:
-    assert response.status == 200
-PY
-  then break; fi
-  if ! kill -0 "$api_pid" 2>/dev/null; then cat /tmp/orbit-api.log >&2; exit 1; fi
-  sleep 0.05
-done
-/app/bin/orbit-certify --db /app/data/orbit.sqlite3 --api http://127.0.0.1:18080 --publish-dir /app/out --timeout-ms 5000
-/app/bin/fft-check >/dev/null
-test -s /app/out/current.json
+"${APP_ROOT}/auditor/target/release/cargo-config-source-replacement-precedence-auditor" \
+  --fixture-root "${APP_ROOT}/fixture-tree/config-root" \
+  --requests "${APP_ROOT}/data/audit_requests.ndjson" \
+  --environment-overrides "${APP_ROOT}/data/environment_overrides.json" \
+  --cli-overrides "${APP_ROOT}/data/cli_overrides.ndjson" \
+  --source-profiles "${APP_ROOT}/data/source_profiles.json" \
+  --solver-config "${APP_ROOT}/data/solver_config.json" \
+  --output "${APP_ROOT}/output/audit_report.json"
+
+test -s "${APP_ROOT}/output/audit_report.json"

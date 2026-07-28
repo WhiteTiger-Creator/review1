@@ -1,0 +1,11 @@
+include = [
+  { path = "../config/source.toml" },
+  { path = "../config/missing-optional.toml", optional = true },
+]
+
+[build]
+jobs = 4
+rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
+
+[term]
+verbose = false

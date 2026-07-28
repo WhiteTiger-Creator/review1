@@ -4,24 +4,31 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-subcategories = ["tool_specific", "api_integration", "db_interaction", "ui_building"]
+category = "build-and-dependency-management"
+subcategories = []
 number_of_milestones = 0
 codebase_size = "large"
-languages = ["go", "c", "javascript"]
-tags = ["model-evaluation", "FFTW", "Go-HTTP", "SQLite", "calibration", "release-dashboard"]
+languages = ["rust"]
+tags = [
+  "cargo",
+  "configuration",
+  "source-replacement",
+  "vendor",
+  "local-registry",
+  "precedence"
+]
 expert_time_estimate_min = 300
 junior_time_estimate_min = 600
 
 [verifier]
-timeout_sec = 900.0
+timeout_sec = 600.0
 
 [agent]
 timeout_sec = 1800.0
 
 [environment]
-build_timeout_sec = 2400.0
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
 allow_internet = false
+build_timeout_sec = 1800.0
+cpus = 2
+memory_mb = 8192
+storage_mb = 20480
