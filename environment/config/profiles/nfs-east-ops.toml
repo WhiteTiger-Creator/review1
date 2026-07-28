@@ -1,0 +1,5 @@
+# Site overlay used for regional NFS discovery. Must not override base export ACL policy knobs.
+max_clients_per_export = 5
+default_squash = "no_root_squash"
+default_anon_uid = 0
+default_access = "rw"

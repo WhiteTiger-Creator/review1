@@ -1,639 +1,812 @@
-"""Verifier — wind tunnel aerodynamic coefficient lab calibration."""
+"""Verifier for NFS export ACL daemon runtime state."""
+
 from __future__ import annotations
 
-import csv
 import json
 import math
-import shutil
-import subprocess
-import tempfile
+import re
 from pathlib import Path
 
-import pytest
-
-BINARY = "/usr/local/bin/wtac-validate"
-PUBLIC = Path("/app/fixtures/campaigns")
-HELD = Path(__file__).resolve().parent / "verifier-fixtures" / "campaigns"
-
-
-def trapz(y: list[float], x: list[float]) -> float:
-    total = 0.0
-    for i in range(len(x) - 1):
-        total += 0.5 * (y[i] + y[i + 1]) * (x[i + 1] - x[i])
-    return total
-
-
-def slopes(xs: list[float], zs: list[float]) -> list[float]:
-    n = len(xs)
-    out = [0.0] * n
-    if n == 1:
-        return out
-    out[0] = (zs[1] - zs[0]) / (xs[1] - xs[0])
-    out[-1] = (zs[-1] - zs[-2]) / (xs[-1] - xs[-2])
-    for i in range(1, n - 1):
-        out[i] = (zs[i + 1] - zs[i - 1]) / (xs[i + 1] - xs[i - 1])
-    return out
+CONFIG_PATH = Path("/app/config/exports.json")
+JOURNAL_PATH = Path("/app/var/lib/nfs-acld/export.journal")
+ACL_PATH = Path("/app/run/export_acls.json")
+METRICS_PATH = Path("/app/run/export_metrics.json")
+OVERLAY_PATH = Path("/app/config/profiles/nfs-east-ops.toml")
+UNIT_PATH = Path("/app/systemd/nfs-export-acld.service")
+PROTECTED = [
+    Path("/app/config/exports.json"),
+    Path("/app/docs/nfs-export-ops-policy.md"),
+    Path("/app/governance/nfs-east-baseline.md"),
+    Path("/app/systemd/nfs-export-acld.service"),
+    Path("/app/var/lib/nfs-acld/export.journal"),
+]
 
 
-def load_campaign(d: Path) -> dict:
-    return {
-        name: json.loads((d / f"{name}.json").read_text(encoding="utf-8"))
-        for name in ("conditions", "geometry", "pressures", "balance", "tare_runs")
-    }
+def load_json(path: Path):
+    """Load a JSON document from disk."""
+    with path.open() as f:
+        return json.load(f)
 
 
-def reference_q(cond: dict) -> float:
-    return 0.5 * float(cond["rho_kg_m3"]) * float(cond["V_mps"]) ** 2
+def load_journal():
+    """Load NFS export ACL journal events from the on-disk WAL."""
+    ops = []
+    with JOURNAL_PATH.open() as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                ops.append(json.loads(line))
+    return ops
 
 
-def reference_pairs(camp: dict, q_inf: float) -> list[dict]:
-    cond = camp["conditions"]
-    cps = {}
-    for s in camp["pressures"]["samples"]:
-        cps[str(s["tap_id"])] = (float(s["p_pa"]) - float(cond["p_inf_pa"])) / q_inf
-    upper: dict[float, dict] = {}
-    lower: dict[float, dict] = {}
-    for tap in camp["geometry"]["taps"]:
-        key = round(float(tap["x_c"]), 12)
-        (upper if tap["surface"] == "upper" else lower)[key] = tap
-    pairs = []
-    for key in sorted(set(upper) & set(lower)):
-        u, lo = upper[key], lower[key]
-        pairs.append(
-            {
-                "x_c": float(u["x_c"]),
-                "z_u": float(u["z_c"]),
-                "z_l": float(lo["z_c"]),
-                "Cp_u": cps[str(u["tap_id"])],
-                "Cp_l": cps[str(lo["tap_id"])],
-            }
+def round_half_away(value: float, ndigits: int) -> float:
+    """Round half away from zero to ndigits decimal places."""
+    factor = 10**ndigits
+    scaled = value * factor
+    if scaled >= 0:
+        return math.floor(scaled + 0.5) / factor
+    return math.ceil(scaled - 0.5) / factor
+
+
+def specificity(client_id: str) -> int:
+    """Compute client specificity per the NFS export ops policy."""
+    if re.search(r"[A-Za-z]", client_id):
+        return 128
+    if "/" in client_id:
+        return int(client_id.rsplit("/", 1)[1])
+    return 32
+
+
+def simulate_ops():
+    """Independently replay the journal under the NFS export ops policy."""
+    cfg = load_json(CONFIG_PATH)
+    max_clients = int(cfg["max_clients_per_export"])
+    def_squash = cfg["default_squash"]
+    def_anon_uid = int(cfg["default_anon_uid"])
+    def_anon_gid = int(cfg["default_anon_gid"])
+    def_access = cfg["default_access"]
+    require_secure = bool(cfg["require_secure_ports"])
+    eval_clock = int(cfg["evaluation_clock"])
+    table_id = cfg["export_table_id"]
+
+    exports = {}
+    waitlist = []
+    seen = set()
+    applied = 0
+    skipped_dup = 0
+
+    def state_of(secure):
+        if require_secure and not secure:
+            return "insecure"
+        return "active"
+
+    def new_grant(client_id, access, squash, anon_uid, anon_gid, secure):
+        if squash == "all_squash":
+            anon_uid = def_anon_uid
+            anon_gid = def_anon_gid
+        return {
+            "client_id": client_id,
+            "access": access,
+            "squash": squash,
+            "anon_uid": anon_uid,
+            "anon_gid": anon_gid,
+            "secure": secure,
+            "specificity": specificity(client_id),
+            "state": state_of(secure),
+        }
+
+    def promote(export_path):
+        idx = next((i for i, w in enumerate(waitlist) if w["export_path"] == export_path), None)
+        if idx is None:
+            return False
+        entry = waitlist[idx]
+        if export_path not in exports:
+            waitlist.pop(idx)
+            return True
+        clients = exports[export_path]
+        if len(clients) >= max_clients:
+            return False
+        if entry["client_id"] in clients:
+            waitlist.pop(idx)
+            return True
+        clients[entry["client_id"]] = new_grant(
+            entry["client_id"], def_access, def_squash, def_anon_uid, def_anon_gid, True
         )
-    return pairs
+        waitlist.pop(idx)
+        return True
 
+    for op in load_journal():
+        oid = op["op_id"]
+        if oid in seen:
+            skipped_dup += 1
+            continue
+        seen.add(oid)
+        applied += 1
+        typ = op["type"]
 
-def reference_forces(pairs: list[dict], alpha_deg: float) -> dict:
-    xs = [p["x_c"] for p in pairs]
-    dcp = [p["Cp_l"] - p["Cp_u"] for p in pairs]
-    su = slopes(xs, [p["z_u"] for p in pairs])
-    sl = slopes(xs, [p["z_l"] for p in pairs])
-    ax = [pairs[i]["Cp_u"] * su[i] - pairs[i]["Cp_l"] * sl[i] for i in range(len(pairs))]
-    cn, ca = trapz(dcp, xs), trapz(ax, xs)
-    a = alpha_deg * math.pi / 180.0
-    return {
-        "Cn": cn,
-        "Ca": ca,
-        "Cl": cn * math.cos(a) - ca * math.sin(a),
-        "Cd": cn * math.sin(a) + ca * math.cos(a),
-        "alpha_rad": a,
+        if typ == "create_export":
+            path = op["export_path"]
+            if path not in exports:
+                exports[path] = {}
+        elif typ == "grant":
+            path = op["export_path"]
+            if path not in exports:
+                continue
+            cid = op["client_id"]
+            if cid in exports[path]:
+                continue
+            if len(exports[path]) >= max_clients:
+                continue
+            access = op.get("access", def_access)
+            squash = op.get("squash", def_squash)
+            anon_uid = op.get("anon_uid", def_anon_uid)
+            anon_gid = op.get("anon_gid", def_anon_gid)
+            secure = op.get("secure", True)
+            exports[path][cid] = new_grant(cid, access, squash, anon_uid, anon_gid, secure)
+        elif typ == "revoke":
+            path = op["export_path"]
+            cid = op["client_id"]
+            if path not in exports or cid not in exports[path]:
+                continue
+            del exports[path][cid]
+            promote(path)
+        elif typ == "enqueue":
+            path = op["export_path"]
+            cid = op["client_id"]
+            if any(w["export_path"] == path and w["client_id"] == cid for w in waitlist):
+                continue
+            waitlist.append({"export_path": path, "client_id": cid})
+        elif typ == "set_squash":
+            path = op["export_path"]
+            cid = op["client_id"]
+            if path not in exports or cid not in exports[path]:
+                continue
+            g = exports[path][cid]
+            g["squash"] = op["squash"]
+            if g["squash"] == "all_squash":
+                g["anon_uid"] = def_anon_uid
+                g["anon_gid"] = def_anon_gid
+            g["state"] = state_of(g["secure"])
+        elif typ == "set_access":
+            path = op["export_path"]
+            cid = op["client_id"]
+            if path not in exports or cid not in exports[path]:
+                continue
+            exports[path][cid]["access"] = op["access"]
+        elif typ == "destroy_export":
+            exports.pop(op["export_path"], None)
+        elif typ == "reexport_pass":
+            for path in sorted(exports):
+                while True:
+                    if len(exports[path]) >= max_clients:
+                        break
+                    if not any(w["export_path"] == path for w in waitlist):
+                        break
+                    if not promote(path):
+                        break
+
+    export_list = []
+    for path in sorted(exports):
+        clients = list(exports[path].values())
+        clients.sort(key=lambda c: (-c["specificity"], c["client_id"]))
+        export_list.append({"export_path": path, "clients": clients})
+
+    grant_count = sum(len(e["clients"]) for e in export_list)
+    insecure = sum(1 for e in export_list for c in e["clients"] if c["state"] == "insecure")
+    over_cap = sum(1 for e in export_list if len(e["clients"]) > max_clients)
+    export_count = len(export_list)
+    wait_depth = len(waitlist)
+    util = 0.0
+    if export_count > 0:
+        util = round_half_away(grant_count / (export_count * max_clients), 4)
+    penalties = insecure * 20 + over_cap * 25 + wait_depth * 2
+    compliance = max(0.0, round_half_away(100 - penalties, 2))
+
+    acls = {
+        "evaluation_clock": eval_clock,
+        "export_table_id": table_id,
+        "max_clients_per_export": max_clients,
+        "exports": export_list,
+        "waitlist": waitlist,
     }
-
-
-def reference_cm(pairs: list[dict], xref: float) -> float:
-    xs = [p["x_c"] for p in pairs]
-    y = [(p["Cp_l"] - p["Cp_u"]) * (xref - p["x_c"]) for p in pairs]
-    return trapz(y, xs)
-
-
-def reference_tare(runs: list[dict]) -> dict:
-    rows = [r for r in runs if not r["wind_on"]]
-    n = float(len(rows))
-
-    def mean(k: str) -> float:
-        return sum(float(r[k]) for r in rows) / n
-
-    def sigma(k: str, mu: float) -> float:
-        return math.sqrt(sum((float(r[k]) - mu) ** 2 for r in rows) / (n - 1.0))
-
-    mx, mz, mm = mean("Fx_N"), mean("Fz_N"), mean("My_Nm")
-    return {
-        "tare_run_count": len(rows),
-        "mean_tare_Fx_N": mx,
-        "mean_tare_Fz_N": mz,
-        "mean_tare_My_Nm": mm,
-        "sigma_tare_Fx_N": sigma("Fx_N", mx),
-        "sigma_tare_Fz_N": sigma("Fz_N", mz),
-        "sigma_tare_My_Nm": sigma("My_Nm", mm),
+    metrics = {
+        "export_count": export_count,
+        "client_grant_count": grant_count,
+        "waitlist_depth": wait_depth,
+        "insecure_grant_count": insecure,
+        "over_capacity_exports": over_cap,
+        "journal_applied": applied,
+        "journal_skipped_dup": skipped_dup,
+        "slot_utilization_ratio": util,
+        "export_compliance": compliance,
     }
-
-
-def reference_balance(camp: dict, tare: dict, q_inf: float) -> dict:
-    cond = camp["conditions"]
-    s_ref = float(cond["chord_m"]) * float(cond["span_m"])
-    fx = float(camp["balance"]["Fx_N"]) - tare["mean_tare_Fx_N"]
-    fz = float(camp["balance"]["Fz_N"]) - tare["mean_tare_Fz_N"]
-    my = float(camp["balance"]["My_Nm"]) - tare["mean_tare_My_Nm"]
-    return {
-        "Cl": fz / (q_inf * s_ref),
-        "Cd": fx / (q_inf * s_ref),
-        "Cm": my / (q_inf * s_ref * float(cond["chord_m"])),
-        "corrected_Fx_N": fx,
-        "corrected_Fz_N": fz,
-        "corrected_My_Nm": my,
-        "S_ref_m2": s_ref,
-    }
-
-
-def reference_unc(cond: dict, q_inf: float, pairs: list[dict], forces: dict, bal: dict) -> dict:
-    rho, v = float(cond["rho_kg_m3"]), float(cond["V_mps"])
-    u_rho, u_v, u_p = float(cond["u_rho_kg_m3"]), float(cond["u_V_mps"]), float(cond["u_p_pa"])
-    rel_q = math.sqrt((u_rho / rho) ** 2 + (2.0 * u_v / v) ** 2)
-    u_q = rel_q * q_inf
-    u_cp = u_p / q_inf
-    xs = [p["x_c"] for p in pairs]
-    u_dcp = math.sqrt(2.0) * u_cp
-    acc = 0.0
-    for i in range(len(xs) - 1):
-        w = 0.5 * (xs[i + 1] - xs[i])
-        acc += 2.0 * (w * u_dcp) ** 2
-    u_cn = math.sqrt(acc)
-    u_cl_p = abs(math.cos(forces["alpha_rad"])) * u_cn
-    u_cl_b = abs(bal["Cl"]) * rel_q
-    u_rss = math.sqrt(u_cl_p**2 + u_cl_b**2)
-    return {
-        "u_q_inf_pa": u_q,
-        "u_Cp": u_cp,
-        "u_Cl_pressure": u_cl_p,
-        "u_Cl_balance": u_cl_b,
-        "u_Cl_rss": u_rss,
-    }
-
-
-def fnv_seal(campaign_id: str, q_inf: float, cl_p: float, cd_p: float, cm_p: float, cl_b: float) -> str:
-    line = f"{campaign_id}|{q_inf:.8f}|{cl_p:.8f}|{cd_p:.8f}|{cm_p:.8f}|{cl_b:.8f}"
-    h = 2166136261
-    for byte in (line + "\n").encode("utf-8"):
-        h ^= byte
-        h = (h * 16777619) & 0xFFFFFFFF
-    return f"{h:08x}"
-
-
-def run_feature(campaign: Path, work: Path | None = None) -> Path:
-    work = work or Path(tempfile.mkdtemp(prefix="wtac-"))
-    proc = subprocess.run(
-        [BINARY, "feature", "--campaign-dir", str(campaign), "--work-dir", str(work)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    return work
-
-
-def run_eval(campaign: Path, work: Path) -> Path:
-    proc = subprocess.run(
-        [BINARY, "eval", "--campaign-dir", str(campaign), "--work-dir", str(work)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    return work
-
-
-def run_validate(campaign: Path) -> Path:
-    work = run_feature(campaign)
-    return run_eval(campaign, work)
-
-
-def assert_close(a: float, b: float, tol: float = 1e-8, msg: str = "") -> None:
-    assert abs(a - b) <= tol, f"{msg}: {a} vs {b} (tol={tol})"
-
-
-# --- binary / layout ---
-
-
-def test_eval_binary_installed():
-    """Eval CLI binary must be installed at /usr/local/bin/wtac-validate after make build."""
-    assert Path(BINARY).is_file()
-
-
-def test_feature_public_campaigns_present():
-    """Feature-batch public fixture campaigns listed in fixture-index must ship under /app/fixtures/campaigns."""
-    for name in ("NACA0012-A4", "RAE2822-A2", "FLATPLATE-A0"):
-        assert (PUBLIC / name / "conditions.json").is_file()
-
-
-def test_model_api_symbols_importable():
-    """Model API symbols from api-symbols.md must remain importable for attestation."""
-    import wtac.core.errband as un
-    import wtac.core.loadcell as bc
-    import wtac.core.mref as pm
-    import wtac.core.panel as fi
-    import wtac.core.qinf as dyn
-    import wtac.core.tapcp as pn
-    import wtac.core.zeros as tc
-    import wtac.decoy.decoy_pitot_blend as db
-    import wtac.decoy.decoy_prandtl as dp
-    import wtac.emit.emit_artifacts as em
-    import wtac.feature.batch_stage as fs
-    import wtac.io.load_campaign as lc
-
-    for mod, name in [
-        (lc, "wtac_load_campaign"),
-        (dyn, "wtac_dynamic_pressure"),
-        (pn, "wtac_pressure_coefficients"),
-        (pn, "wtac_pair_stations"),
-        (fi, "wtac_integrate_forces"),
-        (pm, "wtac_pitching_moment"),
-        (tc, "wtac_tare_stats"),
-        (bc, "wtac_balance_coeffs"),
-        (un, "wtac_uncertainty_budget"),
-        (fs, "wtac_build_feature_batch"),
-        (fs, "wtac_write_feature_batch"),
-        (fs, "wtac_load_feature_batch"),
-        (fs, "wtac_bump_feature_epoch"),
-        (fs, "wtac_record_eval_success"),
-        (em, "wtac_emit_artifacts"),
-        (em, "wtac_report_seal"),
-        (dp, "wtac_decoy_prandtl_q"),
-        (db, "wtac_decoy_pitot_blend"),
-    ]:
-        assert callable(getattr(mod, name))
-
-
-# --- public campaign numerical closure ---
-
-
-@pytest.mark.parametrize("name", ["NACA0012-A4", "RAE2822-A2", "FLATPLATE-A0"])
-def test_feature_dynamic_pressure_ignores_pitot(name):
-    """Feature schema: dynamic-pressure feature must equal 0.5*rho*V^2 and must not equal pitot_q_pa."""
-    camp = load_campaign(PUBLIC / name)
-    work = run_validate(PUBLIC / name)
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    q = reference_q(camp["conditions"])
-    assert_close(report["q_inf_pa"], q, 1e-9, "q_inf")
-    assert abs(report["q_inf_pa"] - float(camp["conditions"]["pitot_q_pa"])) > 1.0
-
-
-@pytest.mark.parametrize("name", ["NACA0012-A4", "RAE2822-A2", "FLATPLATE-A0"])
-def test_model_inference_pressure_lift_drag_moment(name):
-    """Model inference pressure-path coefficients must match trapezoidal integration with degree-to-radian alpha."""
-    camp = load_campaign(PUBLIC / name)
-    q = reference_q(camp["conditions"])
-    pairs = reference_pairs(camp, q)
-    forces = reference_forces(pairs, float(camp["conditions"]["alpha_deg"]))
-    cm = reference_cm(pairs, float(camp["conditions"]["xref_c"]))
-    work = run_validate(PUBLIC / name)
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    assert_close(report["Cn"], forces["Cn"], 1e-8, "Cn")
-    assert_close(report["Ca"], forces["Ca"], 1e-8, "Ca")
-    assert_close(report["Cl_pressure"], forces["Cl"], 1e-8, "Cl")
-    assert_close(report["Cd_pressure"], forces["Cd"], 1e-8, "Cd")
-    assert_close(report["Cm_pressure"], cm, 1e-8, "Cm")
-    assert_close(report["alpha_rad"], forces["alpha_rad"], 1e-12, "alpha")
-
-
-@pytest.mark.parametrize("name", ["NACA0012-A4", "RAE2822-A2", "FLATPLATE-A0"])
-def test_eval_metrics_balance_crosscheck(name):
-    """Eval metrics: balance label coefficients after wind-off tare correction must close with pressure Cl within policy tolerance."""
-    camp = load_campaign(PUBLIC / name)
-    q = reference_q(camp["conditions"])
-    pairs = reference_pairs(camp, q)
-    forces = reference_forces(pairs, float(camp["conditions"]["alpha_deg"]))
-    tare = reference_tare(camp["tare_runs"]["runs"])
-    bal = reference_balance(camp, tare, q)
-    work = run_validate(PUBLIC / name)
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    assert_close(report["Cl_balance"], bal["Cl"], 1e-8, "Cl_b")
-    assert_close(report["Cd_balance"], bal["Cd"], 1e-8, "Cd_b")
-    assert_close(report["Cm_balance"], bal["Cm"], 1e-8, "Cm_b")
-    assert_close(report["Cl_delta"], forces["Cl"] - bal["Cl"], 1e-8, "delta")
-    assert report["closure_pass"] is True
-    assert abs(report["Cl_pressure"] - report["Cl_balance"]) <= float(camp["conditions"]["closure_tol_Cl"])
-
-
-@pytest.mark.parametrize("name", ["NACA0012-A4", "RAE2822-A2"])
-def test_batch_tare_excludes_wind_on(name):
-    """Batch tare feature: tare statistics must count only wind_on==false runs."""
-    camp = load_campaign(PUBLIC / name)
-    tare = reference_tare(camp["tare_runs"]["runs"])
-    work = run_validate(PUBLIC / name)
-    calib = json.loads((work / "calibration_summary.json").read_text(encoding="utf-8"))
-    assert calib["tare_run_count"] == tare["tare_run_count"]
-    assert calib["tare_run_count"] == sum(1 for r in camp["tare_runs"]["runs"] if not r["wind_on"])
-    assert_close(calib["mean_tare_Fx_N"], tare["mean_tare_Fx_N"], 1e-9)
-    assert_close(calib["sigma_tare_Fz_N"], tare["sigma_tare_Fz_N"], 1e-9)
-    assert_close(calib["corrected_Fz_N"], reference_balance(camp, tare, reference_q(camp["conditions"]))["corrected_Fz_N"], 1e-8)
-
-
-@pytest.mark.parametrize("name", ["NACA0012-A4", "RAE2822-A2", "FLATPLATE-A0"])
-def test_eval_uncertainty_rss_not_linear(name):
-    """Eval uncertainty metric: u_Cl_rss must be RSS of pressure and balance paths, not a linear sum."""
-    camp = load_campaign(PUBLIC / name)
-    q = reference_q(camp["conditions"])
-    pairs = reference_pairs(camp, q)
-    forces = reference_forces(pairs, float(camp["conditions"]["alpha_deg"]))
-    tare = reference_tare(camp["tare_runs"]["runs"])
-    bal = reference_balance(camp, tare, q)
-    expect = reference_unc(camp["conditions"], q, pairs, forces, bal)
-    work = run_validate(PUBLIC / name)
-    unc = json.loads((work / "uncertainty_budget.json").read_text(encoding="utf-8"))
-    assert_close(unc["u_q_inf_pa"], expect["u_q_inf_pa"], 1e-8)
-    assert_close(unc["u_Cl_pressure"], expect["u_Cl_pressure"], 1e-8)
-    assert_close(unc["u_Cl_balance"], expect["u_Cl_balance"], 1e-8)
-    assert_close(unc["u_Cl_rss"], expect["u_Cl_rss"], 1e-8)
-    linear = expect["u_Cl_pressure"] + expect["u_Cl_balance"]
-    assert abs(unc["u_Cl_rss"] - linear) > 1e-12
-
-
-def test_feature_coefficient_table_schema():
-    """Feature/label coefficient_table.csv must use the documented header and pressure/balance row layout."""
-    work = run_validate(PUBLIC / "NACA0012-A4")
-    rows = list(csv.reader((work / "coefficient_table.csv").open(encoding="utf-8")))
-    assert rows[0] == ["path", "Cn", "Ca", "Cl", "Cd", "Cm"]
-    assert rows[1][0] == "pressure"
-    assert rows[2][0] == "balance"
-    assert rows[2][1] == "" and rows[2][2] == ""
-
-
-def test_eval_report_seal_matches_fnv():
-    """Eval report_seal metric bind must match the FNV-1a digest specified in artifact-layout.md."""
-    work = run_validate(PUBLIC / "NACA0012-A4")
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    seal = fnv_seal(
-        report["campaign_id"],
-        report["q_inf_pa"],
-        report["Cl_pressure"],
-        report["Cd_pressure"],
-        report["Cm_pressure"],
-        report["Cl_balance"],
-    )
-    assert report["report_seal"] == seal
-
-
-def test_metric_s_ref_chord_times_span():
-    """Eval metric unit basis: S_ref_m2 must equal chord_m * span_m."""
-    camp = load_campaign(PUBLIC / "RAE2822-A2")
-    work = run_validate(PUBLIC / "RAE2822-A2")
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    expect = float(camp["conditions"]["chord_m"]) * float(camp["conditions"]["span_m"])
-    assert_close(report["S_ref_m2"], expect, 1e-12)
-
-
-def test_model_quarter_chord_moment():
-    """Model inference pitching-moment: Cm must be about xref_c=0.25, not the leading edge."""
-    camp = load_campaign(PUBLIC / "NACA0012-A4")
-    q = reference_q(camp["conditions"])
-    pairs = reference_pairs(camp, q)
-    cm_c4 = reference_cm(pairs, 0.25)
-    cm_le = reference_cm(pairs, 0.0)
-    work = run_validate(PUBLIC / "NACA0012-A4")
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    assert_close(report["Cm_pressure"], cm_c4, 1e-8)
-    assert abs(report["Cm_pressure"] - cm_le) > 1e-4
-
-
-def test_model_alpha_zero_drag_equals_ca():
-    """Model inference at alpha=0: Cl equals Cn and Cd equals Ca."""
-    camp = load_campaign(PUBLIC / "FLATPLATE-A0")
-    q = reference_q(camp["conditions"])
-    pairs = reference_pairs(camp, q)
-    forces = reference_forces(pairs, 0.0)
-    work = run_validate(PUBLIC / "FLATPLATE-A0")
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    assert_close(report["Cd_pressure"], forces["Ca"], 1e-8)
-    assert_close(report["Cl_pressure"], forces["Cn"], 1e-8)
-
-
-def test_eval_uncertainty_components_named():
-    """Eval uncertainty_budget.json metrics components must use the four documented names."""
-    work = run_validate(PUBLIC / "NACA0012-A4")
-    unc = json.loads((work / "uncertainty_budget.json").read_text(encoding="utf-8"))
-    names = [c["name"] for c in unc["components"]]
-    assert names == ["dyn_pressure", "pressure_path", "balance_path", "rss_combined"]
-
-
-def test_feature_decoy_prandtl_not_used():
-    """Feature pipeline must not route q_inf through wtac_decoy_prandtl_q."""
-    camp = load_campaign(PUBLIC / "NACA0012-A4")
-    from wtac.decoy.decoy_prandtl import wtac_decoy_prandtl_q
-
-    q = reference_q(camp["conditions"])
-    decoy = wtac_decoy_prandtl_q(q, 0.3)
-    work = run_validate(PUBLIC / "NACA0012-A4")
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    assert_close(report["q_inf_pa"], q, 1e-9)
-    assert abs(report["q_inf_pa"] - decoy) > 1.0
-
-
-# --- held-out perturbation ---
-
-
-def _write_heldout(dest: Path, alpha: float, scale: float) -> None:
-    """Deterministic held-out campaign derived from public geometry with scaled Cp."""
-    base = load_campaign(PUBLIC / "NACA0012-A4")
-    cond = dict(base["conditions"])
-    cond["campaign_id"] = dest.name
-    cond["alpha_deg"] = alpha
-    cond["closure_tol_Cl"] = 0.03
-    q = reference_q(cond)
-    samples = []
-    for s in base["pressures"]["samples"]:
-        cp = (float(s["p_pa"]) - float(base["conditions"]["p_inf_pa"])) / reference_q(base["conditions"])
-        samples.append({"tap_id": s["tap_id"], "p_pa": cond["p_inf_pa"] + scale * cp * q})
-    pairs_tmp = []
-    # build pairs for force target
-    cps = {str(s["tap_id"]): (float(s["p_pa"]) - cond["p_inf_pa"]) / q for s in samples}
-    upper, lower = {}, {}
-    for tap in base["geometry"]["taps"]:
-        key = round(float(tap["x_c"]), 12)
-        (upper if tap["surface"] == "upper" else lower)[key] = tap
-    for key in sorted(set(upper) & set(lower)):
-        u, lo = upper[key], lower[key]
-        pairs_tmp.append(
-            {
-                "x_c": float(u["x_c"]),
-                "z_u": float(u["z_c"]),
-                "z_l": float(lo["z_c"]),
-                "Cp_u": cps[str(u["tap_id"])],
-                "Cp_l": cps[str(lo["tap_id"])],
-            }
-        )
-    forces = reference_forces(pairs_tmp, alpha)
-    cm = reference_cm(pairs_tmp, float(cond["xref_c"]))
-    s_ref = float(cond["chord_m"]) * float(cond["span_m"])
-    tare_off = {"Fx": 1.0, "Fz": -0.5, "My": 0.05}
-    tare_runs = {
-        "runs": [
-            {"run_id": "T0", "wind_on": False, "Fx_N": tare_off["Fx"], "Fz_N": tare_off["Fz"], "My_Nm": tare_off["My"]},
-            {
-                "run_id": "T1",
-                "wind_on": False,
-                "Fx_N": tare_off["Fx"] + 0.3,
-                "Fz_N": tare_off["Fz"] - 0.1,
-                "My_Nm": tare_off["My"] + 0.02,
-            },
-            {
-                "run_id": "W1",
-                "wind_on": True,
-                "Fx_N": 99.0,
-                "Fz_N": 99.0,
-                "My_Nm": 99.0,
-            },
-        ]
-    }
-    mean_fx = (tare_runs["runs"][0]["Fx_N"] + tare_runs["runs"][1]["Fx_N"]) / 2.0
-    mean_fz = (tare_runs["runs"][0]["Fz_N"] + tare_runs["runs"][1]["Fz_N"]) / 2.0
-    mean_my = (tare_runs["runs"][0]["My_Nm"] + tare_runs["runs"][1]["My_Nm"]) / 2.0
-    balance = {
-        "Fx_N": forces["Cd"] * q * s_ref + mean_fx,
-        "Fz_N": forces["Cl"] * q * s_ref + mean_fz,
-        "My_Nm": cm * q * s_ref * float(cond["chord_m"]) + mean_my,
-    }
-    dest.mkdir(parents=True, exist_ok=True)
-    (dest / "conditions.json").write_text(json.dumps(cond, indent=2) + "\n", encoding="utf-8")
-    shutil.copy(PUBLIC / "NACA0012-A4" / "geometry.json", dest / "geometry.json")
-    (dest / "pressures.json").write_text(json.dumps({"samples": samples}, indent=2) + "\n", encoding="utf-8")
-    (dest / "balance.json").write_text(json.dumps(balance, indent=2) + "\n", encoding="utf-8")
-    (dest / "tare_runs.json").write_text(json.dumps(tare_runs, indent=2) + "\n", encoding="utf-8")
-
-
-def test_eval_heldout_campaign_metrics():
-    """Eval metrics: held-out HELD-ALPHA campaign must pass closure metric under the same contracts."""
-    dest = Path(__file__).resolve().parent / "verifier-fixtures" / "campaigns" / "HELD-ALPHA"
-    camp = load_campaign(dest)
-    work = run_validate(dest)
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    q = reference_q(camp["conditions"])
-    pairs = reference_pairs(camp, q)
-    forces = reference_forces(pairs, float(camp["conditions"]["alpha_deg"]))
-    assert_close(report["Cl_pressure"], forces["Cl"], 1e-7)
-    assert report["closure_pass"] is True
-    assert report["campaign_id"] == "HELD-ALPHA"
-
-
-def test_feature_heldout_differs_from_public():
-    """Feature held-out coefficients must differ from the public NACA0012-A4 baseline."""
-    dest = Path(__file__).resolve().parent / "verifier-fixtures" / "campaigns" / "HELD-ALPHA"
-    pub = run_validate(PUBLIC / "NACA0012-A4")
-    held = run_validate(dest)
-    a = json.loads((pub / "lift_drag_report.json").read_text(encoding="utf-8"))
-    b = json.loads((held / "lift_drag_report.json").read_text(encoding="utf-8"))
-    assert abs(a["Cl_pressure"] - b["Cl_pressure"]) > 0.01
-
-
-def test_eval_heldout_beta_metrics():
-    """Eval metrics trap: second held-out campaign under verifier-fixtures must also pass."""
-    dest = Path(__file__).resolve().parent / "verifier-fixtures" / "campaigns" / "HELD-BETA"
-    camp = load_campaign(dest)
-    work = run_validate(dest)
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    q = reference_q(camp["conditions"])
-    pairs = reference_pairs(camp, q)
-    forces = reference_forces(pairs, float(camp["conditions"]["alpha_deg"]))
-    assert_close(report["Cl_pressure"], forces["Cl"], 1e-7)
-    assert report["campaign_id"] == "HELD-BETA"
-    assert report["closure_pass"] is True
-
-
-def test_model_perturb_alpha_changes_cl_cd():
-    """Model perturbation: changing alpha must change Cl and Cd."""
-    d1 = Path(tempfile.mkdtemp()) / "a3"
-    d2 = Path(tempfile.mkdtemp()) / "a8"
-    _write_heldout(d1, alpha=3.0, scale=1.0)
-    _write_heldout(d2, alpha=8.0, scale=1.0)
-    r1 = json.loads((run_validate(d1) / "lift_drag_report.json").read_text(encoding="utf-8"))
-    r2 = json.loads((run_validate(d2) / "lift_drag_report.json").read_text(encoding="utf-8"))
-    assert abs(r1["Cl_pressure"] - r2["Cl_pressure"]) > 1e-4
-    assert abs(r1["Cd_pressure"] - r2["Cd_pressure"]) > 1e-6
-
-
-def test_eval_artifact_files_exist():
-    """Eval artifacts: all four required work-dir files must be written."""
-    work = run_validate(PUBLIC / "NACA0012-A4")
-    for name in (
-        "lift_drag_report.json",
-        "coefficient_table.csv",
-        "calibration_summary.json",
-        "uncertainty_budget.json",
+    return acls, metrics
+
+
+def test_runtime_acl_file_exists():
+    """Runtime export ACL inventory file must exist after oneshot convergence."""
+    assert ACL_PATH.is_file()
+
+
+def test_runtime_metrics_file_exists():
+    """Runtime export metrics file must exist after oneshot convergence."""
+    assert METRICS_PATH.is_file()
+
+
+def test_systemd_unit_present():
+    """Systemd oneshot unit for NFS export ACL reconciliation must be present."""
+    assert UNIT_PATH.is_file()
+    text = UNIT_PATH.read_text()
+    assert "Type=oneshot" in text
+    assert "start-nfs-acld.sh" in text
+
+
+def test_protected_inputs_unchanged():
+    """Protected config, docs, governance, unit, and journal trees must remain unchanged."""
+    assert CONFIG_PATH.is_file()
+    assert OVERLAY_PATH.is_file()
+    cfg = load_json(CONFIG_PATH)
+    assert cfg["max_clients_per_export"] == 3
+    assert cfg["default_squash"] == "root_squash"
+    assert cfg["default_anon_uid"] == 65534
+    overlay = OVERLAY_PATH.read_text()
+    assert "max_clients_per_export = 5" in overlay
+    journal = JOURNAL_PATH.read_text()
+    assert '"op_id":"op01"' in journal
+    policy = Path("/app/docs/nfs-export-ops-policy.md").read_text()
+    assert "max_clients_per_export" in policy
+
+
+def test_acl_schema_fields():
+    """export_acls.json must expose the schema fields required by the ops policy."""
+    acls = load_json(ACL_PATH)
+    for key in (
+        "evaluation_clock",
+        "export_table_id",
+        "max_clients_per_export",
+        "exports",
+        "waitlist",
     ):
-        assert (work / name).is_file()
+        assert key in acls
+    assert isinstance(acls["exports"], list)
+    assert isinstance(acls["waitlist"], list)
+    for exp in acls["exports"]:
+        assert "export_path" in exp
+        assert "clients" in exp
+        for c in exp["clients"]:
+            for field in (
+                "client_id",
+                "access",
+                "squash",
+                "anon_uid",
+                "anon_gid",
+                "secure",
+                "specificity",
+                "state",
+            ):
+                assert field in c
 
 
-def test_feature_batch_schema_and_q():
-    """Feature staging: feature_batch.json must carry contract keys and correct q_inf/alpha_rad."""
-    camp = load_campaign(PUBLIC / "NACA0012-A4")
-    work = run_feature(PUBLIC / "NACA0012-A4")
-    batch = json.loads((work / "feature_batch.json").read_text(encoding="utf-8"))
-    assert set(batch) >= {"campaign_id", "q_inf_pa", "alpha_rad", "pairs", "feature_epoch"}
-    q = reference_q(camp["conditions"])
-    assert_close(batch["q_inf_pa"], q, 1e-9)
-    assert abs(batch["q_inf_pa"] - float(camp["conditions"]["pitot_q_pa"])) > 1.0
-    expect_rad = float(camp["conditions"]["alpha_deg"]) * math.pi / 180.0
-    assert_close(batch["alpha_rad"], expect_rad, 1e-12)
-    assert abs(batch["alpha_rad"] - float(camp["conditions"]["alpha_deg"])) > 0.05
-    assert isinstance(batch["pairs"], list) and len(batch["pairs"]) >= 2
-    ledger = json.loads((work / "feature_ledger.json").read_text(encoding="utf-8"))
-    assert ledger["feature_epoch"] == batch["feature_epoch"]
-    assert ledger["feature_epoch"] >= 1
+def test_metrics_schema_fields():
+    """export_metrics.json must expose the metric fields required by the ops policy."""
+    metrics = load_json(METRICS_PATH)
+    for key in (
+        "export_count",
+        "client_grant_count",
+        "waitlist_depth",
+        "insecure_grant_count",
+        "over_capacity_exports",
+        "journal_applied",
+        "journal_skipped_dup",
+        "slot_utilization_ratio",
+        "export_compliance",
+    ):
+        assert key in metrics
 
 
-def test_eval_requires_feature_batch():
-    """Eval staging: eval without a prior feature staging file must fail nonzero."""
-    work = Path(tempfile.mkdtemp(prefix="wtac-missing-"))
-    proc = subprocess.run(
-        [
-            BINARY,
-            "eval",
-            "--campaign-dir",
-            str(PUBLIC / "NACA0012-A4"),
-            "--work-dir",
-            str(work),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+def test_matches_independent_replay_acls():
+    """Persisted ACL inventory must match an independent policy-faithful journal replay."""
+    expected, _ = simulate_ops()
+    actual = load_json(ACL_PATH)
+    assert actual == expected
+
+
+def test_matches_independent_replay_metrics():
+    """Persisted metrics must match an independent policy-faithful journal replay."""
+    _, expected = simulate_ops()
+    actual = load_json(METRICS_PATH)
+    assert actual == expected
+
+
+def test_base_max_clients_authoritative():
+    """Persisted max_clients_per_export must equal base configuration, not overlay."""
+    acls = load_json(ACL_PATH)
+    cfg = load_json(CONFIG_PATH)
+    assert acls["max_clients_per_export"] == cfg["max_clients_per_export"]
+    assert acls["max_clients_per_export"] != 5
+    assert acls["max_clients_per_export"] != 8
+
+
+def test_export_table_id_and_clock():
+    """Runtime ACL document must retain base export_table_id and evaluation_clock."""
+    acls = load_json(ACL_PATH)
+    cfg = load_json(CONFIG_PATH)
+    assert acls["export_table_id"] == cfg["export_table_id"]
+    assert acls["evaluation_clock"] == cfg["evaluation_clock"]
+
+
+def test_exports_sorted_by_path():
+    """Exports must be sorted by export_path ascending."""
+    acls = load_json(ACL_PATH)
+    paths = [e["export_path"] for e in acls["exports"]]
+    assert paths == sorted(paths)
+
+
+def test_clients_sorted_by_specificity_desc():
+    """Clients within an export must sort by specificity descending, then client_id ascending."""
+    acls = load_json(ACL_PATH)
+    for exp in acls["exports"]:
+        clients = exp["clients"]
+        keyed = [(c["specificity"], c["client_id"]) for c in clients]
+        expected = sorted(keyed, key=lambda t: (-t[0], t[1]))
+        assert keyed == expected
+
+
+def test_hostname_specificity_is_128():
+    """Hostname clients must receive specificity 128."""
+    acls = load_json(ACL_PATH)
+    found = False
+    for exp in acls["exports"]:
+        for c in exp["clients"]:
+            if re.search(r"[A-Za-z]", c["client_id"]):
+                assert c["specificity"] == 128
+                found = True
+    assert found
+
+
+def test_cidr_specificity_uses_prefix():
+    """IPv4 CIDR clients must use the prefix length as specificity."""
+    acls = load_json(ACL_PATH)
+    for exp in acls["exports"]:
+        for c in exp["clients"]:
+            if "/" in c["client_id"] and not re.search(r"[A-Za-z]", c["client_id"]):
+                assert c["specificity"] == int(c["client_id"].rsplit("/", 1)[1])
+
+
+def test_bare_ipv4_specificity_is_32():
+    """Bare IPv4 clients must receive specificity 32."""
+    acls = load_json(ACL_PATH)
+    for exp in acls["exports"]:
+        for c in exp["clients"]:
+            cid = c["client_id"]
+            if "/" not in cid and not re.search(r"[A-Za-z]", cid):
+                assert c["specificity"] == 32
+
+
+def test_no_export_exceeds_base_max_clients():
+    """No export may hold more grants than base max_clients_per_export."""
+    acls = load_json(ACL_PATH)
+    cfg = load_json(CONFIG_PATH)
+    max_c = cfg["max_clients_per_export"]
+    for exp in acls["exports"]:
+        assert len(exp["clients"]) <= max_c
+
+
+def test_duplicate_op_id_skipped():
+    """Duplicate journal op_id lines must be skipped and counted."""
+    metrics = load_json(METRICS_PATH)
+    assert metrics["journal_skipped_dup"] == 1
+    assert metrics["journal_applied"] == 30
+
+
+def test_waitlist_is_fifo_pairs():
+    """Remaining waitlist must be FIFO export_path/client_id pairs from independent replay."""
+    expected, _ = simulate_ops()
+    actual = load_json(ACL_PATH)
+    assert actual["waitlist"] == expected["waitlist"]
+    assert actual["waitlist"][0]["export_path"] == "/srv/share/alpha"
+    assert actual["waitlist"][0]["client_id"] == "lab-client"
+
+
+def test_all_squash_forces_base_anon_mapping():
+    """all_squash grants must force anon UID/GID to base defaults, not zero."""
+    acls = load_json(ACL_PATH)
+    cfg = load_json(CONFIG_PATH)
+    found = False
+    for exp in acls["exports"]:
+        for c in exp["clients"]:
+            if c["squash"] == "all_squash":
+                assert c["anon_uid"] == cfg["default_anon_uid"]
+                assert c["anon_gid"] == cfg["default_anon_gid"]
+                found = True
+    assert found
+
+
+def test_insecure_grant_revoked_not_present():
+    """The insecure beta grant that was revoked must not remain in inventory."""
+    acls = load_json(ACL_PATH)
+    for exp in acls["exports"]:
+        if exp["export_path"] == "/srv/share/beta":
+            ids = {c["client_id"] for c in exp["clients"]}
+            assert "192.168.1.50" not in ids
+
+
+def test_promoted_clients_use_base_defaults():
+    """Waitlist-promoted clients must receive base access/squash/anon/secure defaults."""
+    acls = load_json(ACL_PATH)
+    cfg = load_json(CONFIG_PATH)
+    promoted = {
+        "/srv/share/alpha": "10.9.9.9",
+        "/srv/share/beta": "192.168.2.0/24",
+        "/srv/share/gamma": "batch-runner",
+    }
+    for path, cid in promoted.items():
+        exp = next(e for e in acls["exports"] if e["export_path"] == path)
+        grant = next(c for c in exp["clients"] if c["client_id"] == cid)
+        assert grant["access"] == cfg["default_access"]
+        assert grant["squash"] == cfg["default_squash"]
+        assert grant["anon_uid"] == cfg["default_anon_uid"]
+        assert grant["anon_gid"] == cfg["default_anon_gid"]
+        assert grant["secure"] is True
+        assert grant["state"] == "active"
+
+
+def test_destroy_does_not_clear_unrelated_waitlist():
+    """Destroying an export must not remove waitlist entries for other paths, and delta wait remains."""
+    acls = load_json(ACL_PATH)
+    assert any(
+        w["export_path"] == "/srv/share/delta" and w["client_id"] == "10.10.10.10"
+        for w in acls["waitlist"]
     )
-    assert proc.returncode != 0
-    assert not (work / "lift_drag_report.json").is_file()
+    paths = {e["export_path"] for e in acls["exports"]}
+    assert "/srv/share/delta" not in paths
 
 
-def test_eval_consumes_staged_q_inf():
-    """Eval staging poison: mutating staged q_inf after feature must change eval report q_inf."""
-    camp_path = PUBLIC / "RAE2822-A2"
-    work = run_feature(camp_path)
-    batch_path = work / "feature_batch.json"
-    batch = json.loads(batch_path.read_text(encoding="utf-8"))
-    mutated = float(batch["q_inf_pa"]) * 1.17
-    batch["q_inf_pa"] = mutated
-    batch_path.write_text(json.dumps(batch, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    run_eval(camp_path, work)
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    assert_close(report["q_inf_pa"], mutated, 1e-9)
+def test_alpha_client_set_after_revoke_promote():
+    """Alpha must contain the post-revoke promoted client set from policy replay."""
+    acls = load_json(ACL_PATH)
+    alpha = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/alpha")
+    ids = {c["client_id"] for c in alpha["clients"]}
+    assert ids == {"edge-gateway", "10.1.2.0/24", "10.9.9.9"}
+    assert "10.0.0.0/8" not in ids
 
 
-def test_feature_ledger_epoch_monotonic():
-    """Feature ledger: a second feature run must bump feature_epoch; eval increments eval_count."""
-    camp_path = PUBLIC / "FLATPLATE-A0"
-    work = run_feature(camp_path)
-    e1 = json.loads((work / "feature_ledger.json").read_text(encoding="utf-8"))["feature_epoch"]
-    run_feature(camp_path, work)
-    e2 = json.loads((work / "feature_ledger.json").read_text(encoding="utf-8"))["feature_epoch"]
-    assert e2 == e1 + 1
-    run_eval(camp_path, work)
-    ledger = json.loads((work / "feature_ledger.json").read_text(encoding="utf-8"))
-    assert ledger["eval_count"] >= 1
-    assert ledger["feature_epoch"] == e2
+def test_gamma_batch_runner_promoted_on_reexport():
+    """Gamma must include batch-runner promoted during reexport_pass."""
+    acls = load_json(ACL_PATH)
+    gamma = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/gamma")
+    ids = {c["client_id"] for c in gamma["clients"]}
+    assert "batch-runner" in ids
+    assert "172.16.0.0/12" not in ids
 
 
-def test_staged_alpha_rad_drives_report_alpha():
-    """Eval staging: report alpha_rad must equal staged alpha_rad (radians), not raw degrees."""
-    camp = load_campaign(PUBLIC / "NACA0012-A4")
-    work = run_validate(PUBLIC / "NACA0012-A4")
-    batch = json.loads((work / "feature_batch.json").read_text(encoding="utf-8"))
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    assert_close(report["alpha_rad"], batch["alpha_rad"], 1e-12)
-    assert_close(report["alpha_rad"], float(camp["conditions"]["alpha_deg"]) * math.pi / 180.0, 1e-12)
+def test_slot_utilization_half_away_rounding():
+    """slot_utilization_ratio must use half-away-from-zero rounding to 4 decimals."""
+    metrics = load_json(METRICS_PATH)
+    _, expected = simulate_ops()
+    assert metrics["slot_utilization_ratio"] == expected["slot_utilization_ratio"]
+    assert metrics["slot_utilization_ratio"] == 0.8889
 
 
-def test_feature_decoy_pitot_blend_not_used():
-    """Feature pipeline must not route q_inf through wtac_decoy_pitot_blend."""
-    camp = load_campaign(PUBLIC / "NACA0012-A4")
-    from wtac.decoy.decoy_pitot_blend import wtac_decoy_pitot_blend
+def test_export_compliance_formula():
+    """export_compliance must equal max(0, round(100 - penalties, 2)) per policy weights."""
+    metrics = load_json(METRICS_PATH)
+    _, expected = simulate_ops()
+    assert metrics["export_compliance"] == expected["export_compliance"]
+    assert metrics["export_compliance"] == 94.0
 
-    q = reference_q(camp["conditions"])
-    blend = wtac_decoy_pitot_blend(q, float(camp["conditions"]["pitot_q_pa"]), 0.4)
-    work = run_validate(PUBLIC / "NACA0012-A4")
-    report = json.loads((work / "lift_drag_report.json").read_text(encoding="utf-8"))
-    assert_close(report["q_inf_pa"], q, 1e-9)
-    assert abs(report["q_inf_pa"] - blend) > 1.0
+
+def test_metrics_counts_consistent_with_acls():
+    """Metric counters must be consistent with the persisted ACL inventory."""
+    acls = load_json(ACL_PATH)
+    metrics = load_json(METRICS_PATH)
+    assert metrics["export_count"] == len(acls["exports"])
+    assert metrics["client_grant_count"] == sum(len(e["clients"]) for e in acls["exports"])
+    assert metrics["waitlist_depth"] == len(acls["waitlist"])
+    assert metrics["insecure_grant_count"] == sum(
+        1 for e in acls["exports"] for c in e["clients"] if c["state"] == "insecure"
+    )
+    assert metrics["over_capacity_exports"] == 0
+
+
+def test_grant_does_not_rewrite_existing_options():
+    """Re-granting an existing client must leave original options intact."""
+    acls = load_json(ACL_PATH)
+    alpha = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/alpha")
+    edge = next(c for c in alpha["clients"] if c["client_id"] == "edge-gateway")
+    assert edge["access"] == "rw"
+    assert edge["squash"] == "all_squash"
+
+
+def test_beta_ops_host_all_squash_anon():
+    """Beta ops-host set_squash to all_squash must use base anon mapping."""
+    acls = load_json(ACL_PATH)
+    cfg = load_json(CONFIG_PATH)
+    beta = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/beta")
+    ops = next(c for c in beta["clients"] if c["client_id"] == "ops-host")
+    assert ops["squash"] == "all_squash"
+    assert ops["anon_uid"] == cfg["default_anon_uid"]
+    assert ops["anon_gid"] == cfg["default_anon_gid"]
+    assert ops["access"] == "ro"
+
+
+def test_beta_access_update_persists():
+    """set_access on beta CIDR client must persist rw access."""
+    acls = load_json(ACL_PATH)
+    beta = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/beta")
+    cidr = next(c for c in beta["clients"] if c["client_id"] == "192.168.0.0/16")
+    assert cidr["access"] == "rw"
+
+
+def test_idempotent_replay_counters():
+    """Journal applied/skipped counters must reflect first-seen op_id semantics."""
+    metrics = load_json(METRICS_PATH)
+    lines = [ln for ln in JOURNAL_PATH.read_text().splitlines() if ln.strip()]
+    assert len(lines) == 31
+    assert metrics["journal_applied"] + metrics["journal_skipped_dup"] == len(lines)
+
+
+def test_states_only_active_or_insecure():
+    """Grant state labels must be exactly active or insecure."""
+    acls = load_json(ACL_PATH)
+    for exp in acls["exports"]:
+        for c in exp["clients"]:
+            assert c["state"] in {"active", "insecure"}
+
+
+def test_no_insecure_grants_remain():
+    """After revoke of the insecure grant, insecure_grant_count must be zero."""
+    metrics = load_json(METRICS_PATH)
+    assert metrics["insecure_grant_count"] == 0
+
+
+def test_overlay_values_not_used_for_defaults_on_promote():
+    """Promoted grants must not inherit overlay no_root_squash or rw defaults."""
+    acls = load_json(ACL_PATH)
+    for path, cid in (
+        ("/srv/share/alpha", "10.9.9.9"),
+        ("/srv/share/beta", "192.168.2.0/24"),
+        ("/srv/share/gamma", "batch-runner"),
+    ):
+        exp = next(e for e in acls["exports"] if e["export_path"] == path)
+        grant = next(c for c in exp["clients"] if c["client_id"] == cid)
+        assert grant["squash"] != "no_root_squash"
+        assert grant["access"] == "ro"
+        assert grant["anon_uid"] != 0
+
+
+def test_export_count_metric_is_three():
+    """export_count must equal the number of surviving export paths."""
+    metrics = load_json(METRICS_PATH)
+    assert metrics["export_count"] == 3
+
+
+def test_client_grant_count_metric_is_eight():
+    """client_grant_count must equal total grants across all exports."""
+    metrics = load_json(METRICS_PATH)
+    assert metrics["client_grant_count"] == 8
+
+
+def test_waitlist_depth_metric_is_three():
+    """waitlist_depth must equal remaining FIFO waitlist length."""
+    metrics = load_json(METRICS_PATH)
+    assert metrics["waitlist_depth"] == 3
+
+
+def test_alpha_has_exactly_three_clients():
+    """Alpha must hold exactly base max_clients_per_export grants."""
+    acls = load_json(ACL_PATH)
+    alpha = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/alpha")
+    assert len(alpha["clients"]) == 3
+
+
+def test_beta_has_exactly_three_clients():
+    """Beta must hold exactly base max_clients_per_export grants."""
+    acls = load_json(ACL_PATH)
+    beta = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/beta")
+    assert len(beta["clients"]) == 3
+
+
+def test_gamma_has_exactly_two_clients():
+    """Gamma must hold exactly two grants after revoke and promotion."""
+    acls = load_json(ACL_PATH)
+    gamma = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/gamma")
+    assert len(gamma["clients"]) == 2
+
+
+def test_alpha_clients_ordered_by_specificity():
+    """Alpha clients must appear in specificity-desc then client_id-asc order."""
+    acls = load_json(ACL_PATH)
+    alpha = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/alpha")
+    ids = [c["client_id"] for c in alpha["clients"]]
+    assert ids == ["edge-gateway", "10.9.9.9", "10.1.2.0/24"]
+
+
+def test_beta_clients_ordered_by_specificity():
+    """Beta clients must appear in specificity-desc then client_id-asc order."""
+    acls = load_json(ACL_PATH)
+    beta = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/beta")
+    ids = [c["client_id"] for c in beta["clients"]]
+    assert ids == ["ops-host", "192.168.2.0/24", "192.168.0.0/16"]
+
+
+def test_gamma_clients_ordered_by_specificity():
+    """Gamma clients must appear in specificity-desc then client_id-asc order."""
+    acls = load_json(ACL_PATH)
+    gamma = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/gamma")
+    ids = [c["client_id"] for c in gamma["clients"]]
+    assert ids == ["batch-runner", "172.16.5.5"]
+
+
+def test_waitlist_second_entry_is_alpha_cidr():
+    """Second waitlist entry must be the later alpha CIDR reservation."""
+    acls = load_json(ACL_PATH)
+    assert acls["waitlist"][1]["export_path"] == "/srv/share/alpha"
+    assert acls["waitlist"][1]["client_id"] == "10.2.0.0/16"
+
+
+def test_waitlist_third_entry_is_delta_client():
+    """Third waitlist entry must remain the destroyed-export delta reservation."""
+    acls = load_json(ACL_PATH)
+    assert acls["waitlist"][2]["export_path"] == "/srv/share/delta"
+    assert acls["waitlist"][2]["client_id"] == "10.10.10.10"
+
+
+def test_gamma_all_squash_forces_base_anon():
+    """Gamma all_squash grant must force base anon UID/GID despite grant payload zeros."""
+    acls = load_json(ACL_PATH)
+    cfg = load_json(CONFIG_PATH)
+    gamma = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/gamma")
+    grant = next(c for c in gamma["clients"] if c["client_id"] == "172.16.5.5")
+    assert grant["squash"] == "all_squash"
+    assert grant["anon_uid"] == cfg["default_anon_uid"]
+    assert grant["anon_gid"] == cfg["default_anon_gid"]
+    assert grant["access"] == "rw"
+
+
+def test_ops_host_omitted_access_uses_base_default():
+    """Grant omitting access must use base default_access for ops-host."""
+    acls = load_json(ACL_PATH)
+    cfg = load_json(CONFIG_PATH)
+    beta = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/beta")
+    ops = next(c for c in beta["clients"] if c["client_id"] == "ops-host")
+    assert ops["access"] == cfg["default_access"]
+
+
+def test_beta_promoted_cidr_specificity_is_24():
+    """Promoted beta CIDR client must use prefix length 24 as specificity."""
+    acls = load_json(ACL_PATH)
+    beta = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/beta")
+    grant = next(c for c in beta["clients"] if c["client_id"] == "192.168.2.0/24")
+    assert grant["specificity"] == 24
+
+
+def test_alpha_promoted_bare_ip_specificity_is_32():
+    """Promoted alpha bare IPv4 client must use specificity 32."""
+    acls = load_json(ACL_PATH)
+    alpha = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/alpha")
+    grant = next(c for c in alpha["clients"] if c["client_id"] == "10.9.9.9")
+    assert grant["specificity"] == 32
+
+
+def test_batch_runner_specificity_is_128():
+    """Hostname batch-runner must carry specificity 128."""
+    acls = load_json(ACL_PATH)
+    gamma = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/gamma")
+    grant = next(c for c in gamma["clients"] if c["client_id"] == "batch-runner")
+    assert grant["specificity"] == 128
+
+
+def test_duplicate_enqueue_does_not_duplicate_lab_client():
+    """Duplicate enqueue of lab-client must leave a single waitlist pair."""
+    acls = load_json(ACL_PATH)
+    matches = [
+        w
+        for w in acls["waitlist"]
+        if w["export_path"] == "/srv/share/alpha" and w["client_id"] == "lab-client"
+    ]
+    assert len(matches) == 1
+
+
+def test_capacity_rejected_client_absent_until_promote():
+    """Over-capacity direct grant of 10.9.9.9 must not leave a non-promoted grant shape."""
+    acls = load_json(ACL_PATH)
+    cfg = load_json(CONFIG_PATH)
+    alpha = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/alpha")
+    grant = next(c for c in alpha["clients"] if c["client_id"] == "10.9.9.9")
+    assert grant["access"] == cfg["default_access"]
+    assert grant["squash"] == cfg["default_squash"]
+
+
+def test_skipped_dup_payload_client_absent():
+    """Duplicate op_id payload client must not appear in any export inventory."""
+    acls = load_json(ACL_PATH)
+    for exp in acls["exports"]:
+        ids = {c["client_id"] for c in exp["clients"]}
+        assert "should-skip-dup" not in ids
+
+
+def test_capacity_blocked_gamma_client_absent():
+    """Grant that would exceed gamma capacity must not create missing-export-client."""
+    acls = load_json(ACL_PATH)
+    gamma = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/gamma")
+    ids = {c["client_id"] for c in gamma["clients"]}
+    assert "missing-export-client" not in ids
+
+
+def test_over_capacity_exports_metric_zero():
+    """over_capacity_exports must be zero when all exports respect base max clients."""
+    metrics = load_json(METRICS_PATH)
+    assert metrics["over_capacity_exports"] == 0
+
+
+def test_evaluation_clock_matches_base_config_value():
+    """evaluation_clock must equal the base configuration integer clock."""
+    acls = load_json(ACL_PATH)
+    assert acls["evaluation_clock"] == 50000
+
+
+def test_export_table_id_matches_base_config_value():
+    """export_table_id must equal the base configuration table identifier."""
+    acls = load_json(ACL_PATH)
+    assert acls["export_table_id"] == "nfs-east-01"
+
+
+def test_all_remaining_grants_are_secure():
+    """Every remaining grant must have secure=true after insecure revoke."""
+    acls = load_json(ACL_PATH)
+    for exp in acls["exports"]:
+        for c in exp["clients"]:
+            assert c["secure"] is True
+            assert c["state"] == "active"
+
+
+def test_only_three_export_paths_remain():
+    """Runtime inventory must contain exactly alpha, beta, and gamma exports."""
+    acls = load_json(ACL_PATH)
+    paths = [e["export_path"] for e in acls["exports"]]
+    assert paths == ["/srv/share/alpha", "/srv/share/beta", "/srv/share/gamma"]
+
+
+def test_alpha_edge_gateway_anon_after_set_squash():
+    """Alpha edge-gateway set_squash to all_squash must force base anon mapping."""
+    acls = load_json(ACL_PATH)
+    cfg = load_json(CONFIG_PATH)
+    alpha = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/alpha")
+    edge = next(c for c in alpha["clients"] if c["client_id"] == "edge-gateway")
+    assert edge["squash"] == "all_squash"
+    assert edge["anon_uid"] == cfg["default_anon_uid"]
+    assert edge["anon_gid"] == cfg["default_anon_gid"]
+    assert edge["access"] == "rw"
+
+
+def test_beta_slash16_specificity_is_16():
+    """Beta 192.168.0.0/16 client must use specificity 16."""
+    acls = load_json(ACL_PATH)
+    beta = next(e for e in acls["exports"] if e["export_path"] == "/srv/share/beta")
+    grant = next(c for c in beta["clients"] if c["client_id"] == "192.168.0.0/16")
+    assert grant["specificity"] == 16
+
+
+def test_waitlist_entries_are_path_client_pairs():
+    """Each waitlist entry must expose exactly export_path and client_id keys."""
+    acls = load_json(ACL_PATH)
+    assert len(acls["waitlist"]) == 3
+    for entry in acls["waitlist"]:
+        assert set(entry.keys()) == {"export_path", "client_id"}
+
+
+def test_compliance_reflects_waitlist_penalties_only():
+    """With no insecure or over-capacity exports, compliance must be 100 - 2*waitlist_depth."""
+    metrics = load_json(METRICS_PATH)
+    assert metrics["insecure_grant_count"] == 0
+    assert metrics["over_capacity_exports"] == 0
+    assert metrics["export_compliance"] == round_half_away(100 - metrics["waitlist_depth"] * 2, 2)
+
+
+def test_independent_replay_waitlist_length_matches_metrics():
+    """Independent policy replay waitlist length must equal waitlist_depth metric."""
+    expected, metrics_expected = simulate_ops()
+    actual_metrics = load_json(METRICS_PATH)
+    assert len(expected["waitlist"]) == actual_metrics["waitlist_depth"]
+    assert actual_metrics["waitlist_depth"] == metrics_expected["waitlist_depth"]
