@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "configure_requests": [
+    {
+      "configure_request_id": "cfg-root-update",
+      "request_index": 1,
+      "project_id": "root",
+      "provider_config_id": "prov-default",
+      "lock_mode": "update",
+      "previous_lock_id_or_null": "lock-root-v1",
+      "find_request_ids": [
+        "freq-zlib",
+        "freq-openssl",
+        "freq-curl",
+        "freq-fmt",
+        "freq-spdlog",
+        "freq-json-opt"
+      ]
+    },
+    {
+      "configure_request_id": "cfg-root-error",
+      "request_index": 2,
+      "project_id": "root",
+      "provider_config_id": "prov-default",
+      "lock_mode": "error",
+      "previous_lock_id_or_null": "lock-root-v1",
+      "find_request_ids": ["freq-zlib", "freq-fmt"]
+    },
+    {
+      "configure_request_id": "cfg-net-update",
+      "request_index": 3,
+      "project_id": "vendor_net",
+      "provider_config_id": "prov-default",
+      "lock_mode": "update",
+      "previous_lock_id_or_null": "lock-net-v1",
+      "find_request_ids": ["freq-absl", "freq-proto", "freq-grpc"]
+    },
+    {
+      "configure_request_id": "cfg-util-reuse",
+      "request_index": 4,
+      "project_id": "vendor_util",
+      "provider_config_id": "prov-off",
+      "lock_mode": "update",
+      "previous_lock_id_or_null": "lock-util-v1",
+      "find_request_ids": ["freq-fmt-util"]
+    }
+  ]
+}

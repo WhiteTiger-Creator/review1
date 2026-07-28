@@ -1,0 +1,124 @@
+{
+  "candidates": [
+    {
+      "candidate_id": "pkg-zlib-system",
+      "dependency_name": "zlib",
+      "version": "1.3.1",
+      "compatibility": "same_minor_or_newer",
+      "provided_components": ["default"],
+      "produced_targets": ["ZLIB::ZLIB"],
+      "config_path": "/usr/lib/cmake/ZLIB/ZLIBConfig.cmake",
+      "content_digest": "9090909090909090909090909090909090909090909090909090909090909090"
+    },
+    {
+      "candidate_id": "pkg-zlib-old",
+      "dependency_name": "zlib",
+      "version": "1.2.11",
+      "compatibility": "same_major",
+      "provided_components": ["default"],
+      "produced_targets": ["ZLIB::ZLIB"],
+      "config_path": "/opt/old/ZLIBConfig.cmake",
+      "content_digest": "9191919191919191919191919191919191919191919191919191919191919191"
+    },
+    {
+      "candidate_id": "pkg-curl-system",
+      "dependency_name": "CURL",
+      "version": "8.7.1",
+      "compatibility": "same_minor_or_newer",
+      "provided_components": ["default"],
+      "produced_targets": ["CURL::libcurl"],
+      "config_path": "/usr/lib/cmake/CURL/CURLConfig.cmake",
+      "content_digest": "9292929292929292929292929292929292929292929292929292929292929292"
+    },
+    {
+      "candidate_id": "pkg-spdlog-system",
+      "dependency_name": "spdlog",
+      "version": "1.14.1",
+      "compatibility": "same_minor_or_newer",
+      "provided_components": ["default"],
+      "produced_targets": ["spdlog::spdlog"],
+      "config_path": "/usr/lib/cmake/spdlog/spdlogConfig.cmake",
+      "content_digest": "9393939393939393939393939393939393939393939393939393939393939393"
+    },
+    {
+      "candidate_id": "pkg-json-system",
+      "dependency_name": "nlohmann_json",
+      "version": "3.11.3",
+      "compatibility": "exact",
+      "provided_components": ["default"],
+      "produced_targets": ["nlohmann_json::nlohmann_json"],
+      "config_path": "/usr/lib/cmake/nlohmann_json/nlohmann_jsonConfig.cmake",
+      "content_digest": "9494949494949494949494949494949494949494949494949494949494949494"
+    },
+    {
+      "candidate_id": "pkg-fmt-system",
+      "dependency_name": "fmt",
+      "version": "10.2.1",
+      "compatibility": "same_major",
+      "provided_components": ["default"],
+      "produced_targets": ["fmt::fmt"],
+      "config_path": "/usr/lib/cmake/fmt/fmtConfig.cmake",
+      "content_digest": "9595959595959595959595959595959595959595959595959595959595959595"
+    },
+    {
+      "candidate_id": "pkg-openssl-system",
+      "dependency_name": "OpenSSL",
+      "version": "3.0.13",
+      "compatibility": "exact",
+      "provided_components": ["SSL", "Crypto"],
+      "produced_targets": ["OpenSSL::SSL", "OpenSSL::Crypto"],
+      "config_path": "/usr/lib/cmake/OpenSSL/OpenSSLConfig.cmake",
+      "content_digest": "9696969696969696969696969696969696969696969696969696969696969696"
+    },
+    {
+      "candidate_id": "pkg-grpc-system",
+      "dependency_name": "grpc",
+      "version": "1.62.0",
+      "compatibility": "same_minor_or_newer",
+      "provided_components": ["default"],
+      "produced_targets": ["gRPC::grpc++"],
+      "config_path": "/usr/lib/cmake/grpc/gRPCConfig.cmake",
+      "content_digest": "9797979797979797979797979797979797979797979797979797979797979797"
+    },
+    {
+      "candidate_id": "pkg-proto-system",
+      "dependency_name": "protobuf",
+      "version": "25.3.0",
+      "compatibility": "same_major",
+      "provided_components": ["libprotobuf"],
+      "produced_targets": ["protobuf::libprotobuf"],
+      "config_path": "/usr/lib/cmake/protobuf/protobufConfig.cmake",
+      "content_digest": "9898989898989898989898989898989898989898989898989898989898989898"
+    },
+    {
+      "candidate_id": "pkg-abseil-system",
+      "dependency_name": "abseil",
+      "version": "20240116.0",
+      "compatibility": "exact",
+      "provided_components": ["default"],
+      "produced_targets": ["absl::base"],
+      "config_path": "/usr/lib/cmake/absl/abslConfig.cmake",
+      "content_digest": "9999999999999999999999999999999999999999999999999999999999999999"
+    },
+    {
+      "candidate_id": "pkg-curl-alt",
+      "dependency_name": "CURL",
+      "version": "8.6.0",
+      "compatibility": "same_major",
+      "provided_components": ["default"],
+      "produced_targets": ["CURL::libcurl"],
+      "config_path": "/opt/curl/CURLConfig.cmake",
+      "content_digest": "9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a"
+    },
+    {
+      "candidate_id": "pkg-spdlog-old",
+      "dependency_name": "spdlog",
+      "version": "1.11.0",
+      "compatibility": "same_major",
+      "provided_components": ["default"],
+      "produced_targets": ["spdlog::spdlog"],
+      "config_path": "/opt/old/spdlogConfig.cmake",
+      "content_digest": "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b"
+    }
+  ]
+}

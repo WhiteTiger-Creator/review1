@@ -1,6 +1,0 @@
-name = "strict_mono"
-window_tokens = 2048
-fold_order = ["alpha", "beta", "gamma"]
-residual_floor = 0.05
-band_eps = 0.001
-holdout_fold = "gamma"
