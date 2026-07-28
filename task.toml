@@ -4,24 +4,28 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "build-and-dependency-management"
-subcategories = []
+category = "scientific-computing"
+subcategories = ["api_integration"]
 number_of_milestones = 0
-codebase_size = "large"
-languages = ["rust"]
-tags = ["cmake-inspired", "fetchcontent", "dependency-provider", "lockfile-reuse", "offline"]
-expert_time_estimate_min = 420
-junior_time_estimate_min = 840
-
-[verifier]
-timeout_sec = 600.0
-
-[agent]
-timeout_sec = 1800.0
+codebase_size = "small"
+languages = ["go"]
+tags = ["go", "sqlite", "hmac", "worldbank", "statistics"]
+expert_time_estimate_min = 120
+junior_time_estimate_min = 300
 
 [environment]
 allow_internet = false
-build_timeout_sec = 900.0
+build_timeout_sec = 1800
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+workdir = "/app"
+
+[agent]
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 450
+
+
+# build-refresh v57

@@ -1,84 +1,56 @@
-# Canonical Rust runtime for offline cmake-fetchcontent lock reconciler.
-# Digest-pinned Terminal-Bench Rust image. System packages come from vendored
-# .deb files under apt-packages/ (no live apt repos). Verifier wheels install offline.
-# tmux/asciinema required by the Harbor agent runtime.
-FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
+# force-rebuild 2026-07-19-v43-reward-block-fix
+# force-rebuild 2026-07-19-infra-retry-v46
+# force-rebuild 2026-07-20-v48-p50-spec-fix
+# force-rebuild 2026-07-21-v56-stub-removal-doc-rename
+# force-rebuild 2026-07-23-v56-regional-tier-driver
+# force-rebuild 2026-07-24-v56-dockerfile-hygiene
+# force-rebuild 2026-07-24-v57-audit-credit-ledger-driver
+# force-rebuild 2026-07-27-v59-login-shell-go-path
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
-ENV PATH="/usr/local/cargo/bin:/usr/local/rustup/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    DEBIAN_FRONTEND=noninteractive \
-    CARGO_HTTP_CHECK_REVOKE=false
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    sqlite3=3.* \
+    tmux \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY apt-packages/ /tmp/apt-packages/
-# Separate dpkg invocations so Debian pre-depends are configured before dependents unpack.
-RUN set -eux; \
-    cd /tmp/apt-packages; \
-    dpkg -i libexpat1_*.deb media-types_*.deb libncursesw6_*.deb readline-common_*.deb \
-      libreadline8_*.deb libsqlite3-0_*.deb; \
-    dpkg -i libpython3.11-minimal_*.deb; \
-    dpkg -i python3.11-minimal_*.deb; \
-    dpkg -i python3-minimal_*.deb; \
-    dpkg -i libpython3.11-stdlib_*.deb python3.11_*.deb libpython3-stdlib_*.deb; \
-    dpkg -i python3_*.deb; \
-    dpkg -i ca-certificates_*.deb libevent-core-*.deb libutempter0_*.deb tmux_*.deb; \
-    dpkg -i python3-lib2to3_*.deb python3-distutils_*.deb python3-pkg-resources_*.deb \
-      python3-setuptools_*.deb python3-wheel_*.deb python3-pip_*.deb asciinema_*.deb; \
-    cd /; \
-    rm -rf /tmp/apt-packages; \
-    update-ca-certificates
+RUN pip3 install --break-system-packages pytest==8.4.1 pytest-json-report==1.5.0 pytest-json-ctrf==0.3.5 asciinema==2.4.0
 
-RUN test -x /usr/local/cargo/bin/cargo \
-    && test -x /usr/local/cargo/bin/rustc \
-    && command -v cargo \
-    && command -v rustc \
-    && command -v python3 \
-    && command -v pip3 \
-    && command -v tmux \
-    && command -v asciinema \
-    && cargo --version \
-    && rustc --version \
-    && python3 --version
+# Debian login shells replace the image-level PATH in /etc/profile. Keep the
+# toolchain visible both through the default login PATH and through profile.d.
+RUN ln -sf /usr/local/go/bin/go /usr/local/bin/go \
+    && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
+    && printf '%s\n' 'export PATH="/usr/local/go/bin:/go/bin:$PATH"' \
+        > /etc/profile.d/00-go-path.sh \
+    && chmod 0644 /etc/profile.d/00-go-path.sh
 
-RUN ln -sf /usr/local/cargo/bin/cargo /usr/local/bin/cargo \
-    && ln -sf /usr/local/cargo/bin/rustc /usr/local/bin/rustc
+ENV GOFLAGS=-mod=mod
+ENV GOPROXY=https://proxy.golang.org,direct
 
-RUN /usr/local/bin/cargo --version \
-    && /usr/local/bin/rustc --version
-
-RUN groupadd --system --gid 9001 cmakecandidate \
-    && useradd --system --no-create-home --uid 9001 --gid 9001 --shell /usr/sbin/nologin cmakecandidate \
-    && mkdir -p /var/tmp \
-    && chmod 1777 /var/tmp
-
-COPY wheels/ /opt/verifier-wheels/
-COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m pip install \
-        --no-cache-dir \
-        --break-system-packages \
-        --no-index \
-        --find-links=/opt/verifier-wheels \
-        --require-hashes \
-        --no-deps \
-        -r /tmp/requirements.lock
-RUN rm -f /tmp/requirements.lock
-RUN python3 -c "import pytest, ctrf; print('verifier-imports-ok')"
-RUN test -x "$(command -v pytest)"
-
-WORKDIR /app
-COPY app/ /app/
-
-RUN test -f /app/Cargo.toml \
-    && test -f /app/Cargo.lock \
-    && test -f /app/.cargo/config.toml \
-    && test -d /app/vendor \
-    && cargo metadata --manifest-path /app/Cargo.toml --locked --offline --format-version 1 >/dev/null \
-    && cargo build --manifest-path /app/Cargo.toml --release --locked --offline \
-    && rm -rf /app/target \
-    && test ! -x /app/target/release/cmake-reconciler
-
-# Task-owned runtime directories only. Stay root; do not create Harbor-reserved
-# /logs paths here — tests/test.sh creates /logs/verifier at runtime.
-RUN mkdir -p /app/output /var/tmp/cmake-reconciler
+ENV TASK_VERSION=v59-login-shell-go-path
 
 WORKDIR /app
 
-CMD ["sleep", "infinity"]
+# Dependency-install layer: copy only the module manifest (plus the
+# throwaway warmup source) so `go mod download` is cached independently of
+# the agent's later source authoring, and group both install RUN steps
+# contiguously with no COPY between them.
+COPY source/go.mod ./
+# Warm the module cache with the FULL transitive closure (go.mod's require
+# list alone doesn't pull transitive deps like modernc.org/libc without an
+# actual build). modcache-warmup.go is throwaway: built once here, reusing
+# the real go.mod so it resolves against the same requires, then deleted so
+# no application source ships in the final image.
+COPY scripts/modcache-warmup.go /tmp/modwarm/main.go
+RUN go mod download \
+    && cp /app/go.mod /tmp/modwarm/go.mod \
+    && cd /tmp/modwarm && go build -o /dev/null . \
+    && rm -rf /tmp/modwarm
+
+# NOTE: the golang toolchain is intentionally kept in the runtime image
+# (not split into a multi-stage build) because the agent must author and
+# compile main.go themselves inside this exact container; no pre-built
+# source ships here for the agent to edit in place.
+ENV GOPROXY=off
+
+COPY docs/ /docs/
