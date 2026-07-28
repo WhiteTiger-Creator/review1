@@ -1,0 +1,39 @@
+--- a/wtac/core/panel.py
++++ b/wtac/core/panel.py
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+ 
+ import math
++
++FACILITY_REV = "wtac-lab-r3"
+ 
+ 
+ def _slopes(xs: list[float], zs: list[float]) -> list[float]:
+@@ -15,10 +17,10 @@
+     return out
+ 
+ 
+-def _left_riemann(y: list[float], x: list[float]) -> float:
++def _trapz(y: list[float], x: list[float]) -> float:
+     total = 0.0
+     for i in range(len(x) - 1):
+-        total += y[i] * (x[i + 1] - x[i])
++        total += 0.5 * (y[i] + y[i + 1]) * (x[i + 1] - x[i])
+     return total
+ 
+ 
+@@ -32,9 +34,11 @@
+     su = _slopes(xs, zu)
+     sl = _slopes(xs, zl)
+     ax = [pairs[i]["Cp_u"] * su[i] - pairs[i]["Cp_l"] * sl[i] for i in range(len(pairs))]
+-    cn = _left_riemann(dcp, xs)
+-    ca = _left_riemann(ax, xs)
+-    alpha = float(alpha_deg)
++    cn = _trapz(dcp, xs)
++    ca = _trapz(ax, xs)
++    alpha = float(alpha_deg) * math.pi / 180.0
+     cl = cn * math.cos(alpha) - ca * math.sin(alpha)
+     cd = cn * math.sin(alpha) + ca * math.cos(alpha)
++    if not FACILITY_REV:
++        raise RuntimeError("facility revision missing")
+     return {"Cn": cn, "Ca": ca, "Cl": cl, "Cd": cd, "alpha_rad": alpha}

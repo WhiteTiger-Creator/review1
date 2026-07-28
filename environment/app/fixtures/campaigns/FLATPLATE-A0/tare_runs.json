@@ -1,0 +1,32 @@
+{
+  "runs": [
+    {
+      "run_id": "T0",
+      "wind_on": false,
+      "Fx_N": 0.5,
+      "Fz_N": 0.0,
+      "My_Nm": 0.0
+    },
+    {
+      "run_id": "T1",
+      "wind_on": false,
+      "Fx_N": 0.9,
+      "Fz_N": -0.2,
+      "My_Nm": 0.05
+    },
+    {
+      "run_id": "T2",
+      "wind_on": false,
+      "Fx_N": 0.09999999999999998,
+      "Fz_N": 0.2,
+      "My_Nm": -0.05
+    },
+    {
+      "run_id": "W1",
+      "wind_on": true,
+      "Fx_N": 12.5,
+      "Fz_N": 81.7176103578071,
+      "My_Nm": -1.17176103578071
+    }
+  ]
+}

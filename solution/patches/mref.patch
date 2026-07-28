@@ -1,0 +1,23 @@
+--- a/wtac/core/mref.py
++++ b/wtac/core/mref.py
+@@ -1,4 +1,6 @@
+ from __future__ import annotations
++
++FACILITY_REV = "wtac-lab-r3"
+ 
+ 
+ def _trapz(y: list[float], x: list[float]) -> float:
+@@ -9,7 +11,10 @@
+ 
+ 
+ def wtac_pitching_moment(pairs: list[dict[str, float]], xref_c: float) -> float:
+-    _ = xref_c
+     xs = [p["x_c"] for p in pairs]
+-    y = [(p["Cp_l"] - p["Cp_u"]) * (0.0 - p["x_c"]) for p in pairs]
+-    return _trapz(y, xs)
++    lever = [float(xref_c) - p["x_c"] for p in pairs]
++    y = [(p["Cp_l"] - p["Cp_u"]) * lever[i] for i, p in enumerate(pairs)]
++    cm = _trapz(y, xs)
++    if not FACILITY_REV:
++        raise RuntimeError("facility revision missing")
++    return cm

@@ -1,0 +1,15 @@
+{
+  "campaign_id": "RAE2822-A2",
+  "rho_kg_m3": 1.18,
+  "V_mps": 55.0,
+  "p_inf_pa": 100800.0,
+  "alpha_deg": 2.0,
+  "chord_m": 0.6,
+  "span_m": 0.9,
+  "xref_c": 0.25,
+  "u_rho_kg_m3": 0.004,
+  "u_V_mps": 0.1,
+  "u_p_pa": 10.0,
+  "closure_tol_Cl": 0.015,
+  "pitot_q_pa": 1927.5300000000002
+}

@@ -1,3 +1,5 @@
+solution/
+tests/
 .git
 .gitignore
 **/__pycache__/
@@ -6,8 +8,3 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-**/.verifier-run/
-**/output/
-**/state/
-**/*.pmw1
-jobs/

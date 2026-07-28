@@ -1,0 +1,62 @@
+--- a/wtac/cli.py
++++ b/wtac/cli.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import argparse
++import math
+ from pathlib import Path
+ 
+ from wtac.core.errband import wtac_uncertainty_budget
+@@ -15,9 +16,12 @@
+     wtac_build_feature_batch,
+     wtac_bump_feature_epoch,
+     wtac_load_feature_batch,
++    wtac_record_eval_success,
+     wtac_write_feature_batch,
+ )
+ from wtac.io.load_campaign import wtac_load_campaign
++
++FACILITY_REV = "wtac-lab-r3"
+ 
+ 
+ def _cmd_feature(campaign_dir: Path, work_dir: Path) -> int:
+@@ -31,6 +35,8 @@
+     pairs = wtac_pair_stations(camp["geometry"]["taps"], cps)
+     batch = wtac_build_feature_batch(cond, q_inf, pairs, epoch)
+     wtac_write_feature_batch(work, batch)
++    if not FACILITY_REV:
++        raise RuntimeError("facility revision missing")
+     return 0
+ 
+ 
+@@ -39,12 +45,13 @@
+     cond = camp["conditions"]
+     work = Path(work_dir)
+     work.mkdir(parents=True, exist_ok=True)
+-    # Require staging file presence, but incomplete revision recomputes from raw campaign.
+-    _ = wtac_load_feature_batch(work)
+-    q_inf = wtac_dynamic_pressure(cond)
+-    cps = wtac_pressure_coefficients(camp["pressures"], cond["p_inf_pa"], q_inf)
+-    pairs = wtac_pair_stations(camp["geometry"]["taps"], cps)
+-    forces = wtac_integrate_forces(pairs, float(cond["alpha_deg"]))
++    batch = wtac_load_feature_batch(work)
++    if str(batch["campaign_id"]) != str(cond["campaign_id"]):
++        raise ValueError("feature batch campaign_id mismatch")
++    q_inf = float(batch["q_inf_pa"])
++    pairs = list(batch["pairs"])
++    alpha_deg = float(batch["alpha_rad"]) * 180.0 / math.pi
++    forces = wtac_integrate_forces(pairs, alpha_deg)
+     cm = wtac_pitching_moment(pairs, float(cond["xref_c"]))
+     tare = wtac_tare_stats(camp["tare_runs"]["runs"])
+     bal = wtac_balance_coeffs(
+@@ -52,6 +59,9 @@
+     )
+     unc = wtac_uncertainty_budget(cond, q_inf, pairs, forces, bal)
+     wtac_emit_artifacts(work, cond, q_inf, forces, cm, bal, tare, unc)
++    wtac_record_eval_success(work, str(cond["campaign_id"]), int(batch["feature_epoch"]))
++    if not FACILITY_REV:
++        raise RuntimeError("facility revision missing")
+     return 0
+ 
+ 
