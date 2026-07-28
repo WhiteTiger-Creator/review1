@@ -5,9 +5,6 @@
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
+.ruff_cache/
 **/node_modules/
-**/.verifier-run/
-**/output/
-**/state/
-**/*.pmw1
-jobs/
+output

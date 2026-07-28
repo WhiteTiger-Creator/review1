@@ -1,47 +1,36 @@
 FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TERM=xterm
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-ENV TMUX_TMPDIR=/var/tmp/tmux
-ENV PYTHONPATH=/app/environment
-
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema=2.2.0-1 \
-        ca-certificates=20230311+deb12u1 \
-        tmux=3.3a-3 \
-    && mkdir -p /var/tmp/tmux /app/output /app/state /logs/verifier /app/environment \
-    && chmod 1777 /var/tmp/tmux \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tmux=3.3a-3 \
+    asciinema=2.2.0-1 \
+    jq=1.6-2.1+deb12u2 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir \
-        numpy==2.3.5 \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5
-ENV PATH="/opt/verifier-venv/bin:${PATH}"
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+    && rm -f /tmp/requirements.txt
 
-COPY docs/ /app/environment/docs/
-COPY pmwio/ /app/environment/pmwio/
-COPY coalesce/ /app/environment/coalesce/
-COPY pretrig/ /app/environment/pretrig/
-COPY chargegate/ /app/environment/chargegate/
-COPY qualitygate/ /app/environment/qualitygate/
-COPY pedtrack/ /app/environment/pedtrack/
-COPY fitlab/ /app/environment/fitlab/
-COPY artiforge/ /app/environment/artiforge/
-COPY reducectl/ /app/environment/reducectl/
-COPY runbook/ /app/environment/runbook/
-COPY fixturekit/ /app/environment/fixturekit/
-COPY fixtures/ /app/environment/fixtures/
-COPY hvreduce.py /app/environment/hvreduce.py
-COPY OPERATOR.md /app/environment/OPERATOR.md
-COPY runtime/tmux.conf /etc/tmux.conf
+COPY kernel-fortify /app/kernel-fortify
+COPY lib /app/lib
+COPY config /app/config
+COPY control /app/control
+COPY traces /app/traces
+COPY ground-canon /app/ground-canon
+COPY docs /app/docs
+COPY README.md /app/README.md
+COPY CHANGELOG.md /app/CHANGELOG.md
 
-RUN ln -sf /app/environment /app/environment-link \
-    && ln -sfn /app/environment/docs /app/docs \
-    && python3 /app/environment/fixturekit/gen_fixtures.py
+RUN sed -i 's/\r$//' /app/kernel-fortify /app/lib/*.sh \
+    && chmod +x /app/kernel-fortify /app/lib/*.sh \
+    && mkdir -p /app/output
+
+LABEL org.opencontainers.image.source="https://github.com/snorkel-ai/harbor"
+LABEL org.opencontainers.image.description="Kernel lockdown fortify gate for satellite ground-station sysctl hardening"
+LABEL org.opencontainers.image.created="2026-07-24T00:00:00Z"
+LABEL org.opencontainers.image.revision="1"
+LABEL org.opencontainers.image.version="1.0"
+LABEL org.opencontainers.image.licenses="MIT"
+
+CMD ["sleep", "infinity"]
