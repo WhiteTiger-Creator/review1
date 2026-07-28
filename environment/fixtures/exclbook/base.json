@@ -1,0 +1,7 @@
+{
+  "entries": [
+    {"id": "tree_a", "evidence_tier": 90, "supersedes": []},
+    {"id": "tree_b", "evidence_tier": 10, "supersedes": []},
+    {"id": "tree_c", "evidence_tier": 5, "supersedes": []}
+  ]
+}

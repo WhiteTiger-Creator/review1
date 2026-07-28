@@ -1,0 +1,18 @@
+[Unit]
+Description=hostctl-export oneshot: apply locale Environment and reconcile bind-mounted snap trees for host metric export
+Documentation=file:///app/docs/ship-contract.rst
+After=local-fs.target
+RequiresMountsFor=/app/fixtures/snaps /app/fixtures/exclbook /app/fixtures/langpacks
+
+[Service]
+Type=oneshot
+# Site language pack for the ship path (must not flip canonical export digests).
+Environment=LANG=de_DE.UTF-8
+Environment=LC_ALL=de_DE.UTF-8
+Environment=LC_NUMERIC=de_DE.UTF-8
+WorkingDirectory=/app
+ExecStart=/app/scripts/run_ship.sh --book /app/fixtures/exclbook/base.json
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

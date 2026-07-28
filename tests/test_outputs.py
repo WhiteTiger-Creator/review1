@@ -1,238 +1,382 @@
-import csv
-import math
+"""Behavior checks for the journaled ship path public contract."""
+
+from __future__ import annotations
+
+import json
 import os
-import shutil
 import subprocess
 import tempfile
-from functools import cache
+from pathlib import Path
 
-FIELDS = ["record_id", *[f"p_{digit}" for digit in range(10)]]
-HIDDEN_SOURCE = "/tests/hidden_digit_labels.csv"
-HIDDEN_DIR = "/tmp/pendigit-verifier"
-HIDDEN_PATH = os.path.join(HIDDEN_DIR, "hidden_digit_labels.csv")
-
-
-def read_rows(path):
-    with open(path, newline="", encoding="utf-8") as handle:
-        return list(csv.DictReader(handle))
+APP = Path("/app")
+OUT = APP / "output"
+SNAPS = APP / "fixtures" / "snaps"
+BOOK_BASE = APP / "fixtures" / "exclbook" / "base.json"
+BOOK_CHAIN = APP / "fixtures" / "exclbook" / "supersede_chain.json"
+LANG_C = APP / "fixtures" / "langpacks" / "c.langpack"
+LANG_DE = APP / "fixtures" / "langpacks" / "de_DE.langpack"
 
 
-def protect_verifier_files():
-    if not os.path.exists(HIDDEN_PATH):
-        os.makedirs(HIDDEN_DIR, mode=0o700, exist_ok=True)
-        shutil.copyfile(HIDDEN_SOURCE, HIDDEN_PATH)
-        os.chmod(HIDDEN_DIR, 0o700)
-        os.chmod(HIDDEN_PATH, 0o600)
-        try:
-            os.remove(HIDDEN_SOURCE)
-        except OSError:
-            os.chmod(HIDDEN_SOURCE, 0o600)
-    probe = subprocess.run(
-        [
-            "/usr/bin/setpriv",
-            "--reuid=65534",
-            "--regid=65534",
-            "--clear-groups",
-            "--no-new-privs",
-            "/bin/sh",
-            "-c",
-            f"test ! -r {HIDDEN_PATH} && test ! -e {HIDDEN_SOURCE}",
-        ],
+def _env() -> dict[str, str]:
+    return os.environ.copy()
+
+
+def _rebuild() -> None:
+    subprocess.run(
+        ["make", "-C", "/app/environment", "PREFIX=/app", "install"],
+        check=True,
         capture_output=True,
         text=True,
-        timeout=10,
-        check=False,
+        env=_env(),
     )
-    assert probe.returncode == 0, probe.stderr
 
 
-def run_candidate(input_dir="/app/data"):
-    output_dir = tempfile.mkdtemp(prefix="pendigit-output-")
-    os.chmod(output_dir, 0o777)
-    result = subprocess.run(
-        [
-            "/usr/bin/setpriv",
-            "--reuid=65534",
-            "--regid=65534",
-            "--clear-groups",
-            "--no-new-privs",
-            "/app/run.sh",
-            input_dir,
-            output_dir,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    output_path = os.path.join(output_dir, "digit_probabilities.csv")
-    assert os.path.isfile(output_path)
-    return read_rows(output_path)
-
-
-def load_scored(input_dir="/app/data"):
-    predictions = run_candidate(input_dir)
-    contexts = {
-        row["record_id"]: row
-        for row in read_rows(os.path.join(input_dir, "evaluation_digits.csv"))
-    }
-    hidden = {row["record_id"]: row for row in read_rows(HIDDEN_PATH)}
-    assert len(hidden) >= 60
-    assert predictions
-    assert list(predictions[0]) == FIELDS
-    assert len(predictions) == len(contexts) == len(hidden)
-    assert len({row["record_id"] for row in predictions}) == len(predictions)
-    assert {row["record_id"] for row in predictions} == set(contexts)
-    scored = []
-    for row in predictions:
-        probabilities = [float(row[f"p_{digit}"]) for digit in range(10)]
-        assert all(
-            math.isfinite(value) and 0.0 <= value <= 1.0 for value in probabilities
+def _sha256_hex(data: bytes) -> str:
+    with tempfile.NamedTemporaryFile(delete=False) as handle:
+        handle.write(data)
+        path = handle.name
+    try:
+        completed = subprocess.run(
+            ["sha256sum", path],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_env(),
         )
-        assert abs(sum(probabilities) - 1.0) <= 1e-6
-        record_id = row["record_id"]
-        context = contexts[record_id]
-        target = hidden[record_id]
-        scored.append(
-            (
-                record_id,
-                probabilities,
-                int(target["digit_label"]),
-                float(context["policy_weight"]),
-                float(context["behavior_propensity"]),
-                context["capture_action"],
-            )
-        )
-    return scored
+        return completed.stdout.split()[0]
+    finally:
+        os.unlink(path)
 
 
-@cache
-def scored():
-    protect_verifier_files()
-    return load_scored()
+def _ship(book: Path, langpack: Path | None = None, from_unit: bool = False, fresh: bool = False) -> None:
+    _rebuild()
+    cmd = ["/app/scripts/run_ship.sh", "--book", str(book)]
+    if langpack is not None:
+        cmd.extend(["--langpack", str(langpack)])
+    if from_unit:
+        cmd.append("--from-unit")
+    if fresh:
+        cmd.append("--fresh")
+    subprocess.run(cmd, check=True, env=_env())
 
 
-def log_loss(rows):
-    total = sum(row[3] for row in rows)
-    return -sum(row[3] * math.log(max(row[1][row[2]], 1e-15)) for row in rows) / total
+def _check(pack: str) -> None:
+    subprocess.run(["/app/bin/check_bin", "--pack", pack], check=True, env=_env())
 
 
-def macro_recall(rows, digits=None):
-    if digits is None:
-        digits = range(10)
-    recalls = []
-    for digit in digits:
-        part = [row for row in rows if row[2] == digit]
-        assert part
-        recalls.append(
-            sum(
-                max(range(10), key=lambda index: (row[1][index], -index)) == digit
-                for row in part
-            )
-            / len(part)
-        )
-    return sum(recalls) / len(recalls)
+def _canonical_number(value: float) -> str:
+    return f"{value:.6f}"
 
 
-def brier_score(rows):
-    total = sum(row[3] for row in rows)
-    return (
-        sum(
-            row[3]
-            * sum(
-                (row[1][digit] - (1.0 if row[2] == digit else 0.0)) ** 2
-                for digit in range(10)
-            )
-            for row in rows
-        )
-        / total
-    )
+def _expected_digest_for_tree(tree_id: str) -> str:
+    metrics = json.loads((SNAPS / tree_id / "metrics.json").read_text(encoding="utf-8"))
+    lines = []
+    for row in metrics["rows"]:
+        lines.append(f"{row['k']}={_canonical_number(float(row['v']))}\n")
+    lines.sort()
+    body = "".join(lines).encode("utf-8")
+    return _sha256_hex(body)
 
 
-def test_writer_independent_digit_quality():
-    """Weighted probabilities identify digits in the writer-independent split."""
-    rows = scored()
-    assert log_loss(rows) < 0.140, f"log_loss={log_loss(rows)}"
-    assert macro_recall(rows) > 0.955, f"macro_recall={macro_recall(rows)}"
-    assert brier_score(rows) < 0.060, f"brier={brier_score(rows)}"
+def _read_digest() -> str:
+    return (OUT / "canonical_export.sha256").read_text(encoding="utf-8").strip()
 
 
-def test_low_behavior_capture_quality():
-    """Low-behavior-propensity capture rows retain useful digit probabilities."""
-    rows = [row for row in scored() if row[4] <= 0.4]
-    assert len(rows) >= 1800
-    assert log_loss(rows) < 0.100, f"low_behavior_log_loss={log_loss(rows)}"
-    assert macro_recall(rows) > 0.965, f"low_behavior_macro_recall={macro_recall(rows)}"
-    assert brier_score(rows) < 0.035, f"low_behavior_brier={brier_score(rows)}"
+def _trace_lines() -> list[dict]:
+    raw = (OUT / "reconcile_trace.jsonl").read_text(encoding="utf-8").strip()
+    assert raw, "reconcile_trace.jsonl must contain at least one line"
+    return [json.loads(line) for line in raw.splitlines() if line.strip()]
 
 
-def test_compact_trace_generalization():
-    """Compact-trace capture rows need accurate calibrated probabilities."""
-    rows = [row for row in scored() if row[5] == "compact_trace"]
-    assert len(rows) >= 1600
-    assert log_loss(rows) < 0.180, f"compact_log_loss={log_loss(rows)}"
-    assert macro_recall(rows) > 0.930, f"compact_macro_recall={macro_recall(rows)}"
-    assert brier_score(rows) < 0.080, f"compact_brier={brier_score(rows)}"
+def _read_trace() -> dict:
+    return _trace_lines()[-1]
 
 
-def test_confusable_digit_policy_quality():
-    """Digits with similar stroke geometry remain calibrated under the target policy."""
-    digits = (1, 5, 7, 9)
-    rows = [row for row in scored() if row[2] in digits]
-    assert len(rows) >= 1300
-    assert log_loss(rows) < 0.170, f"confusable_log_loss={log_loss(rows)}"
-    assert macro_recall(rows, digits) > 0.935, (
-        f"confusable_macro_recall={macro_recall(rows, digits)}"
-    )
-    assert brier_score(rows) < 0.075, f"confusable_brier={brier_score(rows)}"
-    compact_rows = [row for row in rows if row[5] == "compact_trace"]
-    assert len(compact_rows) >= 650
-    assert log_loss(compact_rows) < 0.245, (
-        f"compact_confusable_log_loss={log_loss(compact_rows)}"
-    )
-    assert macro_recall(compact_rows, digits) > 0.905, (
-        f"compact_confusable_macro_recall={macro_recall(compact_rows, digits)}"
-    )
-    assert brier_score(compact_rows) < 0.110, (
-        f"compact_confusable_brier={brier_score(compact_rows)}"
-    )
+def _read_journal() -> dict:
+    return json.loads((OUT / "ship_journal.json").read_text(encoding="utf-8"))
 
 
-def test_predictions_are_not_prior_templates():
-    """Predicted digit distributions vary across records and are not class priors."""
-    values = [
-        probability
-        for _, probabilities, _, _, _, _ in scored()
-        for probability in probabilities
+def _load_book(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _expected_selected(book_path: Path) -> str:
+    book = _load_book(book_path)
+    present = {p.name for p in SNAPS.iterdir() if p.is_dir()}
+    entries = [e for e in book["entries"] if e["id"] in present]
+    assert entries, "book must mention at least one on-disk tree"
+    best_tier = max(int(e["evidence_tier"]) for e in entries)
+    top = [e for e in entries if int(e["evidence_tier"]) == best_tier]
+    edges = {e["id"]: list(e.get("supersedes") or []) for e in book["entries"]}
+
+    def reaches(src: str, dst: str) -> bool:
+        seen = set()
+        stack = [src]
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            for nxt in edges.get(cur, []):
+                if nxt == dst:
+                    return True
+                stack.append(nxt)
+        return False
+
+    if len(top) == 1:
+        return top[0]["id"]
+    roots = [
+        e
+        for e in top
+        if not any(e["id"] != other["id"] and reaches(other["id"], e["id"]) for other in top)
     ]
-    winners = [
-        max(range(10), key=lambda digit: (row[1][digit], -digit)) for row in scored()
-    ]
-    assert max(values) - min(values) > 0.25
-    assert len(set(winners)) == 10
-    assert len({round(value, 6) for value in values}) >= 80
+    pool = roots or top
+    return min(e["id"] for e in pool)
 
 
-def test_evaluation_row_order_is_key_invariant():
-    """Reordered evaluation rows keep the same keyed probability distributions."""
-    original = {row[0]: row[1] for row in scored()}
-    bundle = tempfile.mkdtemp(prefix="pendigit-bundle-")
-    shutil.copytree("/app/data", bundle, dirs_exist_ok=True)
-    os.chmod(bundle, 0o755)
-    eval_path = os.path.join(bundle, "evaluation_digits.csv")
-    rows = read_rows(eval_path)
-    with open(eval_path, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=rows[0])
-        writer.writeheader()
-        writer.writerows(reversed(rows))
-    permuted = {row[0]: row[1] for row in load_scored(bundle)}
-    assert original.keys() == permuted.keys()
-    assert (
-        max(
-            abs(original[key][digit] - permuted[key][digit])
-            for key in original
-            for digit in range(10)
-        )
-        < 1e-10
-    )
+def _book_stamp(path: Path) -> str:
+    return _sha256_hex(path.read_bytes())
+
+
+def test_repeat_emit_stable() -> None:
+    """Repeated ship under C must yield an identical independently recomputed digest."""
+    _ship(BOOK_BASE, LANG_C, fresh=True)
+    first = _read_digest()
+    gen0 = int(_read_journal()["generation"])
+    _ship(BOOK_BASE, LANG_C)
+    second = _read_digest()
+    assert first == second
+    selected = _expected_selected(BOOK_BASE)
+    assert first == _expected_digest_for_tree(selected)
+    assert int(_read_journal()["generation"]) == gen0
+    assert len(_trace_lines()) >= 2
+
+
+def test_cross_env_hash_match() -> None:
+    """C, de_DE, and unit Environment runs must produce identical digest bytes."""
+    _ship(BOOK_BASE, LANG_C, fresh=True)
+    digest_c = _read_digest()
+    _ship(BOOK_BASE, LANG_DE, fresh=True)
+    digest_de = _read_digest()
+    assert digest_c == digest_de
+    _ship(BOOK_BASE, from_unit=True, fresh=True)
+    digest_unit = _read_digest()
+    assert digest_unit == digest_c
+    selected = _expected_selected(BOOK_BASE)
+    assert digest_c == _expected_digest_for_tree(selected)
+
+
+def test_older_source_wins_when_ranked() -> None:
+    """Higher evidence_tier must beat a newer low-tier snap tree."""
+    _ship(BOOK_BASE, LANG_C, fresh=True)
+    trace = _read_trace()
+    expected = _expected_selected(BOOK_BASE)
+    assert expected == "tree_a"
+    assert trace["selected_id"] == expected
+    assert _read_digest() == _expected_digest_for_tree(expected)
+    journal = _read_journal()
+    assert journal["complete"] == 1
+    assert journal["book_stamp"] == _book_stamp(BOOK_BASE)
+    assert journal["selected_id"] == expected
+    assert journal["pack_label"] == "C"
+
+
+def test_order_follows_protocol_table() -> None:
+    """equal-tier supersede roots must resolve by lexicographic minimum id."""
+    _ship(BOOK_CHAIN, LANG_C, fresh=True)
+    trace = _read_trace()
+    expected = _expected_selected(BOOK_CHAIN)
+    assert expected == "tree_b"
+    assert trace["selected_id"] == expected
+    assert _read_digest() == _expected_digest_for_tree(expected)
+    journal = _read_journal()
+    assert journal["book_stamp"] == _book_stamp(BOOK_CHAIN)
+    assert journal["pack_label"] == "C"
+
+
+def test_torn_journal_discards_locale_stage() -> None:
+    """Incomplete journal with locale-corrupted stage must not promote leftovers."""
+    _ship(BOOK_BASE, LANG_C, fresh=True)
+    prior_selected = _read_trace()["selected_id"]
+    subprocess.run(["/app/scripts/seed_torn.sh", str(OUT)], check=True, env=_env())
+    assert (OUT / "stage" / "body.txt").exists()
+    assert "," in (OUT / "stage" / "body.txt").read_text(encoding="utf-8")
+    _ship(BOOK_BASE, LANG_DE)
+    expected = _expected_selected(BOOK_BASE)
+    assert expected == "tree_a"
+    lines = _trace_lines()
+    assert len(lines) >= 2, "trace must accumulate across ship runs"
+    assert lines[0]["selected_id"] == prior_selected
+    trace = lines[-1]
+    assert trace["selected_id"] == expected
+    assert trace["pack_label"] == "de_DE"
+    digest = _read_digest()
+    assert digest == _expected_digest_for_tree(expected)
+    assert "," not in (OUT / "stage" / "body.txt").read_text(encoding="utf-8")
+    journal = _read_journal()
+    assert int(journal["complete"]) == 1
+    assert journal["book_stamp"] == _book_stamp(BOOK_BASE)
+    assert journal["selected_id"] == expected
+    assert journal["pack_label"] == "de_DE"
+    assert journal["generation"] > 7
+
+
+def test_book_flip_invalidates_completed_journal() -> None:
+    """Changing the active book must invalidate a completed journal and re-select."""
+    _ship(BOOK_BASE, LANG_C, fresh=True)
+    assert _read_trace()["selected_id"] == "tree_a"
+    _ship(BOOK_CHAIN, LANG_C)
+    expected = _expected_selected(BOOK_CHAIN)
+    assert expected == "tree_b"
+    lines = (OUT / "reconcile_trace.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) >= 2, "trace must accumulate across ship runs"
+    first = json.loads(lines[-2])
+    assert first["selected_id"] == "tree_a"
+    assert _read_trace()["selected_id"] == expected
+    assert _read_digest() == _expected_digest_for_tree(expected)
+    assert _read_journal()["book_stamp"] == _book_stamp(BOOK_CHAIN)
+
+
+def test_pack_flip_invalidates_completed_journal() -> None:
+    """Changing language pack with the same book must treat the journal as stale."""
+    _ship(BOOK_BASE, LANG_C, fresh=True)
+    first_gen = int(_read_journal()["generation"])
+    digest_before = _read_digest()
+    _ship(BOOK_BASE, LANG_DE)
+    journal = _read_journal()
+    assert journal["pack_label"] == "de_DE"
+    assert journal["book_stamp"] == _book_stamp(BOOK_BASE)
+    assert int(journal["generation"]) > first_gen
+    assert _read_digest() == digest_before
+    assert _read_digest() == _expected_digest_for_tree(_expected_selected(BOOK_BASE))
+    trace = _read_trace()
+    assert trace["pack_label"] == "de_DE"
+    assert trace["sha_prefix"] == digest_before[:12]
+    lines = _trace_lines()
+    assert len(lines) >= 2
+    assert lines[0]["pack_label"] == "C"
+
+
+def test_coupled_torn_chain_under_locale() -> None:
+    """Torn mtime-winner stage under de_DE must not beat supersede-chain selection."""
+    _rebuild()
+    subprocess.run(["/app/scripts/seed_torn.sh", str(OUT)], check=True, env=_env())
+    _ship(BOOK_CHAIN, LANG_DE)
+    expected = _expected_selected(BOOK_CHAIN)
+    assert expected == "tree_b"
+    trace = _read_trace()
+    assert trace["selected_id"] == expected
+    assert trace["pack_label"] == "de_DE"
+    assert _read_digest() == _expected_digest_for_tree(expected)
+    assert "," not in (OUT / "stage" / "body.txt").read_text(encoding="utf-8")
+    journal = _read_journal()
+    assert journal["selected_id"] == expected
+    assert journal["pack_label"] == "de_DE"
+    assert journal["book_stamp"] == _book_stamp(BOOK_CHAIN)
+    assert journal["complete"] == 1
+
+
+def test_fields_populated() -> None:
+    """Trace and case-bundle entries must carry the documented non-empty fields."""
+    _ship(BOOK_BASE, LANG_C, fresh=True)
+    _check("C")
+    trace = _read_trace()
+    for key in ("event", "selected_id", "note_text", "sha_prefix", "pack_label"):
+        assert key in trace
+        assert isinstance(trace[key], str) and trace[key]
+    assert trace["event"] == "ship_complete"
+    assert trace["sha_prefix"] == _read_digest()[:12]
+    assert trace["pack_label"] == "C"
+    manifest = json.loads((OUT / "counterexample_archive" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["cases"], "cases must be non-empty"
+    case = manifest["cases"][0]
+    for key in ("case_id", "selected_id", "note_text", "sha_prefix", "pack_label"):
+        assert key in case
+        assert isinstance(case[key], str) and case[key]
+    assert case["selected_id"] == trace["selected_id"]
+    assert case["sha_prefix"] == trace["sha_prefix"]
+    assert case["pack_label"] == "C"
+    assert case["note_text"] in trace["note_text"] or case["note_text"] == trace["note_text"]
+
+
+def test_case_drops() -> None:
+    """check_bin --pack must write a non-empty case-bundle aligned with digest and trace."""
+    _ship(BOOK_BASE, LANG_DE, fresh=True)
+    _check("de_DE")
+    root = OUT / "counterexample_archive"
+    manifest_path = root / "manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert len(manifest["cases"]) >= 1
+    digest = _read_digest()
+    trace = _read_trace()
+    for case in manifest["cases"]:
+        assert case["sha_prefix"] == digest[:12]
+        assert case["selected_id"] == trace["selected_id"]
+        assert case["pack_label"] == "de_DE"
+        assert case["note_text"]
+        assert case["case_id"]
+    _check("de_DE")
+    again = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert len(again["cases"]) >= 1
+    assert again["cases"][0]["sha_prefix"] == digest[:12]
+    assert again["cases"][0]["pack_label"] == "de_DE"
+
+
+def test_unit_env_pack_label_and_generation() -> None:
+    """Unit Environment path must stamp de_DE pack_label and advance generation."""
+    _ship(BOOK_BASE, LANG_C, fresh=True)
+    gen0 = int(_read_journal()["generation"])
+    _ship(BOOK_BASE, from_unit=True)
+    journal = _read_journal()
+    assert journal["pack_label"] == "de_DE"
+    assert int(journal["generation"]) > gen0
+    assert _read_trace()["pack_label"] == "de_DE"
+    assert _read_digest() == _expected_digest_for_tree(_expected_selected(BOOK_BASE))
+    _check("de_DE")
+    case = json.loads((OUT / "counterexample_archive" / "manifest.json").read_text(encoding="utf-8"))[
+        "cases"
+    ][0]
+    assert case["pack_label"] == "de_DE"
+
+
+def test_validated_reuse_preserves_generation() -> None:
+    """Non-stale completed journal must reuse without bumping generation, while still appending trace."""
+    _ship(BOOK_BASE, LANG_C, fresh=True)
+    gen0 = int(_read_journal()["generation"])
+    digest0 = _read_digest()
+    selected = _expected_selected(BOOK_BASE)
+    _ship(BOOK_BASE, LANG_C)
+    journal = _read_journal()
+    assert int(journal["generation"]) == gen0
+    assert journal["pack_label"] == "C"
+    assert journal["selected_id"] == selected
+    assert journal["complete"] == 1
+    assert _read_digest() == digest0
+    lines = _trace_lines()
+    assert len(lines) >= 2
+    assert lines[-1]["selected_id"] == selected
+    assert lines[-1]["pack_label"] == "C"
+    assert lines[-1]["sha_prefix"] == digest0[:12]
+
+
+def test_corrupt_stage_blocks_reuse() -> None:
+    """Locale-corrupted staged body must block reuse and force a clean re-emit under the same book."""
+    _ship(BOOK_BASE, LANG_C, fresh=True)
+    gen0 = int(_read_journal()["generation"])
+    stage = OUT / "stage" / "body.txt"
+    stage.write_text("cpu_load=1,000000\nmem_pct=2,000000\n", encoding="utf-8")
+    assert "," in stage.read_text(encoding="utf-8")
+    _ship(BOOK_BASE, LANG_C)
+    expected = _expected_selected(BOOK_BASE)
+    journal = _read_journal()
+    assert int(journal["generation"]) > gen0
+    assert journal["selected_id"] == expected
+    assert journal["pack_label"] == "C"
+    assert journal["complete"] == 1
+    assert "," not in (OUT / "stage" / "body.txt").read_text(encoding="utf-8")
+    assert _read_digest() == _expected_digest_for_tree(expected)
+    lines = _trace_lines()
+    assert len(lines) >= 2
+    assert lines[-1]["sha_prefix"] == _read_digest()[:12]
+    assert lines[-1]["pack_label"] == "C"
