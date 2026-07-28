@@ -1,0 +1,9 @@
+[[refs]]
+name = "alpha-sock"
+path = "/app/environment/state/run.sock"
+mark_tag = "kairo"
+
+[[refs]]
+name = "beta-child"
+path = "/app/environment/state/run.sock"
+mark_tag = "vexa"

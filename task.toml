@@ -1,35 +1,29 @@
+# Task configuration schema version
 version = "2.0"
 
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "hard"
-category = "scientific-computing"
+difficulty = "medium"
+category = "security"
 subcategories = []
 number_of_milestones = 0
-codebase_size = "large"
-languages = ["rust"]
-tags = [
-    "bridge-modal-calibration",
-    "eigenmode-pairing-analysis",
-    "bounded-stiffness-inversion",
-    "mac-objective-qualification"
-]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 360
+codebase_size = "small"
+languages = ["go", "c", "bash"]
+tags = ["authentication", "peer-credentials", "unix-socket-auth", "identity-binding", "authorization"]
+expert_time_estimate_min = 45
+junior_time_estimate_min = 150
 
 [verifier]
-timeout_sec = 900.0
+timeout_sec = 600
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 900
 
 [environment]
-build_timeout_sec = 600.0
-docker_flags = []
-cpus = 1
-memory_mb = 2048
-storage_mb = 10240
-gpus = 0
-gpu_types = []
 allow_internet = false
+build_timeout_sec = 900
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+workdir = "/app"

@@ -1,27 +1,20 @@
 #!/bin/bash
 
-mkdir -p /logs/verifier
-export SPANFORGE_ROOT=/opt/spanforge
+# Verifier dependencies are installed in environment/Dockerfile.
+# Add task-specific verifier-only Python packages there, not here.
 
-# Install verifier-only dependencies here (not during image build).
-if [ ! -x /opt/verifier_venv/bin/pytest ]; then
-    python3 -m venv /opt/verifier_venv
-    /opt/verifier_venv/bin/pip install \
-        --no-index \
-        --find-links=/verifier-wheels \
-        --require-hashes \
-        --no-deps \
-        -r /opt/verifier-requirements.lock
+mkdir -p /logs/verifier
+echo 0 > /logs/verifier/reward.txt
+
+if [ "$PWD" = "/" ]; then
+    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile."
+    exit 1
 fi
 
-export PATH="/opt/verifier_venv/bin:$PATH"
-
-cd /tests || exit 1
-
-pytest -rA /tests/test_outputs.py
-status=$?
-if [ "$status" -eq 0 ]; then
-    echo 1 > /logs/verifier/reward.txt
+/opt/verifier-venv/bin/python -m pytest -o cache_dir=/tmp/pytest_cache --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo 1 > /logs/verifier/reward.txt
 else
-    echo 0 > /logs/verifier/reward.txt
+  echo 0 > /logs/verifier/reward.txt
 fi
