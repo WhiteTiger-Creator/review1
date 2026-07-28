@@ -1,382 +1,425 @@
-"""Behavior checks for the journaled ship path public contract."""
+"""Named independent checks for the pinned native Kyoto Shogi arena."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import socket
+import stat
 import subprocess
-import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-APP = Path("/app")
-OUT = APP / "output"
-SNAPS = APP / "fixtures" / "snaps"
-BOOK_BASE = APP / "fixtures" / "exclbook" / "base.json"
-BOOK_CHAIN = APP / "fixtures" / "exclbook" / "supersede_chain.json"
-LANG_C = APP / "fixtures" / "langpacks" / "c.langpack"
-LANG_DE = APP / "fixtures" / "langpacks" / "de_DE.langpack"
+import pytest
+from kyoto_shogi_rules import (
+    BLACK as UPPER_SIDE,
+)
+from kyoto_shogi_rules import (
+    CANONICAL_START_FEN,
+    DROP_UCI_PATTERN,
+    NORMAL_UCI_PATTERN,
+    START_FEN,
+    Board,
+    Move,
+    Outcome,
+    fen_from_pieces,
+)
+from kyoto_shogi_rules import (
+    WHITE as LOWER_SIDE,
+)
+
+PROTOCOL = "arena-kyoto-shogi-v1"
+VARIANT = "kyotoshogi"
+WIRE_BANNER = b"FAIRY_ARENA_WIRE_V1"
+HASH_PATTERN = re.compile(r"[0-9a-f]{16}\Z")
+STATE_FIELDS = frozenset(
+    {
+        "protocol",
+        "variant",
+        "player_color",
+        "start_fen",
+        "fen",
+        "position_hash",
+        "board",
+        "turn",
+        "result",
+        "winner",
+        "termination",
+        "ply_count",
+        "postgame_player_requests",
+        "last_move",
+        "legal_moves",
+        "holdings",
+    }
+)
+MOVE_FIELDS = frozenset(
+    {"ply", "actor", "color", "uci", "san", "fen_after", "hash_after"}
+)
+TRANSCRIPT_FIELDS = frozenset(
+    {"ok", "state", "protocol", "variant", "start_fen", "moves"}
+)
+PUBLIC_FOR_MODEL = {UPPER_SIDE: "white", LOWER_SIDE: "black"}
 
 
-def _env() -> dict[str, str]:
-    return os.environ.copy()
-
-
-def _rebuild() -> None:
-    subprocess.run(
-        ["make", "-C", "/app/environment", "PREFIX=/app", "install"],
-        check=True,
+def run_client(*arguments: str) -> tuple[subprocess.CompletedProcess[str], Any | None]:
+    """Run the public native client and parse JSON when emitted."""
+    completed = subprocess.run(
+        ["/app/arena", "--json", *arguments],
+        check=False,
         capture_output=True,
         text=True,
-        env=_env(),
+        timeout=60,
+    )
+    payload = json.loads(completed.stdout) if completed.stdout.strip() else None
+    return completed, payload
+
+
+def successful_transcript() -> dict[str, Any]:
+    """Fetch one successful authoritative transcript envelope."""
+    completed, payload = run_client("transcript")
+    assert completed.returncode == 0, completed.stderr
+    assert isinstance(payload, dict)
+    assert payload.get("ok") is True
+    return payload
+
+
+def fingerprint(value: Any) -> str:
+    """Serialize public state deterministically for mutation checks."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def raw_request(payload: bytes) -> bytes:
+    """Send one root-owned raw socket payload for framing checks."""
+    path = os.environ.get("ARENA_SOCKET", "/run/arena/arena.sock")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(15)
+        connection.connect(path)
+        connection.sendall(payload)
+        connection.shutdown(socket.SHUT_WR)
+        chunks: list[bytes] = []
+        while True:
+            chunk = connection.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@dataclass(frozen=True)
+class Replay:
+    """Independent final position and classification for a transcript."""
+
+    board: Board
+    outcome: Outcome
+    resigned: bool
+
+
+def replay_transcript(payload: dict[str, Any]) -> Replay:
+    """Replay all accepted actions with verifier-owned Kyoto Shogi rules."""
+    assert payload["start_fen"] == START_FEN
+    board = Board.from_fen(CANONICAL_START_FEN)
+    resigned = False
+    records = payload["moves"]
+    for index, record in enumerate(records):
+        assert set(record) == MOVE_FIELDS
+        assert record["ply"] == index + 1
+        expected_color = PUBLIC_FOR_MODEL[board.turn]
+        assert record["color"] == expected_color
+        assert record["actor"] == (
+            "player" if expected_color == "white" else "opponent"
+        )
+        token = record["uci"]
+        if token == "resign":
+            assert index == len(records) - 1
+            assert expected_color == "white"
+            assert record["fen_after"] == board.fen()
+            resigned = True
+            continue
+        assert token in board.legal_moves()
+        applied = board.push(token)
+        assert record["fen_after"] == applied.fen_after
+        assert HASH_PATTERN.fullmatch(record["hash_after"])
+        assert isinstance(record["san"], str) and record["san"]
+        if board.outcome().finished:
+            assert index == len(records) - 1
+    outcome = (
+        Outcome("white_win", LOWER_SIDE, "resignation")
+        if resigned
+        else board.outcome()
+    )
+    return Replay(board, outcome, resigned)
+
+
+@pytest.fixture(scope="session")
+def transcript() -> dict[str, Any]:
+    """Provide the live authoritative transcript to named checks."""
+    return successful_transcript()
+
+
+@pytest.fixture(scope="session")
+def replayed(transcript: dict[str, Any]) -> Replay:
+    """Provide the independently replayed final state."""
+    return replay_transcript(transcript)
+
+
+def test_readme_documents_complete_kyoto_shogi_and_stopping_contract() -> None:
+    """Require commands, Kyoto Shogi rules, endings, schemas, and stopping."""
+    readme = Path("/app/README.md").read_text(encoding="utf-8")
+    lowered = " ".join(readme.lower().split())
+    for command in (
+        "/app/arena status",
+        "/app/arena move MOVE",
+        "/app/arena resign",
+        "/app/arena transcript",
+    ):
+        assert command in readme
+    for phrase in (
+        "5-by-5",
+        "files are `a` through `e`",
+        "must flip it to the other face",
+        "there is no promotion zone",
+        "`+p` is a rook",
+        "`+s` is a bishop",
+        "`+n` moves as a gold",
+        "with either face",
+        "no nifu, uchifuzume",
+        "fourth occurrence",
+        "having no legal move while not checked is also a loss",
+        "one arena command at a time",
+        "send no more arena requests",
+        "checkmate",
+    ):
+        assert phrase in lowered
+    for field in STATE_FIELDS | MOVE_FIELDS | {"ok", "error", "code", "message"}:
+        assert re.search(rf"(?<![A-Za-z0-9_]){re.escape(field)}(?![A-Za-z0-9_])", readme)
+    assert "oracle" not in lowered and "verifier" not in lowered
+
+
+def test_transcript_uses_exact_versioned_json_schemas(transcript: dict[str, Any]) -> None:
+    """Require exact transcript, state, action schemas and strict scalar types."""
+    assert set(transcript) == TRANSCRIPT_FIELDS
+    assert transcript["ok"] is True
+    state = transcript["state"]
+    assert set(state) == STATE_FIELDS
+    for record in transcript["moves"]:
+        assert set(record) == MOVE_FIELDS
+        assert type(record["ply"]) is int and record["ply"] >= 1
+        assert HASH_PATTERN.fullmatch(record["hash_after"])
+    assert type(state["ply_count"]) is int
+    assert type(state["postgame_player_requests"]) is int
+    assert state["legal_moves"] == sorted(set(state["legal_moves"]))
+
+
+def test_protocol_identity_and_opening_are_exact(transcript: dict[str, Any]) -> None:
+    """Require the protected arena to identify the pinned Kyoto Shogi session."""
+    state = transcript["state"]
+    assert transcript["protocol"] == state["protocol"] == PROTOCOL
+    assert transcript["variant"] == state["variant"] == VARIANT
+    assert transcript["start_fen"] == state["start_fen"] == START_FEN
+    assert state["player_color"] == "white"
+
+
+def test_transcript_strictly_alternates_atomic_white_black_plies(
+    transcript: dict[str, Any],
+) -> None:
+    """Require consecutive player-White and opponent-Black chronology."""
+    assert transcript["moves"]
+    for index, record in enumerate(transcript["moves"]):
+        white_ply = index % 2 == 0
+        assert record["ply"] == index + 1
+        assert record["actor"] == ("player" if white_ply else "opponent")
+        assert record["color"] == ("white" if white_ply else "black")
+
+
+def test_every_move_replays_under_independent_kyoto_shogi_rules(
+    transcript: dict[str, Any], replayed: Replay
+) -> None:
+    """Require every non-resignation action to be independently legal."""
+    assert not replayed.resigned
+    for record in transcript["moves"]:
+        assert NORMAL_UCI_PATTERN.fullmatch(record["uci"]) or DROP_UCI_PATTERN.fullmatch(record["uci"])
+        assert Board.from_fen(record["fen_after"]).fen() == record["fen_after"]
+
+
+def test_final_public_state_matches_independent_replay(
+    transcript: dict[str, Any], replayed: Replay
+) -> None:
+    """Require final FEN, board, turn, chronology, and legal moves to match."""
+    state = transcript["state"]
+    board = replayed.board
+    assert state["fen"] == board.fen()
+    assert state["board"] == board.board_text()
+    assert state["turn"] == PUBLIC_FOR_MODEL[board.turn]
+    assert state["ply_count"] == len(transcript["moves"])
+    assert state["last_move"] == transcript["moves"][-1]
+    expected = [] if replayed.outcome.finished else list(board.legal_moves())
+    assert state["legal_moves"] == expected
+    assert state["position_hash"] == transcript["moves"][-1]["hash_after"]
+    exposed = {
+        (item["color"], item["piece"]): item["count"]
+        for item in state["holdings"]
+    }
+    expected_holdings = {}
+    for model_color, public_color in PUBLIC_FOR_MODEL.items():
+        for kind in "NLPS":
+            count = board.hand_count(model_color, kind)
+            if count:
+                piece = kind if public_color == "white" else kind.lower()
+                expected_holdings[(public_color, piece)] = count
+    assert exposed == expected_holdings
+
+
+def test_final_result_is_a_genuine_independent_white_win(
+    transcript: dict[str, Any], replayed: Replay
+) -> None:
+    """Pass only an independently reproduced White checkmate."""
+    state = transcript["state"]
+    assert replayed.outcome.finished and not replayed.resigned
+    assert replayed.outcome.winner == UPPER_SIDE
+    assert PUBLIC_FOR_MODEL[replayed.outcome.winner] == "white"
+    assert replayed.outcome.termination == "checkmate"
+    assert state["result"] == "white_win"
+    assert state["winner"] == "white"
+    assert state["termination"] == replayed.outcome.termination
+
+
+def test_terminal_win_has_no_legal_moves_or_postgame_player_traffic(
+    transcript: dict[str, Any], replayed: Replay
+) -> None:
+    """Require terminal exposure and clean agent stopping with no queued request."""
+    state = transcript["state"]
+    assert replayed.outcome.finished
+    assert state["legal_moves"] == []
+    assert state["postgame_player_requests"] == 0
+
+
+def test_independent_opening_has_exact_compact_armies_and_moves() -> None:
+    """Freeze both five-piece armies and all twelve forced-flip moves."""
+    board = Board.from_fen(START_FEN)
+    assert board.fen() == CANONICAL_START_FEN
+    assert board.count(color=UPPER_SIDE) == board.count(color=LOWER_SIDE) == 5
+    assert board.legal_moves() == (
+        "a1a2-", "a1b2-", "b1a2+", "b1b2+", "b1c2+", "c1b2",
+        "c1c2", "c1d2", "d1c2-", "d1d2-", "d1e2-", "e1e2+",
     )
 
 
-def _sha256_hex(data: bytes) -> str:
-    with tempfile.NamedTemporaryFile(delete=False) as handle:
-        handle.write(data)
-        path = handle.name
-    try:
-        completed = subprocess.run(
-            ["sha256sum", path],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_env(),
+def test_independent_forced_flips_capture_hands_and_two_face_drops() -> None:
+    """Require plus/minus flips, capture identity, and both drop faces."""
+    board = Board.from_fen(
+        fen_from_pieces({"a1": "K", "e5": "k", "c3": "P", "b3": "+S"})
+    )
+    assert "c3c4+" in board.legal_moves() and "c3c4" not in board.legal_moves()
+    assert all(move.endswith("-") for move in board.legal_moves() if move.startswith("b3"))
+    capture = Board.from_fen(
+        fen_from_pieces({"a1": "K", "e5": "k", "b2": "+P", "b4": "+s"})
+    )
+    capture.push("b2b4-")
+    assert capture.hand_count(UPPER_SIDE, "S") == 1
+    drops = Board.from_fen(
+        fen_from_pieces(
+            {"a1": "K", "e5": "k"},
+            hands={UPPER_SIDE: {"P": 1}},
         )
-        return completed.stdout.split()[0]
-    finally:
-        os.unlink(path)
+    )
+    assert {"P@c3", "+P@c3", "P@a5", "+P@a5"} <= set(drops.legal_moves())
 
 
-def _ship(book: Path, langpack: Path | None = None, from_unit: bool = False, fresh: bool = False) -> None:
-    _rebuild()
-    cmd = ["/app/scripts/run_ship.sh", "--book", str(book)]
-    if langpack is not None:
-        cmd.extend(["--langpack", str(langpack)])
-    if from_unit:
-        cmd.append("--from-unit")
-    if fresh:
-        cmd.append("--fresh")
-    subprocess.run(cmd, check=True, env=_env())
+def test_independent_compact_move_drop_and_promotion_tokens_are_exact() -> None:
+    """Require exact board flips and ordinary or promoted at-sign drops."""
+    assert Move.from_uci("a1a2-").uci() == "a1a2-"
+    assert Move.from_uci("+P@c3").uci() == "+P@c3"
+    for malformed in ("a1f2", "a1a6", "P*c3", "p@c3", "a4a5q"):
+        assert NORMAL_UCI_PATTERN.fullmatch(malformed) is None
+        assert DROP_UCI_PATTERN.fullmatch(malformed) is None
 
 
-def _check(pack: str) -> None:
-    subprocess.run(["/app/bin/check_bin", "--pack", pack], check=True, env=_env())
+def test_independent_king_safety_and_no_move_losses_are_enforced() -> None:
+    """Require king safety plus distinct checked and safe no-move losses."""
+    checked = Board.from_fen(
+        fen_from_pieces({"a1": "K", "e5": "k", "a5": "+p"})
+    )
+    assert checked.is_in_check(UPPER_SIDE)
+    assert all(not move.startswith("a1a") for move in checked.legal_moves())
+    checkmate = Board.from_fen(
+        fen_from_pieces({"a1": "K", "a3": "k", "a2": "s"})
+    )
+    stalemate = Board.from_fen(
+        fen_from_pieces({"a1": "K", "a3": "k", "a2": "+s"})
+    )
+    assert checkmate.outcome() == Outcome("white_win", LOWER_SIDE, "checkmate")
+    assert stalemate.outcome() == Outcome("white_win", LOWER_SIDE, "stalemate")
 
 
-def _canonical_number(value: float) -> str:
-    return f"{value:.6f}"
+def test_status_and_transcript_expose_identical_authoritative_state(
+    transcript: dict[str, Any],
+) -> None:
+    """Require the flat status object to match the nested transcript state."""
+    completed, status = run_client("status")
+    assert completed.returncode == 0, completed.stderr
+    assert isinstance(status, dict)
+    assert set(status) == STATE_FIELDS | {"ok"}
+    assert status.pop("ok") is True
+    assert status == transcript["state"]
 
 
-def _expected_digest_for_tree(tree_id: str) -> str:
-    metrics = json.loads((SNAPS / tree_id / "metrics.json").read_text(encoding="utf-8"))
-    lines = []
-    for row in metrics["rows"]:
-        lines.append(f"{row['k']}={_canonical_number(float(row['v']))}\n")
-    lines.sort()
-    body = "".join(lines).encode("utf-8")
-    return _sha256_hex(body)
+def test_client_and_referee_reject_batch_or_control_surfaces_atomically(
+    transcript: dict[str, Any],
+) -> None:
+    """Require local control-verb rejection and server single-command framing."""
+    before = fingerprint(transcript["state"])
+    for arguments in (
+        ("reset",),
+        ("undo",),
+        ("analysis",),
+        ("engine",),
+        ("move", "a2a3", "status"),
+        ("resign", "status"),
+    ):
+        completed, payload = run_client(*arguments)
+        assert completed.returncode == 2
+        assert payload is None
+    response = raw_request(b"status\nstatus\n")
+    assert response.startswith(b"FAIL\n" + WIRE_BANNER + b"\n")
+    assert b"ERROR\tbad_request\t" in response
+    assert fingerprint(successful_transcript()["state"]) == before
 
 
-def _read_digest() -> str:
-    return (OUT / "canonical_export.sha256").read_text(encoding="utf-8").strip()
+def test_terminal_root_probes_are_immutable_game_over_rejections(
+    transcript: dict[str, Any],
+) -> None:
+    """Require postgame root verification to preserve state and full history."""
+    before_state = fingerprint(transcript["state"])
+    before_moves = transcript["moves"]
+    for command in (("move", "a2a3"), ("resign",)):
+        completed, payload = run_client(*command)
+        assert completed.returncode == 1
+        assert isinstance(payload, dict)
+        assert payload["error"]["code"] == "game_over"
+        assert fingerprint(payload["state"]) == before_state
+    after = successful_transcript()
+    assert after["moves"] == before_moves
+    assert fingerprint(after["state"]) == before_state
 
 
-def _trace_lines() -> list[dict]:
-    raw = (OUT / "reconcile_trace.jsonl").read_text(encoding="utf-8").strip()
-    assert raw, "reconcile_trace.jsonl must contain at least one line"
-    return [json.loads(line) for line in raw.splitlines() if line.strip()]
-
-
-def _read_trace() -> dict:
-    return _trace_lines()[-1]
-
-
-def _read_journal() -> dict:
-    return json.loads((OUT / "ship_journal.json").read_text(encoding="utf-8"))
-
-
-def _load_book(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _expected_selected(book_path: Path) -> str:
-    book = _load_book(book_path)
-    present = {p.name for p in SNAPS.iterdir() if p.is_dir()}
-    entries = [e for e in book["entries"] if e["id"] in present]
-    assert entries, "book must mention at least one on-disk tree"
-    best_tier = max(int(e["evidence_tier"]) for e in entries)
-    top = [e for e in entries if int(e["evidence_tier"]) == best_tier]
-    edges = {e["id"]: list(e.get("supersedes") or []) for e in book["entries"]}
-
-    def reaches(src: str, dst: str) -> bool:
-        seen = set()
-        stack = [src]
-        while stack:
-            cur = stack.pop()
-            if cur in seen:
-                continue
-            seen.add(cur)
-            for nxt in edges.get(cur, []):
-                if nxt == dst:
-                    return True
-                stack.append(nxt)
-        return False
-
-    if len(top) == 1:
-        return top[0]["id"]
-    roots = [
-        e
-        for e in top
-        if not any(e["id"] != other["id"] and reaches(other["id"], e["id"]) for other in top)
-    ]
-    pool = roots or top
-    return min(e["id"] for e in pool)
-
-
-def _book_stamp(path: Path) -> str:
-    return _sha256_hex(path.read_bytes())
-
-
-def test_repeat_emit_stable() -> None:
-    """Repeated ship under C must yield an identical independently recomputed digest."""
-    _ship(BOOK_BASE, LANG_C, fresh=True)
-    first = _read_digest()
-    gen0 = int(_read_journal()["generation"])
-    _ship(BOOK_BASE, LANG_C)
-    second = _read_digest()
-    assert first == second
-    selected = _expected_selected(BOOK_BASE)
-    assert first == _expected_digest_for_tree(selected)
-    assert int(_read_journal()["generation"]) == gen0
-    assert len(_trace_lines()) >= 2
-
-
-def test_cross_env_hash_match() -> None:
-    """C, de_DE, and unit Environment runs must produce identical digest bytes."""
-    _ship(BOOK_BASE, LANG_C, fresh=True)
-    digest_c = _read_digest()
-    _ship(BOOK_BASE, LANG_DE, fresh=True)
-    digest_de = _read_digest()
-    assert digest_c == digest_de
-    _ship(BOOK_BASE, from_unit=True, fresh=True)
-    digest_unit = _read_digest()
-    assert digest_unit == digest_c
-    selected = _expected_selected(BOOK_BASE)
-    assert digest_c == _expected_digest_for_tree(selected)
-
-
-def test_older_source_wins_when_ranked() -> None:
-    """Higher evidence_tier must beat a newer low-tier snap tree."""
-    _ship(BOOK_BASE, LANG_C, fresh=True)
-    trace = _read_trace()
-    expected = _expected_selected(BOOK_BASE)
-    assert expected == "tree_a"
-    assert trace["selected_id"] == expected
-    assert _read_digest() == _expected_digest_for_tree(expected)
-    journal = _read_journal()
-    assert journal["complete"] == 1
-    assert journal["book_stamp"] == _book_stamp(BOOK_BASE)
-    assert journal["selected_id"] == expected
-    assert journal["pack_label"] == "C"
-
-
-def test_order_follows_protocol_table() -> None:
-    """equal-tier supersede roots must resolve by lexicographic minimum id."""
-    _ship(BOOK_CHAIN, LANG_C, fresh=True)
-    trace = _read_trace()
-    expected = _expected_selected(BOOK_CHAIN)
-    assert expected == "tree_b"
-    assert trace["selected_id"] == expected
-    assert _read_digest() == _expected_digest_for_tree(expected)
-    journal = _read_journal()
-    assert journal["book_stamp"] == _book_stamp(BOOK_CHAIN)
-    assert journal["pack_label"] == "C"
-
-
-def test_torn_journal_discards_locale_stage() -> None:
-    """Incomplete journal with locale-corrupted stage must not promote leftovers."""
-    _ship(BOOK_BASE, LANG_C, fresh=True)
-    prior_selected = _read_trace()["selected_id"]
-    subprocess.run(["/app/scripts/seed_torn.sh", str(OUT)], check=True, env=_env())
-    assert (OUT / "stage" / "body.txt").exists()
-    assert "," in (OUT / "stage" / "body.txt").read_text(encoding="utf-8")
-    _ship(BOOK_BASE, LANG_DE)
-    expected = _expected_selected(BOOK_BASE)
-    assert expected == "tree_a"
-    lines = _trace_lines()
-    assert len(lines) >= 2, "trace must accumulate across ship runs"
-    assert lines[0]["selected_id"] == prior_selected
-    trace = lines[-1]
-    assert trace["selected_id"] == expected
-    assert trace["pack_label"] == "de_DE"
-    digest = _read_digest()
-    assert digest == _expected_digest_for_tree(expected)
-    assert "," not in (OUT / "stage" / "body.txt").read_text(encoding="utf-8")
-    journal = _read_journal()
-    assert int(journal["complete"]) == 1
-    assert journal["book_stamp"] == _book_stamp(BOOK_BASE)
-    assert journal["selected_id"] == expected
-    assert journal["pack_label"] == "de_DE"
-    assert journal["generation"] > 7
-
-
-def test_book_flip_invalidates_completed_journal() -> None:
-    """Changing the active book must invalidate a completed journal and re-select."""
-    _ship(BOOK_BASE, LANG_C, fresh=True)
-    assert _read_trace()["selected_id"] == "tree_a"
-    _ship(BOOK_CHAIN, LANG_C)
-    expected = _expected_selected(BOOK_CHAIN)
-    assert expected == "tree_b"
-    lines = (OUT / "reconcile_trace.jsonl").read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) >= 2, "trace must accumulate across ship runs"
-    first = json.loads(lines[-2])
-    assert first["selected_id"] == "tree_a"
-    assert _read_trace()["selected_id"] == expected
-    assert _read_digest() == _expected_digest_for_tree(expected)
-    assert _read_journal()["book_stamp"] == _book_stamp(BOOK_CHAIN)
-
-
-def test_pack_flip_invalidates_completed_journal() -> None:
-    """Changing language pack with the same book must treat the journal as stale."""
-    _ship(BOOK_BASE, LANG_C, fresh=True)
-    first_gen = int(_read_journal()["generation"])
-    digest_before = _read_digest()
-    _ship(BOOK_BASE, LANG_DE)
-    journal = _read_journal()
-    assert journal["pack_label"] == "de_DE"
-    assert journal["book_stamp"] == _book_stamp(BOOK_BASE)
-    assert int(journal["generation"]) > first_gen
-    assert _read_digest() == digest_before
-    assert _read_digest() == _expected_digest_for_tree(_expected_selected(BOOK_BASE))
-    trace = _read_trace()
-    assert trace["pack_label"] == "de_DE"
-    assert trace["sha_prefix"] == digest_before[:12]
-    lines = _trace_lines()
-    assert len(lines) >= 2
-    assert lines[0]["pack_label"] == "C"
-
-
-def test_coupled_torn_chain_under_locale() -> None:
-    """Torn mtime-winner stage under de_DE must not beat supersede-chain selection."""
-    _rebuild()
-    subprocess.run(["/app/scripts/seed_torn.sh", str(OUT)], check=True, env=_env())
-    _ship(BOOK_CHAIN, LANG_DE)
-    expected = _expected_selected(BOOK_CHAIN)
-    assert expected == "tree_b"
-    trace = _read_trace()
-    assert trace["selected_id"] == expected
-    assert trace["pack_label"] == "de_DE"
-    assert _read_digest() == _expected_digest_for_tree(expected)
-    assert "," not in (OUT / "stage" / "body.txt").read_text(encoding="utf-8")
-    journal = _read_journal()
-    assert journal["selected_id"] == expected
-    assert journal["pack_label"] == "de_DE"
-    assert journal["book_stamp"] == _book_stamp(BOOK_CHAIN)
-    assert journal["complete"] == 1
-
-
-def test_fields_populated() -> None:
-    """Trace and case-bundle entries must carry the documented non-empty fields."""
-    _ship(BOOK_BASE, LANG_C, fresh=True)
-    _check("C")
-    trace = _read_trace()
-    for key in ("event", "selected_id", "note_text", "sha_prefix", "pack_label"):
-        assert key in trace
-        assert isinstance(trace[key], str) and trace[key]
-    assert trace["event"] == "ship_complete"
-    assert trace["sha_prefix"] == _read_digest()[:12]
-    assert trace["pack_label"] == "C"
-    manifest = json.loads((OUT / "counterexample_archive" / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["cases"], "cases must be non-empty"
-    case = manifest["cases"][0]
-    for key in ("case_id", "selected_id", "note_text", "sha_prefix", "pack_label"):
-        assert key in case
-        assert isinstance(case[key], str) and case[key]
-    assert case["selected_id"] == trace["selected_id"]
-    assert case["sha_prefix"] == trace["sha_prefix"]
-    assert case["pack_label"] == "C"
-    assert case["note_text"] in trace["note_text"] or case["note_text"] == trace["note_text"]
-
-
-def test_case_drops() -> None:
-    """check_bin --pack must write a non-empty case-bundle aligned with digest and trace."""
-    _ship(BOOK_BASE, LANG_DE, fresh=True)
-    _check("de_DE")
-    root = OUT / "counterexample_archive"
-    manifest_path = root / "manifest.json"
-    assert manifest_path.exists()
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert len(manifest["cases"]) >= 1
-    digest = _read_digest()
-    trace = _read_trace()
-    for case in manifest["cases"]:
-        assert case["sha_prefix"] == digest[:12]
-        assert case["selected_id"] == trace["selected_id"]
-        assert case["pack_label"] == "de_DE"
-        assert case["note_text"]
-        assert case["case_id"]
-    _check("de_DE")
-    again = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert len(again["cases"]) >= 1
-    assert again["cases"][0]["sha_prefix"] == digest[:12]
-    assert again["cases"][0]["pack_label"] == "de_DE"
-
-
-def test_unit_env_pack_label_and_generation() -> None:
-    """Unit Environment path must stamp de_DE pack_label and advance generation."""
-    _ship(BOOK_BASE, LANG_C, fresh=True)
-    gen0 = int(_read_journal()["generation"])
-    _ship(BOOK_BASE, from_unit=True)
-    journal = _read_journal()
-    assert journal["pack_label"] == "de_DE"
-    assert int(journal["generation"]) > gen0
-    assert _read_trace()["pack_label"] == "de_DE"
-    assert _read_digest() == _expected_digest_for_tree(_expected_selected(BOOK_BASE))
-    _check("de_DE")
-    case = json.loads((OUT / "counterexample_archive" / "manifest.json").read_text(encoding="utf-8"))[
-        "cases"
-    ][0]
-    assert case["pack_label"] == "de_DE"
-
-
-def test_validated_reuse_preserves_generation() -> None:
-    """Non-stale completed journal must reuse without bumping generation, while still appending trace."""
-    _ship(BOOK_BASE, LANG_C, fresh=True)
-    gen0 = int(_read_journal()["generation"])
-    digest0 = _read_digest()
-    selected = _expected_selected(BOOK_BASE)
-    _ship(BOOK_BASE, LANG_C)
-    journal = _read_journal()
-    assert int(journal["generation"]) == gen0
-    assert journal["pack_label"] == "C"
-    assert journal["selected_id"] == selected
-    assert journal["complete"] == 1
-    assert _read_digest() == digest0
-    lines = _trace_lines()
-    assert len(lines) >= 2
-    assert lines[-1]["selected_id"] == selected
-    assert lines[-1]["pack_label"] == "C"
-    assert lines[-1]["sha_prefix"] == digest0[:12]
-
-
-def test_corrupt_stage_blocks_reuse() -> None:
-    """Locale-corrupted staged body must block reuse and force a clean re-emit under the same book."""
-    _ship(BOOK_BASE, LANG_C, fresh=True)
-    gen0 = int(_read_journal()["generation"])
-    stage = OUT / "stage" / "body.txt"
-    stage.write_text("cpu_load=1,000000\nmem_pct=2,000000\n", encoding="utf-8")
-    assert "," in stage.read_text(encoding="utf-8")
-    _ship(BOOK_BASE, LANG_C)
-    expected = _expected_selected(BOOK_BASE)
-    journal = _read_journal()
-    assert int(journal["generation"]) > gen0
-    assert journal["selected_id"] == expected
-    assert journal["pack_label"] == "C"
-    assert journal["complete"] == 1
-    assert "," not in (OUT / "stage" / "body.txt").read_text(encoding="utf-8")
-    assert _read_digest() == _expected_digest_for_tree(expected)
-    lines = _trace_lines()
-    assert len(lines) >= 2
-    assert lines[-1]["sha_prefix"] == _read_digest()[:12]
-    assert lines[-1]["pack_label"] == "C"
+def test_provenance_policy_and_private_runtime_surface_are_consistent() -> None:
+    """Require exact-source disclosure, explicit weakening, and root-only assets."""
+    doc_root = Path("/usr/share/doc/kyoto-shogi-arena")
+    source = (doc_root / "fairy-stockfish" / "PROVENANCE.md").read_text(encoding="utf-8")
+    policy = (doc_root / "OPPONENT_POLICY.md").read_text(encoding="utf-8")
+    native = (doc_root / "arena-native" / "PROVENANCE.md").read_text(encoding="utf-8")
+    assert "f3e6969d11d1bec17eba26e7ae0e629ad4af71dd" in source
+    assert "There are no other local source changes" in source
+    assert "20,000 nodes" in policy and "MultiPV=2" in policy
+    assert "100,000 nodes" in policy
+    assert "VARIANT" in native and "PROTOCOL" in native
+    for path in (
+        Path("/opt/arena-private/referee"),
+        Path("/opt/arena-private/opponent"),
+        Path("/opt/arena-private/difficulty_knobs.conf"),
+    ):
+        mode = stat.S_IMODE(path.stat().st_mode)
+        assert mode & 0o077 == 0
+    assert {path.name for path in Path("/app").iterdir()} == {"README.md", "arena"}

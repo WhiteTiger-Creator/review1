@@ -1,10 +1,19 @@
-After the bind-mount migration of snap trees and language packs, the hostctl-export systemd oneshot at /app/svcunit/metricd.service still reaches active, but the host no longer meets the site export contract. Unit Environment locale settings, exclusion-book policy on mounted snap trees, and interrupted /app/output journal recovery disagree with what operators expect from a oneshot RemainAfterExit ship.
+Play the pinned board game of Kyoto Shogi as White through `/app/arena` and win
+specifically by checkmate. The task is to choose moves and drops in the active
+match; no software build or package modification is required. A
+stalemate/no-move win, rule-claim result, draw, resignation, loss, or unfinished
+game is not a successful outcome.
 
-Desired host state when the unit-managed path runs (including /app/scripts/run_ship.sh --from-unit, which applies every Environment= line from /app/svcunit/metricd.service before ExecStart):
-- /app/output/canonical_export.sha256 is byte-identical for the same selected metrics under language pack C, bundled de_DE, and the unit Environment path. Canonical metric text uses selected snap tree metrics.json rows (string k, numeric v): one line per row as k=<number> with exactly six digits after an ASCII period, no thousands separators, no scientific notation; lines sorted by k ascending; one lowercase hex digest line for those UTF-8 bytes.
-- Snap selection under /app/fixtures/snaps/ follows /app/fixtures/exclbook/ evidence_tier and supersedes edges. Only on-disk snap ids compete. Highest evidence_tier wins. On a tier tie, keep supersede-chain roots only (an id is a root when no other same-tier candidate reaches it through supersedes edges, directly or through a chain). If more than one root remains, take the lexicographically minimum id. Bind-mounted tree mtime must not override that policy.
-- /app/output/ship_journal.json carries selected_id, book_stamp (sha256 of the active book file bytes), pack_label for the active language pack, stage_path, complete, and generation. Metric text stages under /app/output/stage/ before promote. An incomplete journal discards leftover staged bodies and re-selects plus re-emits. A completed journal is stale when book_stamp no longer matches the active book or pack_label no longer matches the active language pack, and must re-run. generation increases on every re-select or re-emit. Staged bytes that disagree with the active book or the ASCII decimal rule above are never promoted.
-- /app/output/reconcile_trace.jsonl appends across ships (prior lines stay). The final line is JSON with event equal to ship_complete, selected_id, non-empty note_text, sha_prefix as the first 12 hex characters of that run's digest, and pack_label matching the active pack.
-- /app/bin/check_bin --pack <label> leaves /app/output/counterexample_archive/manifest.json with a non-empty cases array; <label> is the active pack name and becomes each case pack_label. Each case has non-empty case_id, selected_id, note_text, sha_prefix, and pack_label aligned with the latest digest and trace (case note_text equals or is a substring of the matching trace note_text).
+Kyoto Shogi is a 5-by-5 drop game whose pawn/rook, silver/bishop,
+knight/gold, and lance/gold pieces must flip faces after every board move.
+Captured identities return as holdings and may be dropped with either face.
+`/app/README.md` is the binding external specification for the complete rules,
+terminal conditions, exact move and drop tokens, arena commands, error results,
+and public JSON contract. The game has no reset, rewind, position loader, or
+analysis command.
 
-Schemas and operator flags live under /app/docs/ship-contract.rst. Correct the unit-invoked host binaries and libraries under /app/environment so oneshot behavior stays correct across refreshes, not only ad-hoc CLI wrappers. Installed binaries under /app/bin must come from make -C /app/environment PREFIX=/app install. Hand-written /app/output files are not enough; the normal unit ship path must regenerate the artifacts.
+An accepted ongoing White action atomically includes Black's reply in its
+completed response. If the position becomes unrecoverable, use
+`/app/arena resign` instead of allowing the session to expire. A reported win,
+loss, draw, or resignation is terminal: issue no further arena commands and end
+your turn immediately.
