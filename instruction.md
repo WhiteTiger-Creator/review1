@@ -1,9 +1,5 @@
-The ridge-ui offline release is blocked. Release engineering cut npm over to a new internal mirror last week, and the airgapped build now stops before it can finish—the step that turns the checked-in monorepo into a build plan exits without producing a usable result. Everything needed for that step already lives under `/app/`.
+Implement `/app/src/main.cpp` and build it with `make` in `/app`. The resulting `/app/bin/hull4_facet_profile` reads a finite set of distinct integer points in four-dimensional affine space from standard input and writes the exact census defined in `/app/docs/contract.md`.
 
-Finish `/app/bin/repair-lock.js` so the command below writes `/app/output/build-plan.json` from the bundled inputs. Full behavior and output requirements are in `/app/docs/mirror_contract.md`.
+The input may be lower-dimensional or full-dimensional, with interior decoys and non-simplicial facets. Facets are complete exposed boundary point sets, not selected four-point witnesses. A facet's canonical primitive equation must vanish on every point listed for that facet and evaluate nonnegative on every input point; the first four listed points need not be affine-independent.
 
-```bash
-node /app/bin/repair-lock.js
-```
-
-Do not modify bundled inputs under `/app/`. The environment has no network access. Exit with code 0 after the output file is written successfully. Repeated runs on the same inputs must produce identical output bytes.
+Output the canonical hull and facet rows followed by all documented hashes. These certificates jointly cover carrier orientations, primitive normals, facet intersections, the complete face lattice, normal relations, and maximal flags. Use exact integer arithmetic, the specified ordering, one-based IDs, modulus 1000000007, and base 1000003. Lower-dimensional inputs with no rank-four facets retain the documented initial hash values. Write one final newline and no diagnostic output.
