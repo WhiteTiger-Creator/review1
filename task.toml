@@ -5,27 +5,31 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "scientific-computing"
-subcategories = ["api_integration"]
+subcategories = []
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["go"]
-tags = ["go", "sqlite", "hmac", "worldbank", "statistics"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 300
-
-[environment]
-allow_internet = false
-build_timeout_sec = 1800
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
-workdir = "/app"
-
-[agent]
-timeout_sec = 1800
+codebase_size = "large"
+languages = ["rust"]
+tags = [
+    "bridge-modal-calibration",
+    "eigenmode-pairing-analysis",
+    "bounded-stiffness-inversion",
+    "mac-objective-qualification"
+]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 360
 
 [verifier]
-timeout_sec = 450
+timeout_sec = 900.0
 
+[agent]
+timeout_sec = 1800.0
 
-# build-refresh v57
+[environment]
+build_timeout_sec = 600.0
+docker_flags = []
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+gpu_types = []
+allow_internet = false

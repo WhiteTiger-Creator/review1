@@ -1,0 +1,46 @@
+{
+  "format": "bridge-modal-model-v1",
+  "dofs": [
+    "A",
+    "B"
+  ],
+  "mass": [
+    [
+      1.0,
+      0.05
+    ],
+    [
+      0.05,
+      1.2
+    ]
+  ],
+  "fixed_stiffness": [
+    [
+      3.0,
+      -1.0
+    ],
+    [
+      -1.0,
+      2.5
+    ]
+  ],
+  "groups": [
+    {
+      "group_id": "g1",
+      "lower": 0.6,
+      "upper": 1.5,
+      "initial": 1.0,
+      "reference": 1.0,
+      "contribution": [
+        [
+          1.0,
+          -0.2
+        ],
+        [
+          -0.2,
+          0.8
+        ]
+      ]
+    }
+  ]
+}

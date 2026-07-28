@@ -1,18 +1,26 @@
 #!/bin/bash
-set -uo pipefail
+
 mkdir -p /logs/verifier
-echo 0 > /logs/verifier/reward.txt
+export SPANFORGE_ROOT=/opt/spanforge
 
-# Defense-in-depth (redundant with tests/conftest.py's session-scoped
-# fixture): unconditionally clear any pre-existing db/output artifacts
-# before the test run starts, in case this filesystem is reused across
-# sequential evaluation trials.
-rm -f /app/wb.db /app/wb.db-journal /app/wb.db-wal /app/wb.db-shm
-rm -rf /app/output
+# Install verifier-only dependencies here (not during image build).
+if [ ! -x /opt/verifier_venv/bin/pytest ]; then
+    python3 -m venv /opt/verifier_venv
+    /opt/verifier_venv/bin/pip install \
+        --no-index \
+        --find-links=/verifier-wheels \
+        --require-hashes \
+        --no-deps \
+        -r /opt/verifier-requirements.lock
+fi
 
-python3 -m pytest -o cache_dir=/tmp/pytest_cache --ctrf /logs/verifier/ctrf.json /tests/test_wb_tracker.py -rA 2>&1
-rc=$?
-if [ "$rc" -eq 0 ]; then
+export PATH="/opt/verifier_venv/bin:$PATH"
+
+cd /tests || exit 1
+
+pytest -rA /tests/test_outputs.py
+status=$?
+if [ "$status" -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt
