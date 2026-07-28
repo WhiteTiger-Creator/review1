@@ -1,0 +1,4 @@
+lamp_id	rack_pos	color	silence_group	location
+L3	75	ochre	SG3	CELL-3
+L1	15	amber	SG1	CELL-3
+L2	45	cyan	SG2	CELL-7

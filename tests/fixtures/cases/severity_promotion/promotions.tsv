@@ -1,0 +1,3 @@
+age_threshold	severity_from	severity_to
+20	LOW	MED
+25	LOW	HIGH

@@ -1,0 +1,3 @@
+flap_id	lamp_id	first_minute	last_minute	severity	raw_text	clock_id
+F2	L1	100	140	HIGH	power drop	CLK-A
+F1	L1	100	130	MED	power drop	CLK-A

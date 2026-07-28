@@ -1,0 +1,4 @@
+severity	color	priority	bell_name	tie_rule
+HIGH	amber	8	LOUD	-
+LOW	amber	1	SOFT	grace-lex
+MED	amber	1	HUSH	grace-lex

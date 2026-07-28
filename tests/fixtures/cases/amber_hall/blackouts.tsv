@@ -1,0 +1,5 @@
+zone_id	parent_id	rack_lo	rack_hi	masked
+ZROOT	-	1	5	0
+Z-A	ZROOT	10	30	0
+Z-B	ZROOT	40	60	0
+Z-C	ZROOT	70	90	1

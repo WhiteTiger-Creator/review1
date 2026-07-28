@@ -1,0 +1,2 @@
+flap_id	lamp_id	first_minute	last_minute	severity	raw_text	clock_id
+SF1	S1	40	60	MED	smoke ping	CLK-S
