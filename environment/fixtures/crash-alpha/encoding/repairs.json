@@ -1,0 +1,14 @@
+{
+  "products.title": [
+    {
+      "id": 3,
+      "bad_hex": "436166c3204772696e646572",
+      "good_utf8": "Café Grinder"
+    },
+    {
+      "id": 1,
+      "bad_hex": "4e4f542d5448452d414c5048412d5449544c45",
+      "good_utf8": "SHOULD_NOT_REPLACE_ALPHA"
+    }
+  ]
+}
