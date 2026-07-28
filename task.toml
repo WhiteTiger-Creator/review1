@@ -6,22 +6,30 @@ author_email = "anonymous"
 difficulty = "hard"
 category = "scientific-computing"
 subcategories = []
+tags = [
+  "scientific-computing",
+  "calorimeter",
+  "hv-pulser",
+  "pmt-gain",
+  "gls-covariance",
+  "pedestal-tracking",
+  "uncertainty-propagation",
+]
+languages = ["python"]
+codebase_size = "small"
 number_of_milestones = 0
-codebase_size = "minimal"
-languages = ["cpp"]
-tags = ["discrete-geometry", "convex-polytopes", "oriented-matroids", "face-lattice", "exact-determinants", "combinatorial-geometry"]
-expert_time_estimate_min = 720
-junior_time_estimate_min = 1500
-
-[verifier]
-timeout_sec = 1800.0
+expert_time_estimate_min = 300
+junior_time_estimate_min = 720
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 900
 
 [environment]
-build_timeout_sec = 600.0
+allow_internet = false
+build_timeout_sec = 720
 cpus = 2
 memory_mb = 4096
-storage_mb = 4096
-allow_internet = false
+storage_mb = 10240

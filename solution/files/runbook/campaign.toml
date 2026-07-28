@@ -1,0 +1,23 @@
+# Calibration profiles for the offline PMT waveform reduction.
+#
+# shards            PMW2 basenames resolved inside fixtures/; list order is
+#                   operator convenience only, merge priority is
+#                   (shard_index, basename).
+# reference_lane    optional; publishes gains relative to that lane.
+# shared_source_var optional; cov(g, r) from the shared pulser source.
+
+generation = 4
+
+[hv-raw-a]
+shards = ["night_m.pmw2", "night_z.pmw2", "night_a.pmw2"]
+
+[hv-norm-b]
+shards = ["night_a.pmw2", "night_m.pmw2", "night_z.pmw2"]
+reference_lane = 0
+shared_source_var = 0.00005
+
+[hv-interleave-c]
+shards = ["cross_b.pmw2", "cross_c.pmw2", "cross_a.pmw2"]
+
+[hv-neg-edge-d]
+shards = ["edge_a.pmw2", "edge_b.pmw2"]

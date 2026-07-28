@@ -6,12 +6,8 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-**/target/
-**/dist/
-**/build/
-**/.venv/
-**/venv/
-.env
-*.log
-solution/
-tests/
+**/.verifier-run/
+**/output/
+**/state/
+**/*.pmw1
+jobs/
