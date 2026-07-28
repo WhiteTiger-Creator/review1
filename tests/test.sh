@@ -1,31 +1,20 @@
-#!/bin/bash
-set -uo pipefail
-export PATH="/usr/local/go/bin:${PATH}"
+#!/usr/bin/env bash
+mkdir -p /logs/verifier
+echo 0 > /logs/verifier/reward.txt
+printf '%s\n' '{"version":"1.0.0","results":{"summary":{"tests":0,"passed":0,"failed":0,"pending":0,"skipped":0,"other":0}}}' > /logs/verifier/ctrf.json
 
 if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set."
-    mkdir -p /logs/verifier
-    echo 0 > /logs/verifier/reward.txt
-    exit 0
+echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile."
+exit 1
 fi
 
-mkdir -p /logs/verifier /app/run
-
-cd /app && go build -o /app/bin/nfs-acld ./cmd/nfs-acld 2>&1
-BUILD_RC=$?
-if [ "$BUILD_RC" -ne 0 ]; then
-    echo "Build failed with exit code $BUILD_RC"
-    echo 0 > /logs/verifier/reward.txt
-    exit 0
-fi
-
-/app/bin/nfs-acld /app/config/exports.json
-
-python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -v -rA
+set +e
+PYTHONPATH="${TEST_DIR:-/tests}/verifier-support${PYTHONPATH:+:$PYTHONPATH}" \
+  /opt/verifier-venv/bin/python -m pytest -rA -o cache_dir=/tmp/pytest_cache \
+  --ctrf /logs/verifier/ctrf.json "${TEST_DIR:-/tests}/test_outputs.py"
 rc=$?
-
 if [ "$rc" -eq 0 ]; then
-    echo 1 > /logs/verifier/reward.txt
+  echo 1 > /logs/verifier/reward.txt
 else
-    echo 0 > /logs/verifier/reward.txt
+  echo 0 > /logs/verifier/reward.txt
 fi

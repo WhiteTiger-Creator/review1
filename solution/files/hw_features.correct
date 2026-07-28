@@ -1,0 +1,58 @@
+"""Design matrix builder — quadratic columns, id-sorted, trunc, policy_epoch."""
+from __future__ import annotations
+
+import math
+
+
+def trunc(x, n):
+    p = 10 ** n
+    return math.trunc(x * p + (0.5 if x >= 0 else -0.5)) / p
+
+
+def base_x(ticks):
+    n = len(ticks)
+    m = sum(ticks) / n
+    mx = max(ticks)
+    var = sum((t - m) ** 2 for t in ticks) / n
+    return m, mx, math.sqrt(var)
+
+
+def expand_row(ticks, nd):
+    x1, x2, x3 = base_x([float(t) for t in ticks])
+    cols = [1.0, x1, x2, x3, x1 * x1, x2 * x2, x3 * x3]
+    return [trunc(c, nd) for c in cols]
+
+
+COL_NAMES = ["intercept", "mean", "max", "std", "mean_sq", "max_sq", "std_sq"]
+
+
+def build_design(traces, workbook):
+    nd = int(workbook["trunc_decimals"])
+    epoch = int(workbook["policy_epoch"])
+    rows = []
+    for t in traces:
+        rows.append({
+            "id": t["id"],
+            "cohort": t["cohort"],
+            "columns": expand_row(t["ticks"], nd),
+            "target_energy": float(t["target_energy"]),
+        })
+    rows.sort(key=lambda r: r["id"])
+    return {
+        "scheme": "hwml.design/v1",
+        "identity": workbook["identity"],
+        "column_names": COL_NAMES,
+        "rows": rows,
+        "policy_epoch": epoch,
+    }
+
+
+def build_vault(design, source_trace_count):
+    return {
+        "scheme": "hwml.vault/v1",
+        "identity": design["identity"],
+        "column_names": list(design["column_names"]),
+        "rows": list(design["rows"]),
+        "source_trace_count": int(source_trace_count),
+        "policy_epoch": int(design["policy_epoch"]),
+    }

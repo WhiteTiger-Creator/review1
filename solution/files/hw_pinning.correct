@@ -1,0 +1,26 @@
+"""Latch pin — SHA-256 of on-disk vault bytes + pin_seq reuse + policy_epoch."""
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+
+def vault_digest(vault_path):
+    return hashlib.sha256(Path(vault_path).read_bytes()).hexdigest()
+
+
+def build_pin(vault, vault_path, prior=None):
+    digest = vault_digest(vault_path)
+    if isinstance(prior, dict) and prior.get("vault_digest") == digest:
+        pin_seq = int(prior.get("pin_seq", 1))
+    else:
+        base = int(prior.get("pin_seq", 0)) if isinstance(prior, dict) else 0
+        pin_seq = base + 1
+    return {
+        "scheme": "hwml.pin/v1",
+        "vault_digest": digest,
+        "row_count": len(vault.get("rows", [])),
+        "identity": vault.get("identity"),
+        "pin_seq": pin_seq,
+        "policy_epoch": int(vault.get("policy_epoch", 0)),
+    }

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "scheme",
+    "identity",
+    "promoted",
+    "finished",
+    "mae",
+    "rmse",
+    "mae_ceiling",
+    "rmse_ceiling",
+    "feature_digest",
+    "weights_digest",
+    "scores_digest"
+  ],
+  "properties": {
+    "scheme": {
+      "const": "hwml.card/v1"
+    },
+    "promoted": {
+      "type": "boolean"
+    },
+    "finished": {
+      "type": "boolean"
+    },
+    "mae": {
+      "type": "number"
+    },
+    "rmse": {
+      "type": "number"
+    }
+  }
+}
