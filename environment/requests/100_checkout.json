@@ -1,0 +1,15 @@
+{
+  "sample_id": "100_checkout",
+  "merchant_id": "merchant_alpha",
+  "path": "/webhook/merchant_alpha",
+  "timestamp": "2026-07-26T11:59:20Z",
+  "nonce": "alpha-nonce-100",
+  "attempts": 2,
+  "body": {
+    "event": "checkout.completed",
+    "event_id": "evt-alpha-100",
+    "amount_cents": 3199,
+    "currency": "USD",
+    "customer_ref": "cust-4181"
+  }
+}

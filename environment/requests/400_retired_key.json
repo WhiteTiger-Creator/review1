@@ -1,0 +1,16 @@
+{
+  "sample_id": "400_retired_key",
+  "merchant_id": "merchant_alpha",
+  "path": "/webhook/merchant_alpha",
+  "timestamp": "2026-07-26T12:01:00Z",
+  "nonce": "alpha-nonce-400",
+  "attempts": 1,
+  "force_key_id": "vr_alpha_retired_2025_12",
+  "body": {
+    "event": "payout.updated",
+    "event_id": "evt-alpha-400",
+    "amount_cents": 4500,
+    "currency": "USD",
+    "payout_ref": "po-7782"
+  }
+}

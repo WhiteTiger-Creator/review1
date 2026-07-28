@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "api_base_url",
+    "replay_window_seconds",
+    "canonical_headers",
+    "supervision",
+    "evidence",
+    "outcomes"
+  ],
+  "properties": {
+    "schema_version": { "const": "vaultrelay-attestation/v1" },
+    "generated_at": {
+      "type": "string",
+      "pattern": "^2026-07-26T12:00:00Z$"
+    },
+    "api_base_url": {
+      "type": "string",
+      "pattern": "^http://127\\.0\\.0\\.1:[0-9]+$"
+    },
+    "replay_window_seconds": { "const": 300 },
+    "canonical_headers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        { "const": "(request-target)" },
+        { "const": "host" },
+        { "const": "x-vr-merchant" },
+        { "const": "x-vr-key-id" },
+        { "const": "x-vr-timestamp" },
+        { "const": "x-vr-nonce" },
+        { "const": "digest" }
+      ]
+    },
+    "supervision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "profile_port",
+        "port_source",
+        "health_probe_url",
+        "state_path"
+      ],
+      "properties": {
+        "profile_id": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+        "profile_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "port_source": { "enum": ["profile", "environment"] },
+        "health_probe_url": {
+          "type": "string",
+          "pattern": "^http://127\\.0\\.0\\.1:[0-9]+/healthz$"
+        },
+        "state_path": { "const": "/app/out/supervisor_state.json" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strace_path", "lsof_path", "keyring_sha256"],
+      "properties": {
+        "strace_path": { "const": "/app/out/evidence/signing.strace" },
+        "lsof_path": { "const": "/app/out/evidence/sockets.lsof" },
+        "keyring_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "outcomes": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sample_id",
+          "attempt",
+          "merchant_id",
+          "key_id",
+          "nonce",
+          "timestamp",
+          "status",
+          "http_status",
+          "reason",
+          "body_sha256_hex",
+          "digest_header",
+          "signature_input_sha256",
+          "response_id"
+        ],
+        "properties": {
+          "sample_id": { "type": "string", "pattern": "^[0-9]{3}_[a-z0-9_]+$" },
+          "attempt": { "type": "integer", "minimum": 1 },
+          "merchant_id": { "type": "string" },
+          "key_id": { "type": "string" },
+          "nonce": { "type": "string" },
+          "timestamp": { "type": "string", "pattern": "^2026-07-26T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+          "status": { "enum": ["accepted", "rejected", "replayed"] },
+          "http_status": { "type": "integer" },
+          "reason": { "type": "string" },
+          "body_sha256_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "digest_header": { "type": "string", "pattern": "^SHA-256=:[A-Za-z0-9+/]+=*:$" },
+          "signature_input_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "response_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" }
+        }
+      }
+    }
+  }
+}

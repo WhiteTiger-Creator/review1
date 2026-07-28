@@ -1,678 +1,345 @@
-"""Behavioral verifier for the ground-station kernel lockdown fortify gate."""
-
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
-import math
 import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
+import jsonschema
 import pytest
 
-COMMAND = Path("/app/kernel-fortify")
-CATALOG = Path("/app/config/sysctl-module-catalog.json")
-POLICY = Path("/app/control/policy.json")
-LEDGER = Path("/app/ground-canon/ground-lockdown-ledger-v1.json")
-SUMMARY = Path("/app/output/gate_summary.json")
+APP = Path("/app")
+REQUESTS = APP / "requests"
+OUT = APP / "out" / "attestation.json"
+STATE = APP / "out" / "supervisor_state.json"
+SCHEMA = APP / "api" / "attestation.schema.json"
+STATE_SCHEMA = APP / "api" / "supervisor_state.schema.json"
+KEYRING = APP / "keyring" / "hmac_keys.json"
+PROFILES = APP / "runtime" / "supervisor_profiles.json"
+RUNNER = APP / "run_vaultrelay_attestation.sh"
+SCRIPT = APP / "bin" / "vaultrelay_attest.pl"
+CANONICAL_HEADERS = [
+    "(request-target)",
+    "host",
+    "x-vr-merchant",
+    "x-vr-key-id",
+    "x-vr-timestamp",
+    "x-vr-nonce",
+    "digest",
+]
 
 
-def _ledger() -> dict:
-    return json.loads(LEDGER.read_text(encoding="utf-8"))
-
-
-def _contract() -> dict:
-    return _ledger()["catalog_contract"]
-
-
-def _write_json(path: Path, value: object) -> Path:
-    path.write_text(json.dumps(value), encoding="utf-8")
-    return path
-
-
-def _policy(**overrides: object) -> dict:
-    value = {
-        "version": 1,
-        "default_action": "LOCK_ACT_ERRNO",
-        "errno": 1,
-        "station_channel": "ground-v2",
-        "lockdown_modes": ["LOCKDOWN_CONFIDENTIALITY", "LOCKDOWN_INTEGRITY"],
-        "blocked_sysctls": [],
-        "allowed_bands": ["uplink", "telemetry", "ranging"],
-        "allow_feature_stacking": True,
-        "band_allowlist": ["band-alpha", "band-beta"],
-        "leak_score_ceiling": 40,
+@pytest.fixture(scope="session")
+def attestation() -> dict:
+    """Run the submitted operator entrypoint after adding a fresh specimen that static outputs cannot know."""
+    dynamic = {
+        "sample_id": "250_dynamic_alpha",
+        "merchant_id": "merchant_alpha",
+        "path": "/webhook/merchant_alpha",
+        "timestamp": "2026-07-26T12:03:30Z",
+        "nonce": "alpha-nonce-dynamic-250",
+        "attempts": 1,
+        "body": {
+            "event": "inventory.reserved",
+            "event_id": "evt-alpha-250",
+            "currency": "USD",
+            "amount_cents": 6421,
+            "metadata": {"lane": "green", "operator": "night-desk", "risk": 17},
+            "items": ["sku-19", "sku-42"],
+        },
     }
-    value.update(overrides)
-    return value
-
-
-def _manifest(**overrides: object) -> dict:
-    value = {
-        "station_id": "uplink-north",
-        "band_id": "uplink",
-        "band": "band-alpha",
-        "features": [],
-        "additional_sysctls": [],
-    }
-    value.update(overrides)
-    return value
-
-
-def _run_compile(
-    tmp_path: Path,
-    policy: dict | None = None,
-    manifest: dict | None = None,
-    *,
-    env: dict[str, str] | None = None,
-) -> tuple[subprocess.CompletedProcess[str], Path]:
-    policy_path = _write_json(tmp_path / "policy.json", policy or _policy())
-    manifest_path = _write_json(tmp_path / "manifest.json", manifest or _manifest())
-    output = tmp_path / "profile.json"
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--manifest",
-            str(manifest_path),
-            "--output",
-            str(output),
-            "--policy",
-            str(policy_path),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
+    (REQUESTS / "250_dynamic_alpha.json").write_text(
+        json.dumps(dynamic, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
     )
-    return result, output
+    (APP / "out").mkdir(exist_ok=True)
+    OUT.write_text('{"stale": true, "outcomes": ["must be replaced"]}\n', encoding="utf-8")
+    STATE.write_text('{"stale": true, "counts": {"total": 999}}\n', encoding="utf-8")
+
+    assert SCRIPT.exists(), "Perl attestation script is missing"
+    first_line = SCRIPT.read_text(encoding="utf-8", errors="ignore").splitlines()[0]
+    assert "perl" in first_line.lower(), "attestation entrypoint must be a Perl script"
+    assert RUNNER.exists(), "shell runner is missing"
 
-
-def _run_audit(
-    tmp_path: Path,
-    profile: Path,
-    trace_text: str,
-) -> tuple[subprocess.CompletedProcess[str], Path]:
-    trace = tmp_path / "trace.jsonl"
-    trace.write_text(trace_text, encoding="utf-8")
-    report = tmp_path / "report.json"
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "audit",
-            "--report",
-            str(report),
-            "--trace",
-            str(trace),
-            "--profile",
-            str(profile),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result, report
-
-
-def _severity(seq: int, sysctl: str) -> int:
-    return math.floor((len(sysctl) * 37 + seq * 11) / 5)
-
-
-def _fortify_not_fortified(seq: int, sysctl: str) -> int:
-    sev = _severity(seq, sysctl)
-    return math.floor((sev * 43 + seq * 17) / 4)
-
-
-def _fortify_leak(seq: int, sysctl: str, leak_score: int) -> int:
-    sev = _severity(seq, sysctl)
-    return math.floor((sev * 23 + leak_score + seq * 5) / 3)
-
-
-def _pressure(
-    violation_events: int, unique_denied: int, leak_violations: int, events_total: int
-) -> int:
-    return math.floor(
-        (violation_events * 100 + unique_denied * 31 + leak_violations * 13)
-        / max(events_total, 1)
-    )
-
-
-def _dump_indent2(obj: object) -> bytes:
-    """Ledger serialization: indent-2 JSON with ensure_ascii."""
-    return json.dumps(obj, indent=2, ensure_ascii=True).encode("utf-8")
-
-
-def _assert_profile_indent2(raw: bytes, profile: dict) -> None:
-    assert raw == _dump_indent2(profile) + b"\n"
-
-
-def _assert_report_indent2(raw: bytes, report: dict) -> None:
-    assert raw == _dump_indent2(report)
-
-
-def _assert_summary_indent2(raw: bytes, summary: dict) -> None:
-    assert raw == _dump_indent2(summary) + b"\x1c"
-
-
-def test_authoritative_ledger_overrides_decoy_documents():
-    """The lockdown ledger must declare itself authoritative and list every decoy path."""
-    ledger = _ledger()
-    assert ledger["authoritative"] is True
-    assert ledger["contains_precomputed_outputs"] is False
-    for decoy in ledger["override_decoy_documents"]:
-        assert Path(decoy).exists()
-
-
-def test_deployed_catalog_matches_revision_nine_security_contract():
-    """The live catalog must exactly expose the ledger revision-9 sysctl sets."""
-    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
-    contract = _contract()
-    assert list(catalog.keys()) == contract["top_level_key_order"]
-    assert catalog == {
-        "revision": contract["required_revision"],
-        "baseline": contract["baseline"],
-        "features": contract["features"],
-        "hard_deny": contract["immutable_floor"],
-    }
-    assert contract["required_revision"] == 9
-    assert catalog["hard_deny"] == [
-        "kernel.sysrq",
-        "kernel.core_uses_pid",
-        "net.ipv4.conf.all.accept_source_route",
-        "net.ipv4.conf.default.accept_source_route",
-    ]
-    assert "fs.protected_hardlinks" in catalog["features"]["leak-shield"]
-    assert "kernel.perf_event_paranoid" in catalog["features"]["ptrace-lock"]
-
-
-def test_live_policy_station_channel_matches_promotion_contract():
-    """The deployed policy must advertise the required ground-v2 station channel."""
-    policy = json.loads(POLICY.read_text(encoding="utf-8"))
-    assert policy["station_channel"] == _ledger()["policy_promotion"]["required_station_channel"]
-    assert policy["station_channel"] == "ground-v2"
-
-
-def test_compile_merges_deduplicates_blocks_and_sorts_sysctls(tmp_path: Path):
-    """Compilation must deterministically merge baseline, features, and additions."""
-    contract = _contract()
-    policy = _policy(blocked_sysctls=["kernel.perf_event_paranoid"])
-    manifest = _manifest(
-        features=["leak-shield", "ptrace-lock"],
-        additional_sysctls=["vm.mmap_min_addr", "kernel.kptr_restrict"],
-    )
-    result, output = _run_compile(tmp_path, policy, manifest)
-    assert result.returncode == 0, result.stderr
-    raw = output.read_bytes()
-    assert raw.endswith(b"\n")
-    assert not raw.endswith(b"\n\n")
-    profile = json.loads(raw.decode("utf-8"))
-    _assert_profile_indent2(raw, profile)
-    expected = sorted(
-        (
-            set(contract["baseline"])
-            | set(contract["features"]["leak-shield"])
-            | set(contract["features"]["ptrace-lock"])
-            | {"vm.mmap_min_addr"}
-        )
-        - {"kernel.perf_event_paranoid"}
-    )
-    assert list(profile.keys()) == _ledger()["profile.json"]["top_level_key_order_errno"]
-    assert profile["lockdownModes"] == ["LOCKDOWN_CONFIDENTIALITY", "LOCKDOWN_INTEGRITY"]
-    assert list(profile["sysctls"][0].keys()) == ["names", "action"]
-    assert profile["sysctls"][0]["names"] == expected
-    assert (tmp_path / "profile.json.station").read_text(encoding="utf-8") == "uplink-north"
-    stamped = json.loads((tmp_path / "profile.policy").read_text(encoding="utf-8"))
-    assert stamped == policy
-    assert (tmp_path / "profile.policy").read_bytes() == (
-        tmp_path / "policy.json"
-    ).read_bytes()
-
-
-def test_kill_action_profile_omits_errno_and_accepts_boundary_manifest(tmp_path: Path):
-    """A no-feature kill-action profile must omit errno and keep ledger key order."""
-    policy = _policy(default_action="LOCK_ACT_KILL")
-    del policy["errno"]
-    manifest = _manifest(station_id="abc", additional_sysctls=["z" * 64])
-    result, output = _run_compile(tmp_path, policy, manifest)
-    assert result.returncode == 0, result.stderr
-    profile = json.loads(output.read_text(encoding="utf-8"))
-    assert list(profile.keys()) == _ledger()["profile.json"]["top_level_key_order_kill"]
-    assert "defaultErrnoRet" not in profile
-
-
-@pytest.mark.parametrize("errno_value", [1, 255])
-def test_errno_action_accepts_inclusive_lock_errno_boundaries(
-    tmp_path: Path, errno_value: int
-):
-    """Errno values at both documented boundaries must survive compilation."""
-    result, output = _run_compile(tmp_path, _policy(errno=errno_value))
-    assert result.returncode == 0, result.stderr
-    assert json.loads(output.read_text(encoding="utf-8"))["defaultErrnoRet"] == errno_value
-
-
-@pytest.mark.parametrize("errno_value", [0, 256, 28.5, "28"])
-def test_errno_action_rejects_out_of_range_or_noninteger_values(
-    tmp_path: Path, errno_value: object
-):
-    """Out-of-range, fractional, and string errno values are schema failures."""
-    result, output = _run_compile(tmp_path, _policy(errno=errno_value))
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_unknown_feature_and_extra_document_fields_are_fatal(tmp_path: Path):
-    """Unknown capabilities and undeclared JSON keys must not be silently accepted."""
-    invalid_manifest = _manifest(features=["gpu-passthrough"])
-    invalid_manifest["notes"] = "not part of the contract"
-    result, output = _run_compile(tmp_path, manifest=invalid_manifest)
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_unknown_band_id_binding_is_schema_fatal(tmp_path: Path):
-    """A station band_id outside policy.allowed_bands must exit 65 without writing."""
-    result, output = _run_compile(tmp_path, manifest=_manifest(band_id="deep-space"))
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_unknown_band_allowlist_binding_is_schema_fatal(tmp_path: Path):
-    """A station band outside policy.band_allowlist must exit 65 without writing."""
-    result, output = _run_compile(tmp_path, manifest=_manifest(band="band-gamma"))
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_feature_stacking_disabled_rejects_multi_feature_manifest(tmp_path: Path):
-    """When allow_feature_stacking is false, more than one feature is schema-invalid."""
-    result, output = _run_compile(
-        tmp_path,
-        policy=_policy(allow_feature_stacking=False),
-        manifest=_manifest(features=["leak-shield", "ptrace-lock"]),
-    )
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_feature_exclusion_pair_leak_shield_and_module_seal_is_fatal(tmp_path: Path):
-    """Selecting both members of a ledger feature exclusion pair must exit 65."""
-    result, output = _run_compile(
-        tmp_path,
-        manifest=_manifest(features=["leak-shield", "module-seal"]),
-    )
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_immutable_floor_request_is_denied_without_replacing_output(tmp_path: Path):
-    """An explicit high-risk sysctl request must exit 77 and preserve prior output."""
-    output = tmp_path / "profile.json"
-    output.write_text('{"sentinel":"preserve"}', encoding="utf-8")
-    policy_path = _write_json(tmp_path / "policy.json", _policy())
-    manifest_path = _write_json(
-        tmp_path / "manifest.json", _manifest(additional_sysctls=["kernel.sysrq"])
-    )
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(policy_path),
-            "--manifest",
-            str(manifest_path),
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 77
-    assert json.loads(output.read_text(encoding="utf-8")) == {"sentinel": "preserve"}
-
-
-def test_compiler_enforces_floor_when_catalog_content_is_tampered(tmp_path: Path):
-    """Immutable-floor filtering must follow the ledger even if the catalog is rewritten."""
-    original = CATALOG.read_bytes()
-    catalog = json.loads(original)
-    catalog["baseline"].extend(["kernel.sysrq", "kernel.core_uses_pid"])
-    catalog["baseline"] = sorted(set(catalog["baseline"]))
-    catalog["hard_deny"] = [
-        name
-        for name in catalog["hard_deny"]
-        if name not in {"kernel.sysrq", "kernel.core_uses_pid"}
-    ]
-    try:
-        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
-        result, output = _run_compile(tmp_path)
-        assert result.returncode == 0, result.stderr
-        allowed = set(json.loads(output.read_text(encoding="utf-8"))["sysctls"][0]["names"])
-        assert allowed.isdisjoint(set(_contract()["immutable_floor"]))
-    finally:
-        CATALOG.write_bytes(original)
-
-
-def test_feature_sourced_floor_sysctls_are_silently_dropped(tmp_path: Path):
-    """Floor names injected through a tampered feature set must drop silently, not exit 77."""
-    original = CATALOG.read_bytes()
-    catalog = json.loads(original)
-    catalog["features"]["leak-shield"] = sorted(
-        set(catalog["features"]["leak-shield"])
-        | {"kernel.sysrq", "kernel.core_uses_pid"}
-    )
-    try:
-        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
-        result, output = _run_compile(
-            tmp_path, manifest=_manifest(features=["leak-shield"])
-        )
-        assert result.returncode == 0, result.stderr
-        allowed = set(json.loads(output.read_text(encoding="utf-8"))["sysctls"][0]["names"])
-        assert "kernel.sysrq" not in allowed
-        assert "kernel.core_uses_pid" not in allowed
-        assert "fs.protected_hardlinks" in allowed
-    finally:
-        CATALOG.write_bytes(original)
-
-
-def test_empty_and_malformed_compile_documents_exit_data_error(tmp_path: Path):
-    """Empty or syntactically malformed control documents must exit 65."""
-    policy = tmp_path / "empty-policy.json"
-    manifest = tmp_path / "bad-manifest.json"
-    output = tmp_path / "profile.json"
-    policy.write_text("", encoding="utf-8")
-    manifest.write_text("{", encoding="utf-8")
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(policy),
-            "--manifest",
-            str(manifest),
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 65
-    assert not output.exists()
-
-
-def test_usage_relative_paths_and_missing_inputs_have_distinct_exit_codes(tmp_path: Path):
-    """Unknown, relative, and repeated options exit 64; missing inputs exit 66."""
-    unknown = subprocess.run(
-        [str(COMMAND), "compile", "--unknown", "x"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    relative = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            "policy.json",
-            "--manifest",
-            "manifest.json",
-            "--output",
-            "profile.json",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    repeated = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(tmp_path / "one.json"),
-            "--policy",
-            str(tmp_path / "two.json"),
-            "--manifest",
-            str(tmp_path / "manifest.json"),
-            "--output",
-            str(tmp_path / "profile.json"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    missing = subprocess.run(
-        [
-            str(COMMAND),
-            "compile",
-            "--policy",
-            str(tmp_path / "absent.json"),
-            "--manifest",
-            str(tmp_path / "also-absent.json"),
-            "--output",
-            str(tmp_path / "profile.json"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert unknown.returncode == 64
-    assert relative.returncode == 64
-    assert repeated.returncode == 64
-    assert missing.returncode == 66
-
-
-def test_empty_trace_produces_passing_zero_count_report(tmp_path: Path):
-    """An empty JSON Lines trace is valid and must produce a zero-count pass."""
-    compile_result, profile = _run_compile(tmp_path)
-    assert compile_result.returncode == 0, compile_result.stderr
-    result, report = _run_audit(tmp_path, profile, "")
-    assert result.returncode == 0, result.stderr
-    payload = report.read_bytes()
-    assert not payload.endswith(b"\n")
-    body = json.loads(payload.decode("utf-8"))
-    _assert_report_indent2(payload, body)
-    assert list(body.keys()) == _ledger()["audit_report"]["top_level_key_order"]
-    assert body == _ledger()["audit_report"]["empty_trace"]
-    summary_raw = SUMMARY.read_bytes()
-    assert summary_raw.endswith(b"\x1c")
-    summary = json.loads(summary_raw[:-1].decode("utf-8"))
-    _assert_summary_indent2(summary_raw, summary)
-    assert list(summary.keys()) == _ledger()["gate_summary.json"]["top_level_key_order"]
-    assert summary["catalog_revision"] == json.loads(CATALOG.read_text(encoding="utf-8"))[
-        "revision"
-    ]
-    assert summary["station_id"] == "uplink-north"
-    assert summary["pressure_index"] == 0
-    assert summary["unique_denied"] == 0
-    assert summary["fortify_peak"] == 0
-    assert summary["leak_violations"] == 0
-
-
-def test_audit_precedence_sorts_mixed_not_fortified_and_leak_violations(
-    tmp_path: Path,
-):
-    """Audit must apply reason precedence, per-reason fortify math, and four-key sort."""
-    compile_result, profile = _run_compile(
-        tmp_path,
-        policy=_policy(leak_score_ceiling=50),
-        manifest=_manifest(features=["leak-shield"]),
-    )
-    assert compile_result.returncode == 0, compile_result.stderr
-    trace = (
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n'
-        '{"seq":2,"sysctl":"kernel.sysrq","leak_score":900}\n'
-        '{"seq":3,"sysctl":"fs.protected_hardlinks","leak_score":80}\n'
-        '{"seq":4,"sysctl":"kernel.core_uses_pid","leak_score":0}\n'
-        '{"seq":5,"sysctl":"fs.protected_hardlinks","leak_score":120}'
-    )
-    result, report = _run_audit(tmp_path, profile, trace)
-    assert result.returncode == 3
-    payload = report.read_bytes()
-    body = json.loads(payload.decode("utf-8"))
-    _assert_report_indent2(payload, body)
-    expected_rows = [
-        {
-            "seq": 2,
-            "sysctl": "kernel.sysrq",
-            "reason": "not_fortified",
-            "severity_weight": _severity(2, "kernel.sysrq"),
-            "fortify_score": _fortify_not_fortified(2, "kernel.sysrq"),
-            "leak_score": 900,
-        },
-        {
-            "seq": 4,
-            "sysctl": "kernel.core_uses_pid",
-            "reason": "not_fortified",
-            "severity_weight": _severity(4, "kernel.core_uses_pid"),
-            "fortify_score": _fortify_not_fortified(4, "kernel.core_uses_pid"),
-            "leak_score": 0,
-        },
-        {
-            "seq": 3,
-            "sysctl": "fs.protected_hardlinks",
-            "reason": "leak_exceeded",
-            "severity_weight": _severity(3, "fs.protected_hardlinks"),
-            "fortify_score": _fortify_leak(3, "fs.protected_hardlinks", 80),
-            "leak_score": 80,
-        },
-        {
-            "seq": 5,
-            "sysctl": "fs.protected_hardlinks",
-            "reason": "leak_exceeded",
-            "severity_weight": _severity(5, "fs.protected_hardlinks"),
-            "fortify_score": _fortify_leak(5, "fs.protected_hardlinks", 120),
-            "leak_score": 120,
-        },
-    ]
-    expected_rows.sort(
-        key=lambda row: (
-            -row["fortify_score"],
-            row["reason"],
-            row["sysctl"],
-            row["seq"],
-        )
-    )
-    assert body["status"] == "violation"
-    assert body["events_total"] == 5
-    assert body["allowed_events"] == 1
-    assert body["violation_events"] == 4
-    assert body["pressure_index"] == _pressure(4, 3, 2, 5)
-    assert body["violations"] == expected_rows
-    assert list(body["violations"][0].keys()) == _ledger()["audit_report"]["violation_key_order"]
-    summary_raw = SUMMARY.read_bytes()
-    summary = json.loads(summary_raw[:-1].decode("utf-8"))
-    _assert_summary_indent2(summary_raw, summary)
-    assert summary["catalog_revision"] == json.loads(CATALOG.read_text(encoding="utf-8"))[
-        "revision"
-    ]
-    assert summary["station_id"] == "uplink-north"
-    assert summary["unique_denied"] == 3
-    assert summary["leak_violations"] == 2
-    assert summary["fortify_peak"] == max(row["fortify_score"] for row in expected_rows)
-    assert summary["pressure_index"] == body["pressure_index"]
-
-
-def test_allowlisted_sysctl_at_exact_leak_ceiling_is_not_a_violation(
-    tmp_path: Path,
-):
-    """leak_score equal to leak_score_ceiling must pass; only values above the ceiling violate."""
-    compile_result, profile = _run_compile(
-        tmp_path,
-        policy=_policy(leak_score_ceiling=100),
-        manifest=_manifest(features=["leak-shield"]),
-    )
-    assert compile_result.returncode == 0, compile_result.stderr
-    trace = (
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n'
-        '{"seq":2,"sysctl":"fs.protected_hardlinks","leak_score":100}'
-    )
-    result, report = _run_audit(tmp_path, profile, trace)
-    assert result.returncode == 0, result.stderr
-    body = json.loads(report.read_text(encoding="utf-8"))
-    assert body["violation_events"] == 0
-    assert body["violations"] == []
-
-
-@pytest.mark.parametrize(
-    "trace_text",
-    [
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n\n{"seq":2,"sysctl":"kernel.dmesg_restrict","leak_score":0}',
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0}\n{"seq":3,"sysctl":"kernel.dmesg_restrict","leak_score":0}',
-        '{"seq":1,"sysctl":"kernel.kptr_restrict","leak_score":0,"pid":9}',
-        '{"seq":1,"sysctl":"kernel.kptr_restrict"}',
-        '{"seq":1,"sysctl":',
-    ],
-)
-def test_malformed_trace_never_replaces_existing_report(
-    tmp_path: Path, trace_text: str
-):
-    """Blank, noncontiguous, extra-field, missing leak, and broken traces are fatal."""
-    compile_result, profile = _run_compile(tmp_path)
-    assert compile_result.returncode == 0, compile_result.stderr
-    report = tmp_path / "report.json"
-    report.write_text('{"sentinel":"preserve"}', encoding="utf-8")
-    before_summary = SUMMARY.read_bytes() if SUMMARY.exists() else None
-    trace = tmp_path / "trace.jsonl"
-    trace.write_text(trace_text, encoding="utf-8")
-    result = subprocess.run(
-        [
-            str(COMMAND),
-            "audit",
-            "--profile",
-            str(profile),
-            "--trace",
-            str(trace),
-            "--report",
-            str(report),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 65
-    assert json.loads(report.read_text(encoding="utf-8")) == {"sentinel": "preserve"}
-    if before_summary is not None:
-        assert SUMMARY.read_bytes() == before_summary
-
-
-def test_catalog_feature_mutation_forces_profile_update(tmp_path: Path):
-    """Mutating a catalog feature membership must change the compiled allowlist."""
-    original = CATALOG.read_bytes()
-    try:
-        first, profile = _run_compile(
-            tmp_path, manifest=_manifest(features=["leak-shield"])
-        )
-        assert first.returncode == 0, first.stderr
-        before = json.loads(profile.read_text(encoding="utf-8"))["sysctls"][0]["names"]
-
-        catalog = json.loads(original)
-        catalog["features"]["leak-shield"] = sorted(
-            set(catalog["features"]["leak-shield"]) | {"net.core.bpf_jit_harden"}
-        )
-        CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
-
-        second, profile = _run_compile(
-            tmp_path, manifest=_manifest(features=["leak-shield"])
-        )
-        assert second.returncode == 0, second.stderr
-        after = json.loads(profile.read_text(encoding="utf-8"))["sysctls"][0]["names"]
-        assert after != before
-        assert "net.core.bpf_jit_harden" in after
-    finally:
-        CATALOG.write_bytes(original)
-
-
-def test_runtime_succeeds_when_python_commands_are_blocked(tmp_path: Path):
-    """Profile compilation must use shell utilities and never invoke Python."""
-    fake_bin = tmp_path / "blocked-python"
-    fake_bin.mkdir()
-    blocker = "#!/bin/sh\nexit 99\n"
-    for name in ("python", "python3", "pypy", "pypy3"):
-        executable = fake_bin / name
-        executable.write_text(blocker, encoding="utf-8")
-        executable.chmod(0o755)
     env = os.environ.copy()
-    env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    result, output = _run_compile(tmp_path, env=env)
-    assert result.returncode == 0, result.stderr
-    assert output.exists()
+    env["VAULTRELAY_PORT"] = "8089"
+    completed = subprocess.run(
+        ["bash", str(RUNNER)],
+        cwd=APP,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    assert OUT.exists(), "operator entrypoint did not create /app/out/attestation.json"
+    assert STATE.exists(), "operator entrypoint did not create /app/out/supervisor_state.json"
+    return json.loads(OUT.read_text(encoding="utf-8"))
+
+
+def _keyring() -> dict:
+    return json.loads(KEYRING.read_text(encoding="utf-8"))
+
+
+def _profiles() -> dict:
+    return json.loads(PROFILES.read_text(encoding="utf-8"))
+
+
+def _canonical_body(body: object) -> bytes:
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _select_key(spec: dict, ring: dict) -> dict:
+    if "force_key_id" in spec:
+        return next(k for k in ring["keys"] if k["key_id"] == spec["force_key_id"])
+    candidates = [
+        k
+        for k in ring["keys"]
+        if k["merchant_id"] == spec["merchant_id"]
+        and k["purpose"] == "webhook-signing"
+        and k["status"] == "active"
+        and k["not_before"] <= spec["timestamp"] < k["not_after"]
+    ]
+    assert candidates, spec["sample_id"]
+    return min(candidates, key=lambda k: (-k["priority"], k["key_id"]))
+
+
+def _expected_for_spec(spec: dict, attempt: int, base_url: str, ring: dict) -> dict:
+    host = base_url.removeprefix("http://")
+    body = _canonical_body(spec["body"])
+    digest_header = "SHA-256=:" + base64.b64encode(hashlib.sha256(body).digest()).decode() + ":"
+    key = _select_key(spec, ring)
+    canonical = "\n".join(
+        [
+            f"(request-target): post {spec['path']}",
+            f"host: {host}",
+            f"x-vr-merchant: {spec['merchant_id']}",
+            f"x-vr-key-id: {key['key_id']}",
+            f"x-vr-timestamp: {spec['timestamp']}",
+            f"x-vr-nonce: {spec['nonce']}",
+            f"digest: {digest_header}",
+        ]
+    )
+    secret = base64.b64decode(key["secret_b64"])
+    signature = base64.b64encode(hmac.new(secret, canonical.encode(), hashlib.sha256).digest()).decode()
+    assert signature, "independent keyed header derivation failed"
+    return {
+        "sample_id": spec["sample_id"],
+        "attempt": attempt,
+        "merchant_id": spec["merchant_id"],
+        "key_id": key["key_id"],
+        "nonce": spec["nonce"],
+        "timestamp": spec["timestamp"],
+        "body_sha256_hex": hashlib.sha256(body).hexdigest(),
+        "digest_header": digest_header,
+        "signature_input_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+    }
+
+
+def _outcome_map(attestation: dict) -> dict[tuple[str, int], dict]:
+    return {(item["sample_id"], item["attempt"]): item for item in attestation["outcomes"]}
+
+
+def test_attestation_matches_visible_schema(attestation: dict) -> None:
+    """The final JSON follows the supplied JSON contract and fixed public run fields."""
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    jsonschema.validate(attestation, schema)
+    assert attestation["canonical_headers"] == CANONICAL_HEADERS
+    assert attestation["generated_at"] == "2026-07-26T12:00:00Z"
+    assert attestation["replay_window_seconds"] == 300
+    assert attestation["evidence"]["keyring_sha256"] == hashlib.sha256(KEYRING.read_bytes()).hexdigest()
+    assert attestation["supervision"]["profile_id"] == _profiles()["current_profile"]
+    assert attestation["supervision"]["profile_port"] == 8088
+    assert attestation["supervision"]["port_source"] == "environment"
+    assert attestation["supervision"]["health_probe_url"] == "http://127.0.0.1:8089/healthz"
+    assert attestation["supervision"]["state_path"] == str(STATE)
+
+
+def test_all_specimens_are_submitted_in_deterministic_order(attestation: dict) -> None:
+    """Every request specimen, including verifier-added input, appears once per requested attempt."""
+    expected_pairs = []
+    for request_file in sorted(REQUESTS.glob("*.json")):
+        spec = json.loads(request_file.read_text(encoding="utf-8"))
+        for attempt in range(1, spec.get("attempts", 1) + 1):
+            expected_pairs.append((spec["sample_id"], attempt))
+    actual_pairs = [(item["sample_id"], item["attempt"]) for item in attestation["outcomes"]]
+    assert actual_pairs == sorted(expected_pairs, key=lambda item: (item[0], item[1]))
+    assert ("250_dynamic_alpha", 1) in actual_pairs
+
+
+def test_digest_key_and_signature_input_are_independently_derived(attestation: dict) -> None:
+    """Verifier recomputes body digests, selected keys, and canonical-string hashes from run inputs."""
+    ring = _keyring()
+    outcomes = _outcome_map(attestation)
+    for request_file in REQUESTS.glob("*.json"):
+        spec = json.loads(request_file.read_text(encoding="utf-8"))
+        for attempt in range(1, spec.get("attempts", 1) + 1):
+            expected = _expected_for_spec(spec, attempt, attestation["api_base_url"], ring)
+            actual = outcomes[(spec["sample_id"], attempt)]
+            for key, value in expected.items():
+                assert actual[key] == value
+
+
+def test_listener_decisions_cover_accept_reject_and_replay(attestation: dict) -> None:
+    """The live Flask listener decisions distinguish successful admission, stale timestamp failure, retired key failure, and nonce replay."""
+    outcomes = _outcome_map(attestation)
+    assert outcomes[("100_checkout", 1)]["status"] == "accepted"
+    assert outcomes[("100_checkout", 1)]["reason"] == "accepted"
+    assert outcomes[("100_checkout", 1)]["http_status"] == 200
+    assert outcomes[("100_checkout", 2)]["status"] == "replayed"
+    assert outcomes[("100_checkout", 2)]["reason"] == "replay_nonce"
+    assert outcomes[("100_checkout", 2)]["http_status"] == 401
+    assert outcomes[("200_beta_capture", 1)]["status"] == "accepted"
+    assert outcomes[("250_dynamic_alpha", 1)]["status"] == "accepted"
+    assert outcomes[("300_stale_alpha", 1)]["status"] == "rejected"
+    assert outcomes[("300_stale_alpha", 1)]["reason"] == "stale_timestamp"
+    assert outcomes[("400_retired_key", 1)]["status"] == "rejected"
+    assert outcomes[("400_retired_key", 1)]["reason"] == "inactive_key"
+
+
+def test_response_ids_are_real_listener_values(attestation: dict) -> None:
+    """Response identifiers match the listener's deterministic derivation for each submitted attempt."""
+    outcomes = _outcome_map(attestation)
+    for request_file in REQUESTS.glob("*.json"):
+        spec = json.loads(request_file.read_text(encoding="utf-8"))
+        body = _canonical_body(spec["body"])
+        for attempt in range(1, spec.get("attempts", 1) + 1):
+            outcome = outcomes[(spec["sample_id"], attempt)]
+            expected = hashlib.sha256(
+                body + spec["nonce"].encode() + outcome["reason"].encode()
+            ).hexdigest()[:16]
+            assert outcome["response_id"] == expected
+
+
+def test_strace_and_lsof_evidence_show_keyring_and_loopback_socket(attestation: dict) -> None:
+    """Evidence files prove the Perl run opened the keyring and contacted the local Flask port."""
+    evidence = attestation["evidence"]
+    strace_path = Path(evidence["strace_path"])
+    lsof_path = Path(evidence["lsof_path"])
+    assert strace_path.exists()
+    assert lsof_path.exists()
+    strace_text = strace_path.read_text(encoding="utf-8", errors="ignore")
+    lsof_text = lsof_path.read_text(encoding="utf-8", errors="ignore")
+    port = attestation["api_base_url"].rsplit(":", 1)[1]
+    assert "/app/keyring/hmac_keys.json" in strace_text
+    assert re.search(r"execve\([^\n]*perl", strace_text), "strace should capture the Perl process"
+    assert "TCP" in lsof_text
+    assert f"127.0.0.1:{port}" in lsof_text or f"localhost:{port}" in lsof_text
+
+
+def test_supervisor_state_matches_current_run(attestation: dict) -> None:
+    """The separate supervisor state records the selected profile, evidence, and live outcome counts."""
+    state = json.loads(STATE.read_text(encoding="utf-8"))
+    state_schema = json.loads(STATE_SCHEMA.read_text(encoding="utf-8"))
+    jsonschema.validate(state, state_schema)
+    status_counts = {
+        "accepted": sum(1 for item in attestation["outcomes"] if item["status"] == "accepted"),
+        "rejected": sum(1 for item in attestation["outcomes"] if item["status"] == "rejected"),
+        "replayed": sum(1 for item in attestation["outcomes"] if item["status"] == "replayed"),
+        "total": len(attestation["outcomes"]),
+    }
+    assert state["selected_profile"] == attestation["supervision"]["profile_id"]
+    assert state["profile_port"] == attestation["supervision"]["profile_port"]
+    assert state["port_source"] == attestation["supervision"]["port_source"]
+    assert state["api_base_url"] == attestation["api_base_url"]
+    assert state["health_probe_url"] == attestation["supervision"]["health_probe_url"]
+    assert state["evidence"] == attestation["evidence"]
+    assert state["counts"] == status_counts
+    assert isinstance(state["listener_pid"], int) and state["listener_pid"] > 1
+
+
+def test_profile_config_is_live_authority_when_port_is_not_overridden(attestation: dict) -> None:
+    """A mutated current profile is honored when VAULTRELAY_PORT is absent, then the original state is restored."""
+    original_profiles = PROFILES.read_text(encoding="utf-8")
+    config = json.loads(original_profiles)
+    config["current_profile"] = "verifier-shadow"
+    config["profiles"]["verifier-shadow"] = {
+        "bind_host": "127.0.0.1",
+        "port": 8094,
+        "health_path": "/healthz",
+        "keyring_path": "/app/keyring/hmac_keys.json",
+        "request_glob": "/app/requests/*.json",
+    }
+    try:
+        PROFILES.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        env = os.environ.copy()
+        env.pop("VAULTRELAY_PORT", None)
+        completed = subprocess.run(
+            ["bash", str(RUNNER)],
+            cwd=APP,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr + completed.stdout
+        shadow = json.loads(OUT.read_text(encoding="utf-8"))
+        shadow_state = json.loads(STATE.read_text(encoding="utf-8"))
+        assert shadow["api_base_url"] == "http://127.0.0.1:8094"
+        assert shadow["supervision"]["profile_id"] == "verifier-shadow"
+        assert shadow["supervision"]["profile_port"] == 8094
+        assert shadow["supervision"]["port_source"] == "profile"
+        assert shadow["supervision"]["health_probe_url"] == "http://127.0.0.1:8094/healthz"
+        assert shadow_state["selected_profile"] == "verifier-shadow"
+        assert shadow_state["port_source"] == "profile"
+        assert shadow_state["counts"]["total"] == len(shadow["outcomes"])
+    finally:
+        PROFILES.write_text(original_profiles, encoding="utf-8")
+        completed = subprocess.run(
+            ["bash", str(RUNNER)],
+            cwd=APP,
+            env={**os.environ, "VAULTRELAY_PORT": "8089"},
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr + completed.stdout
+        restored = json.loads(OUT.read_text(encoding="utf-8"))
+        assert restored == attestation
+
+
+def test_attestation_does_not_disclose_decoded_key_material(attestation: dict) -> None:
+    """The report can identify keys and fingerprints without leaking decoded key material."""
+    rendered = json.dumps(attestation, sort_keys=True)
+    for item in _keyring()["keys"]:
+        decoded = base64.b64decode(item["secret_b64"]).decode()
+        assert decoded not in rendered
+
+
+def test_rerun_replaces_outputs_and_preserves_current_state(attestation: dict) -> None:
+    """A second run replaces stale artifacts and produces the same current attestation for the same inputs."""
+    first = json.loads(json.dumps(attestation, sort_keys=True))
+    stale_trace = Path(first["evidence"]["strace_path"])
+    stale_trace.write_text("stale trace that must disappear\n", encoding="utf-8")
+    completed = subprocess.run(
+        ["bash", str(RUNNER)],
+        cwd=APP,
+        env={**os.environ, "VAULTRELAY_PORT": "8089"},
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    second = json.loads(OUT.read_text(encoding="utf-8"))
+    assert second == first
+    assert "stale trace that must disappear" not in stale_trace.read_text(
+        encoding="utf-8", errors="ignore"
+    )
+
+
+def test_operator_run_is_not_a_static_output_copy(attestation: dict) -> None:
+    """The generated attestation reflects the verifier-created specimen and not only the shipped examples."""
+    dynamic = _outcome_map(attestation)[("250_dynamic_alpha", 1)]
+    assert dynamic["merchant_id"] == "merchant_alpha"
+    assert dynamic["nonce"] == "alpha-nonce-dynamic-250"
+    assert dynamic["status"] == "accepted"
+    assert shutil.which("perl") is not None

@@ -1,0 +1,15 @@
+{
+  "sample_id": "200_beta_capture",
+  "merchant_id": "merchant_beta",
+  "path": "/webhook/merchant_beta",
+  "timestamp": "2026-07-26T12:02:10Z",
+  "nonce": "beta-nonce-200",
+  "attempts": 1,
+  "body": {
+    "event": "capture.settled",
+    "event_id": "evt-beta-200",
+    "amount_cents": 8800,
+    "currency": "USD",
+    "batch": "b7"
+  }
+}
