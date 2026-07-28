@@ -1,8 +1,0 @@
-{
-  "identity": "hallwarden-latch-polyols-v1",
-  "mape_ceiling": 0.35,
-  "r2_floor": 0.5,
-  "trunc_decimals": 6,
-  "traces_path": "/app/fixtures/labeled_traces.jsonl",
-  "policy_epoch": 3
-}

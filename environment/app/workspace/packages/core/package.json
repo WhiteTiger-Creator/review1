@@ -1,0 +1,13 @@
+{
+  "name": "@ridge/core",
+  "version": "1.5.0",
+  "license": "MIT",
+  "dependencies": {
+    "debug": "^4.3.0",
+    "ms": "~2.1.0",
+    "left-pad": "^1.1.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  }
+}

@@ -1,34 +1,18 @@
-# Canonical Snorkel ECR Python 3.13 runtime.
-FROM --platform=linux/amd64 public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        ca-certificates \
-        tmux \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir \
-        pytest==9.0.3 \
-        pytest-json-ctrf==0.5.0
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383
 
 WORKDIR /app
 
-COPY docs /app/docs
-COPY fixtures /app/fixtures
-COPY latchml /app/latchml
-COPY featbank /app/featbank
-COPY metriclab /app/metriclab
-COPY sidecut /app/sidecut
-COPY decoy /app/decoy
-COPY schemas /app/schemas
-COPY binx /app/binx
-COPY scripts /app/scripts
-COPY verifier-fixtures /opt/verifier-fixtures
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3=3.11.2-1+b1 \
+        python3-pip=23.0.1+dfsg-1 \
+        ca-certificates=20230311+deb12u1 \
+        tmux=3.3a-3 \
+        asciinema=2.2.0-1 \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN chmod +x /app/binx/hwml /app/scripts/run-eval.sh \
-    && mkdir -p /app/state /app/plaque
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install --break-system-packages --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.txt
 
-ENV PATH="/opt/verifier-venv/bin:/app/binx:${PATH}"
-ENV PYTHONPATH="/app"
+COPY app/ /app/
+RUN mkdir -p /app/output

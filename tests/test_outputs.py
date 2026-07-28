@@ -1,786 +1,760 @@
-"""Hallwarden latch poly-OLS verifier — vault/forecast/emit seal + pass-chain.
-PROBE_MARKERS: snapshot load emit trust persistence replay sequence idempotent
-"""
-from __future__ import annotations
-
 import hashlib
 import json
-import os
-import shutil
 import subprocess
 from pathlib import Path
 
-from hwml_ref import (
-    chain_digest,
-    load_workbook,
-    reference_fit_commit,
-    reference_pass_chain_row,
-    reference_pin,
-    reference_plaque,
-    reference_run,
-    reference_seal,
-    reference_trust,
-    reference_witness_row,
-    stage_fingerprint,
-)
+APP = Path('/app')
+OUT = APP / 'output' / 'build-plan.json'
+CMD = ['node', '/app/bin/repair-lock.js']
 
-APP = Path("/app")
-STATE = APP / "state"
-PLAQUE = APP / "plaque"
-WITNESS = STATE / "emit_witness.jsonl"
-FIX = APP / "fixtures"
-DRIVER = Path("/app/binx/hwml")
+BASE_POLICY = {
+    'nodeVersion': '20.11.1',
+    'buildHost': 'linux',
+    'includeDevDependencies': False,
+    'includeOptionalDependencies': False,
+    'preferStable': True,
+    'licenseAllowlist': ['MIT'],
+    'blockedPackages': [],
+    'expectedIntegrityHost': 'mirror.local',
+    'overrides': {},
+    'resolutions': {},
+    'patches': {},
+}
 
 
-def wipe_outputs() -> None:
-    if STATE.exists():
-        shutil.rmtree(STATE)
-    if PLAQUE.exists():
-        shutil.rmtree(PLAQUE)
-    STATE.mkdir(parents=True)
-    PLAQUE.mkdir(parents=True)
-
-
-def drive(*, workbook=None, traces=None, mode: str | None = None) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env["PYTHONPATH"] = "/app"
-    if workbook is not None:
-        env["HWML_WORKBOOK"] = str(workbook)
-    else:
-        env.pop("HWML_WORKBOOK", None)
-    if traces is not None:
-        env["HWML_TRACES"] = str(traces)
-    else:
-        env.pop("HWML_TRACES", None)
-    cmd = [str(DRIVER)]
-    if mode:
-        cmd.append(mode)
-    else:
-        cmd.append("eval")
-    return subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
-
-
-def read_json(path: Path):
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def test_hwml9_feature_training_inference_eval_artifacts():
-    """Full training/inference eval writes /app/state feature artifacts and plaque."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    assert Path("/app/state/design_matrix.json").is_file()
-    assert Path("/app/state/design_vault.json").is_file()
-    assert Path("/app/state/latch_pin.json").is_file()
-    assert Path("/app/state/beta_hat.json").is_file()
-    assert Path("/app/state/fit_commit.json").is_file()
-    assert Path("/app/state/beta_latch_seal.json").is_file()
-    assert Path("/app/state/forecast_tape.json").is_file()
-    assert Path("/app/state/emit_trust.json").is_file()
-    assert Path("/app/state/run_log.jsonl").is_file()
-    assert Path("/app/state/pass_chain.jsonl").is_file()
-    assert Path("/app/plaque/promotion_plaque.json").is_file()
-    trust = json.loads((STATE / "emit_trust.json").read_text(encoding="utf-8"))
-    assert trust["scheme"] == "hwml.trust/v1"
-    assert len(trust["vault_digest"]) == 64
-    assert len(trust["seal_digest"]) == 64
-
-
-def test_hwml9_feature_design_matrix_agrees_refml():
-    """Quadratic design columns agree with independent reference."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    assert read_json(STATE / "design_matrix.json")["rows"] == exp["design"]["rows"]
-    assert read_json(STATE / "design_matrix.json")["column_names"] == exp["design"]["column_names"]
-    assert int(read_json(STATE / "design_matrix.json")["policy_epoch"]) == int(exp["workbook"]["policy_epoch"])
-
-
-def test_hwml9_vault_mirrors_design_rows():
-    """Vault rows mirror design_matrix rows after id sort."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    d = read_json(STATE / "design_matrix.json")
-    v = read_json(STATE / "design_vault.json")
-    assert v["scheme"] == "hwml.vault/v1"
-    assert v["rows"] == d["rows"]
-    assert v["column_names"] == d["column_names"]
-    assert v["source_trace_count"] >= 1
-    assert int(v["policy_epoch"]) == int(d["policy_epoch"])
-
-
-def test_hwml9_vault_latch_pin_binds_on_disk_vault():
-    """Attest scheme, digest, and row_count match the on-disk design vault."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    vault = read_json(STATE / "design_vault.json")
-    latch_pin = read_json(STATE / "latch_pin.json")
-    exp = reference_pin(vault, STATE / "design_vault.json")
-    assert latch_pin["scheme"] == "hwml.pin/v1"
-    assert latch_pin["vault_digest"] == exp["vault_digest"]
-    assert latch_pin["vault_digest"] == sha(STATE / "design_vault.json")
-    assert latch_pin["row_count"] == len(vault["rows"])
-    assert int(latch_pin["pin_seq"]) >= 1
-    assert int(latch_pin["policy_epoch"]) == int(vault["policy_epoch"])
-
-
-def test_hwml9_beta_latch_seal_binds():
-    """Beta-latch seal binds beta/pin/vault digests and policy_epoch."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    pin = read_json(STATE / "latch_pin.json")
-    wb = load_workbook(FIX / "eval_workbook.json")
-    got = read_json(STATE / "beta_latch_seal.json")
-    want = reference_seal(wb, STATE / "design_vault.json", STATE / "latch_pin.json", STATE / "beta_hat.json", pin)
-    assert got == want
-    assert got["scheme"] == "hwml.seal/v1"
-
-
-def test_hwml9_model_training_beta_agrees_refml():
-    """Learning-cohort OLS beta_hat agrees with independent reference."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    assert read_json(STATE / "beta_hat.json")["values"] == exp["beta"]["values"]
-    assert len(read_json(STATE / "beta_hat.json")["values"]) == 7
-
-
-def test_hwml9_inference_metric_mape_r2_agree_refml():
-    """MAPE and R2 agree with independent forecast metrics."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    got = read_json(STATE / "forecast_tape.json")
-    assert got["mape"] == exp["forecast"]["mape"]
-    assert got["r2"] == exp["forecast"]["r2"]
-    assert got["metrics_pass"] is True
-
-
-def test_hwml9_model_eval_promoted_on_default_bundle():
-    """Default specimen bundle promotes under MAPE/R2 dual gate."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    assert read_json(STATE / "forecast_tape.json")["metrics_pass"] is True
-    assert read_json(PLAQUE / "promotion_plaque.json")["promoted"] is True
-
-
-def test_hwml9_reserved_ids_only():
-    """Forecast rows are reserved cohort ids only."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    design = read_json(STATE / "design_matrix.json")
-    forecast = read_json(STATE / "forecast_tape.json")
-    reserved = {r["id"] for r in design["rows"] if r["cohort"] == "reserved"}
-    assert {r["id"] for r in forecast["rows"]} == reserved
-
-
-def test_hwml9_rows_sorted_by_id():
-    """Design and vault rows are ascending by specimen id."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    for name in ("design_matrix.json", "design_vault.json"):
-        ids = [r["id"] for r in read_json(STATE / name)["rows"]]
-        assert ids == sorted(ids)
-
-
-def test_hwml9_fit_commit_pins_vault():
-    """Fit commit vault_digest and beta_digest bind on-disk bytes."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    c = read_json(STATE / "fit_commit.json")
-    assert c["vault_digest"] == sha(STATE / "design_vault.json")
-    assert c["beta_digest"] == sha(STATE / "beta_hat.json")
-    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    assert c["learning_ids"] == exp["learning_ids"]
-    want = reference_fit_commit(
-        exp["workbook"], STATE / "design_vault.json", STATE / "beta_hat.json", exp["learning_ids"]
+def run_tool():
+    if OUT.exists():
+        OUT.unlink()
+    result = subprocess.run(
+        CMD, cwd='/app', text=True, capture_output=True, timeout=30, check=False
     )
-    assert c == want
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert OUT.exists(), 'build-plan.json was not created'
+    raw = OUT.read_text()
+    return raw, json.loads(raw)
 
 
-def test_hwml9_emit_trust_binds_stage_digests():
-    """Emit trust digests bind vault/pin/beta/commit/seal/forecast on-disk bytes."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    forecast = read_json(STATE / "forecast_tape.json")
-    workbook = load_workbook(FIX / "eval_workbook.json")
-    got = read_json(STATE / "emit_trust.json")
-    want = reference_trust(
-        forecast,
-        workbook,
-        STATE / "design_vault.json",
-        STATE / "latch_pin.json",
-        STATE / "beta_hat.json",
-        STATE / "fit_commit.json",
-        STATE / "beta_latch_seal.json",
-        STATE / "forecast_tape.json",
-    )
-    assert got == want
+def by_name(plan):
+    return {pkg['name']: pkg for pkg in plan['packages']}
 
 
-def test_hwml9_plaque_digests_pin_including_trust():
-    """Plaque digests bind on-disk state bytes including seal and emit trust."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    p = read_json(PLAQUE / "promotion_plaque.json")
-    assert p["design_digest"] == sha(STATE / "design_matrix.json")
-    assert p["beta_digest"] == sha(STATE / "beta_hat.json")
-    assert p["forecast_digest"] == sha(STATE / "forecast_tape.json")
-    assert p["vault_digest"] == sha(STATE / "design_vault.json")
-    assert p["fit_commit_digest"] == sha(STATE / "fit_commit.json")
-    assert p["pin_digest"] == sha(STATE / "latch_pin.json")
-    assert p["seal_digest"] == sha(STATE / "beta_latch_seal.json")
-    assert p["trust_digest"] == sha(STATE / "emit_trust.json")
-    assert int(p["pin_seq"]) == int(read_json(STATE / "latch_pin.json")["pin_seq"])
-    assert int(p["policy_epoch"]) == int(load_workbook(FIX / "eval_workbook.json")["policy_epoch"])
+def input_fingerprints(app_root=APP):
+    fingerprints = {}
+    for directory in ('workspace', 'registry', 'config', 'docs'):
+        root = app_root / directory
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob('*')):
+            if path.is_file():
+                rel = path.relative_to(app_root).as_posix()
+                fingerprints[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return fingerprints
 
 
-def test_hwml9_refml_plaque_agrees():
-    """Independent plaque builder agrees with on-disk plaque."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    exp = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    want = reference_plaque(
-        exp["forecast"],
-        exp["workbook"],
-        STATE / "design_matrix.json",
-        STATE / "beta_hat.json",
-        STATE / "forecast_tape.json",
-        STATE / "design_vault.json",
-        STATE / "fit_commit.json",
-        STATE / "latch_pin.json",
-        STATE / "beta_latch_seal.json",
-        STATE / "emit_trust.json",
-    )
-    assert read_json(PLAQUE / "promotion_plaque.json") == want
+EXPECTED_INPUT_FINGERPRINTS = {
+    'workspace/package-lock.json': '83d758b7f6688af47c17c90945a19cbb6c79ea31ea6efc8ff78a3a4748cc3f12',
+    'workspace/package.json': 'e26b5b2f48c772b9d4cfc05397a06df53364710e1f59003de38c92a55c2d9545',
+    'workspace/packages/core/package.json': 'a34997a7c8f9e64f62a5e65f16600f79e96600b995b7a2d0140b47453e547156',
+    'workspace/packages/plugin-auth/package.json': 'ffbb4f5fb65aa591f968d79c763facf78a61c87930a7d9cf0d2502344edb37f7',
+    'workspace/packages/telemetry/package.json': '0cb4980f40a359404fe7b6a42e2a1b0033306cdd88722f42199f467f92d52e64',
+    'registry/packages.json': '6b6e4bc17dee211eb445a6671afde81abe4b2d6dfb564b1fa5ebca59dffa4b77',
+    'config/archive_policy.json': 'd5ffa1bf3361173802e3c49718c331727f3971df0bac3df133782d2108dae58d',
+    'config/policy.json': '4a29473c3e523781038e86eb41f950e1a7aec764b6372b4fe2e89d8698401c27',
+    'docs/mirror_contract.md': 'a766ccc859415e4e3d5cb91fa27fb2d8235085ce5c7a8f577860684eebdf0279',
+}
 
 
-def test_hwml9_identity_propagates():
-    """Identity propagates from workbook across state and plaque."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    ident = load_workbook(FIX / "eval_workbook.json")["identity"]
-    for path in (
-        STATE / "design_matrix.json",
-        STATE / "design_vault.json",
-        STATE / "latch_pin.json",
-        STATE / "beta_hat.json",
-        STATE / "fit_commit.json",
-        STATE / "beta_latch_seal.json",
-        STATE / "forecast_tape.json",
-        STATE / "emit_trust.json",
-        PLAQUE / "promotion_plaque.json",
-    ):
-        assert read_json(path)["identity"] == ident
+def test_bundled_inputs_remain_unchanged():
+    before = input_fingerprints()
+    assert before == EXPECTED_INPUT_FINGERPRINTS
+    run_tool()
+    after = input_fingerprints()
+    assert after == EXPECTED_INPUT_FINGERPRINTS
 
 
-def test_hwml9_second_eval_byte_stable_pass_chain_grows():
-    """Replay keeps stage bytes identical and appends pass_chain pass_index 2."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    a_vault = (STATE / "design_vault.json").read_bytes()
-    a_latch_pin = (STATE / "latch_pin.json").read_bytes()
-    a_seal = (STATE / "beta_latch_seal.json").read_bytes()
-    a_trust = (STATE / "emit_trust.json").read_bytes()
-    a_plaque = (PLAQUE / "promotion_plaque.json").read_bytes()
-    gen = read_json(STATE / "latch_pin.json")["pin_seq"]
-    first = [json.loads(line) for line in (STATE / "pass_chain.jsonl").read_text().splitlines() if line.strip()]
-    assert len(first) == 1
-    assert first[0]["pass_index"] == 1
-    assert first[0]["prior_digest"] == ""
-    want_fp = stage_fingerprint(
-        STATE / "design_vault.json",
-        STATE / "latch_pin.json",
-        STATE / "beta_hat.json",
-        STATE / "fit_commit.json",
-        STATE / "beta_latch_seal.json",
-        STATE / "forecast_tape.json",
-        STATE / "emit_trust.json",
-    )
-    assert first[0]["stage_fingerprint"] == want_fp
-    assert first[0]["chain_digest"] == chain_digest(
-        "", want_fp, first[0]["vault_digest"], first[0]["seal_digest"], int(first[0]["pin_seq"]), 1
-    )
-    assert drive().returncode == 0
-    assert (STATE / "design_vault.json").read_bytes() == a_vault
-    assert (STATE / "latch_pin.json").read_bytes() == a_latch_pin
-    assert (STATE / "beta_latch_seal.json").read_bytes() == a_seal
-    assert (STATE / "emit_trust.json").read_bytes() == a_trust
-    assert (PLAQUE / "promotion_plaque.json").read_bytes() == a_plaque
-    assert read_json(STATE / "latch_pin.json")["pin_seq"] == gen
-    lines = [json.loads(line) for line in (STATE / "pass_chain.jsonl").read_text().splitlines() if line.strip()]
-    assert len(lines) == 2
-    assert lines[1]["pass_index"] == 2
-    assert lines[1]["prior_digest"] == lines[0]["chain_digest"]
-    assert lines[1]["stage_fingerprint"] == want_fp
-    assert lines[1]["chain_digest"] == chain_digest(
-        lines[0]["chain_digest"], want_fp, lines[1]["vault_digest"], lines[1]["seal_digest"], int(lines[1]["pin_seq"]), 2
-    )
+def test_top_level_schema_formatting_and_determinism():
+    raw1, plan1 = run_tool()
+    raw2, _ = run_tool()
+    assert raw1 == raw2
+    assert raw1 == json.dumps(plan1, indent=2)
+    assert '\t' not in raw1
+    assert list(plan1.keys()) == [
+        'root', 'nodeVersion', 'packages', 'unresolved', 'peerWarnings',
+        'policyViolations', 'mirrorWarnings', 'lockDrift', 'summary'
+    ]
+    assert plan1['root'] == 'ridge-ui'
+    assert plan1['nodeVersion'] == '20.11.1'
+    assert [p['name'] for p in plan1['packages']] == sorted(p['name'] for p in plan1['packages'])
 
 
-def test_hwml9_run_log_stages():
-    """Run log lists design/vault/latch_pin/beta/commit/seal/forecast/trust/plaque."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    rows = [json.loads(line) for line in (STATE / "run_log.jsonl").read_text().splitlines() if line.strip()]
-    assert [r["stage"] for r in rows] == [
-        "design", "vault", "latch_pin", "beta", "commit", "seal", "forecast", "trust", "plaque"
+def test_package_entry_key_order_and_requested_by():
+    _, plan = run_tool()
+    for pkg in plan['packages']:
+        assert list(pkg.keys()) == [
+            'name', 'package', 'version', 'source', 'requestedBy',
+            'license', 'integrity', 'tarball', 'patched', 'yanked'
+        ]
+        assert pkg['requestedBy'] == sorted(set(pkg['requestedBy']))
+
+
+def test_resolution_overrides_aliases_workspaces_and_shared_versions():
+    _, plan = run_tool()
+    pkgs = by_name(plan)
+    expected_names = {
+        '@ridge/core', '@ridge/plugin-auth', '@types/node', 'ansi-regex', 'debug',
+        'jsonwebtoken', 'jwa', 'jws', 'left-pad', 'left-pad-safe',
+        'ms', 'rollup', 'undici-types'
+    }
+    assert set(pkgs) == expected_names
+    assert '@ridge/telemetry' not in pkgs
+    assert 'source-map' not in pkgs
+    assert pkgs['@ridge/core']['source'] == 'workspace'
+    assert pkgs['debug']['version'] == '4.3.5'
+    assert pkgs['debug']['integrity'] == 'sha512-debug435-patched'
+    assert pkgs['ansi-regex']['version'] == '6.1.0'
+    assert pkgs['left-pad-safe']['package'] == 'left-pad'
+    assert pkgs['left-pad']['integrity'] == 'sha512-left130-patched'
+    assert pkgs['ms']['version'] == '2.1.3'
+    assert pkgs['ms']['requestedBy'] == ['@ridge/core', 'debug', 'root']
+
+
+def test_resolutions_pins_and_transitive_chain():
+    _, plan = run_tool()
+    pkgs = by_name(plan)
+    assert pkgs['jsonwebtoken']['version'] == '9.0.0'
+    assert pkgs['jsonwebtoken']['integrity'] == 'sha512-jwt900'
+    assert pkgs['jws']['version'] == '3.2.2'
+    assert pkgs['jwa']['requestedBy'] == ['jws']
+    assert pkgs['undici-types']['requestedBy'] == ['@types/node']
+
+
+def test_transitive_dev_engine_blocked_and_patch_behavior():
+    _, plan = run_tool()
+    pkgs = by_name(plan)
+    assert pkgs['rollup']['version'] == '3.29.5'
+    assert 'fsevents' not in pkgs
+    assert pkgs['jwa']['version'] == '1.4.1'
+    assert pkgs['debug']['patched'] is True
+    assert pkgs['left-pad-safe']['patched'] is True
+    assert plan['unresolved'] == [{
+        'name': 'event-stream',
+        'range': '^4.0.0',
+        'requestedBy': 'root',
+        'reason': 'blocked by policy'
+    }]
+
+
+def test_peer_optional_meta_and_mirror_warnings():
+    _, plan = run_tool()
+    peers = {(w['package'], w['peer']) for w in plan['peerWarnings']}
+    assert ('@ridge/plugin-auth', 'legacy-shim') not in peers
+    assert ('jsonwebtoken', 'crypto-helper') in peers
+    assert plan['policyViolations'] == []
+    assert plan['mirrorWarnings'] == [{
+        'package': 'ansi-regex',
+        'version': '6.1.0',
+        'tarball': 'https://cdn.badmirror.test/ansi-regex-6.1.0.tgz',
+        'expectedHost': 'mirror.local'
+    }]
+
+
+def test_lock_drift_matches_stale_snapshot():
+    _, plan = run_tool()
+    assert plan['lockDrift'] == [
+        {
+            'package': 'ansi-regex',
+            'lockVersion': '5.0.1',
+            'plannedVersion': '6.1.0',
+            'lockIntegrity': 'sha512-oldansi',
+            'plannedIntegrity': 'sha512-ansi610'
+        },
+        {
+            'package': 'debug',
+            'lockVersion': '3.2.7',
+            'plannedVersion': '4.3.5',
+            'lockIntegrity': 'sha512-olddebug',
+            'plannedIntegrity': 'sha512-debug435-patched'
+        },
+        {
+            'package': 'left-pad',
+            'lockVersion': '1.1.3',
+            'plannedVersion': '1.3.0',
+            'lockIntegrity': 'sha512-oldleft',
+            'plannedIntegrity': 'sha512-left130-patched'
+        },
+        {
+            'package': 'ms',
+            'lockVersion': '2.1.1',
+            'plannedVersion': '2.1.3',
+            'lockIntegrity': 'sha512-oldms',
+            'plannedIntegrity': 'sha512-ms213'
+        }
     ]
 
 
-def test_hwml9_vault_only_writes_state_snapshot():
-    """Vault mode writes matrix/vault/pin only — no beta, seal, trust, plaque, or pass_chain."""
-    wipe_outputs()
-    assert drive(mode="vault").returncode == 0
-    assert (STATE / "design_matrix.json").is_file()
-    assert (STATE / "design_vault.json").is_file()
-    assert (STATE / "latch_pin.json").is_file()
-    assert not (STATE / "beta_hat.json").exists()
-    assert not (STATE / "beta_latch_seal.json").exists()
-    assert not (STATE / "emit_trust.json").exists()
-    assert not (STATE / "pass_chain.jsonl").exists()
-    assert not (PLAQUE / "promotion_plaque.json").exists()
+def test_warning_section_sort_orders():
+    _, plan = run_tool()
+    assert plan['unresolved'] == sorted(
+        plan['unresolved'], key=lambda e: (e['name'], e['requestedBy'], e['range'])
+    )
+    assert plan['peerWarnings'] == sorted(
+        plan['peerWarnings'], key=lambda e: (e['package'], e['peer'], e['requested'])
+    )
+    assert plan['mirrorWarnings'] == sorted(
+        plan['mirrorWarnings'], key=lambda e: (e['package'], e['version'])
+    )
+    assert plan['lockDrift'] == sorted(plan['lockDrift'], key=lambda e: e['package'])
 
 
-def test_hwml9_forecast_keeps_vault_when_traces_mutate():
-    """Forecast-only after trace mutation must keep staged vault/latch_pin/seal/plaque."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    vault_bytes = (STATE / "design_vault.json").read_bytes()
-    latch_pin_bytes = (STATE / "latch_pin.json").read_bytes()
-    seal_bytes = (STATE / "beta_latch_seal.json").read_bytes()
-    trust_bytes = (STATE / "emit_trust.json").read_bytes()
-    plaque_bytes = (PLAQUE / "promotion_plaque.json").read_bytes()
-    digest = read_json(STATE / "latch_pin.json")["vault_digest"]
-    traces = FIX / "labeled_traces.jsonl"
-    original = traces.read_text(encoding="utf-8")
+def test_summary_matches_report_sections():
+    _, plan = run_tool()
+    packages = plan['packages']
+    summary = plan['summary']
+    assert summary == {
+        'packageCount': len(packages),
+        'workspaceCount': sum(1 for p in packages if p['source'] == 'workspace'),
+        'registryCount': sum(1 for p in packages if p['source'] == 'registry'),
+        'patchedCount': sum(1 for p in packages if p['patched']),
+        'yankedSelectedCount': sum(1 for p in packages if p['yanked']),
+        'unresolvedCount': len(plan['unresolved']),
+        'peerWarningCount': len(plan['peerWarnings']),
+        'policyViolationCount': len(plan['policyViolations']),
+        'mirrorWarningCount': len(plan['mirrorWarnings']),
+        'lockDriftCount': len(plan['lockDrift'])
+    }
+    assert summary['packageCount'] == 13
+    assert summary['patchedCount'] == 3
+    assert summary['lockDriftCount'] == 4
+    assert summary['yankedSelectedCount'] == 0
+
+
+def _write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + '\n')
+
+
+def _swap_app_files(overrides):
+    backups = {}
+    for rel, content in overrides.items():
+        target = APP / rel
+        backups[target] = target.read_text() if target.exists() else None
+        if content is None:
+            if target.exists():
+                target.unlink()
+        elif rel.endswith('.json'):
+            _write_json(target, content)
+        else:
+            target.write_text(content)
+    return backups
+
+
+def _restore_app_files(backups):
+    for target, original in backups.items():
+        if original is None:
+            if target.exists():
+                target.unlink()
+        else:
+            target.write_text(original)
+
+
+def _minimal_workspace(deps=None, dev_deps=None, optional_deps=None):
+    pkg = {
+        'name': 'ridge-ui',
+        'version': '1.0.0',
+        'private': True,
+        'workspaces': ['packages/*'],
+        'dependencies': deps or {}
+    }
+    if dev_deps is not None:
+        pkg['devDependencies'] = dev_deps
+    if optional_deps is not None:
+        pkg['optionalDependencies'] = optional_deps
+    return pkg
+
+
+def test_license_violation_synthetic():
+    policy = dict(BASE_POLICY)
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'bad-license-lib': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'bad-license-lib': {
+                    '1.0.0': {
+                        'license': 'GPL-3.0',
+                        'integrity': 'sha512-gpl',
+                        'tarball': 'https://mirror.local/bad-license-lib-1.0.0.tgz',
+                        'dependencies': {}
+                    }
+                }
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
     try:
-        lines = original.splitlines()
-        row = json.loads(lines[0])
-        row["ticks"] = [9, 9, 9, 9, 9, 9, 9, 9]
-        lines[0] = json.dumps(row)
-        traces.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        assert drive(mode="forecast").returncode == 0
-        assert (STATE / "design_vault.json").read_bytes() == vault_bytes
-        assert (STATE / "latch_pin.json").read_bytes() == latch_pin_bytes
-        assert (STATE / "beta_latch_seal.json").read_bytes() == seal_bytes
-        assert (STATE / "emit_trust.json").read_bytes() == trust_bytes
-        assert (PLAQUE / "promotion_plaque.json").read_bytes() == plaque_bytes
-        assert read_json(PLAQUE / "promotion_plaque.json")["vault_digest"] == digest
+        _, plan = run_tool()
+        assert plan['policyViolations'] == [{
+            'package': 'bad-license-lib',
+            'version': '1.0.0',
+            'rule': 'license',
+            'message': 'license GPL-3.0 is not allowed'
+        }]
     finally:
-        traces.write_text(original, encoding="utf-8")
+        _restore_app_files(backups)
 
 
-def test_hwml9_vault_then_forecast_matches_full_eval():
-    """vault then forecast produces the same latch_pin digest and plaque as full eval."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    full_digest = read_json(STATE / "latch_pin.json")["vault_digest"]
-    full_plaque = read_json(PLAQUE / "promotion_plaque.json")
-    wipe_outputs()
-    assert drive(mode="vault").returncode == 0
-    assert (STATE / "design_vault.json").is_file()
-    assert (STATE / "latch_pin.json").is_file()
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-    assert drive(mode="forecast").returncode == 0
-    assert read_json(STATE / "latch_pin.json")["vault_digest"] == full_digest
-    got = read_json(PLAQUE / "promotion_plaque.json")
-    assert got["promoted"] == full_plaque["promoted"]
-    assert got["mape"] == full_plaque["mape"]
-    assert got["r2"] == full_plaque["r2"]
-    assert got["vault_digest"] == full_plaque["vault_digest"]
-    assert got["pin_digest"] == full_plaque["pin_digest"]
-    assert got["seal_digest"] == full_plaque["seal_digest"]
-    assert got["trust_digest"] == full_plaque["trust_digest"]
-
-
-def test_hwml9_mutated_vault_without_repin_breaks_forecast():
-    """Forecast must fail when design_vault is mutated without refreshing latch_pin."""
-    wipe_outputs()
-    assert drive(mode="vault").returncode == 0
-    vault = read_json(STATE / "design_vault.json")
-    vault["rows"][0]["target_energy"] = float(vault["rows"][0]["target_energy"]) + 1.0
-    (STATE / "design_vault.json").write_text(json.dumps(vault, indent=2) + "\n", encoding="utf-8")
-    proc = drive(mode="forecast")
-    assert proc.returncode != 0
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-
-
-def test_hwml9_policy_epoch_drift_breaks_forecast():
-    """Forecast must abort when staged vault policy_epoch drifts from the workbook."""
-    wipe_outputs()
-    assert drive(mode="vault").returncode == 0
-    vault = read_json(STATE / "design_vault.json")
-    vault["policy_epoch"] = int(vault["policy_epoch"]) + 9
-    (STATE / "design_vault.json").write_text(json.dumps(vault, indent=2) + "\n", encoding="utf-8")
-    # Refresh pin digest to match mutated vault so epoch check is the failure mode
-    pin = read_json(STATE / "latch_pin.json")
-    pin["vault_digest"] = sha(STATE / "design_vault.json")
-    pin["policy_epoch"] = vault["policy_epoch"]
-    (STATE / "latch_pin.json").write_text(json.dumps(pin, indent=2) + "\n", encoding="utf-8")
-    proc = drive(mode="forecast")
-    assert proc.returncode != 0
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-
-
-def test_hwml9_stale_trust_after_beta_mutation_breaks_emit():
-    """Emit must fail when beta_hat mutates without refreshing emit_trust."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    prior_trust = (STATE / "emit_trust.json").read_text(encoding="utf-8")
-    beta = read_json(STATE / "beta_hat.json")
-    beta["values"] = [float(v) + 0.001 for v in beta["values"]]
-    (STATE / "beta_hat.json").write_text(json.dumps(beta, indent=2) + "\n", encoding="utf-8")
-    (PLAQUE / "promotion_plaque.json").unlink(missing_ok=True)
-    proc = drive(mode="emit")
-    assert proc.returncode != 0
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-    assert (STATE / "emit_trust.json").read_text(encoding="utf-8") == prior_trust
-
-
-def test_hwml9_stale_seal_after_beta_mutation_breaks_emit():
-    """Emit must fail when beta mutates even if trust digests are forcibly refreshed without seal."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    beta = read_json(STATE / "beta_hat.json")
-    beta["values"] = [float(v) + 0.002 for v in beta["values"]]
-    (STATE / "beta_hat.json").write_text(json.dumps(beta, indent=2) + "\n", encoding="utf-8")
-    trust = read_json(STATE / "emit_trust.json")
-    trust["beta_digest"] = sha(STATE / "beta_hat.json")
-    (STATE / "emit_trust.json").write_text(json.dumps(trust, indent=2) + "\n", encoding="utf-8")
-    (PLAQUE / "promotion_plaque.json").unlink(missing_ok=True)
-    proc = drive(mode="emit")
-    assert proc.returncode != 0
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-
-
-def test_hwml9_stale_trust_after_forecast_mutation_breaks_emit():
-    """Emit must fail when forecast_tape mutates without refreshing emit_trust."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    prior_trust = json.loads((STATE / "emit_trust.json").read_text(encoding="utf-8"))
-    tape = read_json(STATE / "forecast_tape.json")
-    tape["mape"] = float(tape["mape"]) + 0.01
-    (STATE / "forecast_tape.json").write_text(json.dumps(tape, indent=2) + "\n", encoding="utf-8")
-    (PLAQUE / "promotion_plaque.json").unlink(missing_ok=True)
-    proc = drive(mode="emit")
-    assert proc.returncode != 0
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-    assert prior_trust["forecast_digest"] != sha(STATE / "forecast_tape.json")
-
-
-def test_hwml9_emit_rewrites_plaque_when_trust_fresh():
-    """Emit succeeds and rewrites plaque digests when trust+seal still match files."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    trust_digest = sha(STATE / "emit_trust.json")
-    seal_digest = sha(STATE / "beta_latch_seal.json")
-    chain_before = (STATE / "pass_chain.jsonl").read_text(encoding="utf-8")
-    (PLAQUE / "promotion_plaque.json").unlink()
-    assert drive(mode="emit").returncode == 0
-    p = read_json(PLAQUE / "promotion_plaque.json")
-    assert p["trust_digest"] == trust_digest
-    assert p["seal_digest"] == seal_digest
-    assert p["promoted"] is True
-    assert (STATE / "pass_chain.jsonl").read_text(encoding="utf-8") == chain_before
-
-
-def test_hwml9_sidecut_not_imported():
-    """latchml must not import sidecut or decoy."""
-    for p in (APP / "latchml").glob("*.py"):
-        text = p.read_text(encoding="utf-8")
-        assert "sidecut" not in text
-        assert "decoy" not in text
-
-
-def test_hwml9_decoy_ridge_off_hot_path():
-    """Decoy ridge module exists but is not imported by latchml."""
-    assert (APP / "decoy" / "ridge_always.py").is_file()
-    blob = " ".join(p.read_text(encoding="utf-8") for p in (APP / "latchml").glob("*.py"))
-    assert "ridge_always" not in blob
-
-
-def test_hwml9_scoregate_miss_blocks():
-    """Noisy reserved targets block promotion."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "metric-miss"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    assert read_json(PLAQUE / "promotion_plaque.json")["promoted"] is False
-
-
-def test_hwml9_mape_trap_fails_mape_only():
-    """mape_trap fixture fails MAPE ceiling while R2 still clears the floor."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "mape-trap"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    tape = read_json(STATE / "forecast_tape.json")
-    card = read_json(PLAQUE / "promotion_plaque.json")
-    assert float(tape["r2"]) >= float(tape["r2_floor"])
-    assert float(tape["mape"]) > float(tape["mape_ceiling"])
-    assert card["promoted"] is False
-
-
-def test_hwml9_r2_trap_fails_r2_only():
-    """r2_trap fixture fails R2 floor while MAPE still clears the ceiling."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "r2-trap"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    tape = read_json(STATE / "forecast_tape.json")
-    card = read_json(PLAQUE / "promotion_plaque.json")
-    assert float(tape["mape"]) <= float(tape["mape_ceiling"])
-    assert float(tape["r2"]) < float(tape["r2_floor"])
-    assert card["promoted"] is False
-
-
-def test_hwml9_specimen_spike_alters_mape():
-    """Spiked reserved ticks change MAPE vs baseline."""
-    base = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")["forecast"]["mape"]
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "feature-spike"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    assert read_json(STATE / "forecast_tape.json")["mape"] != base
-
-
-def test_hwml9_no_reserved_blocks():
-    """No reserved cohort cannot promote."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "no-holdout"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    assert read_json(STATE / "forecast_tape.json")["rows"] == []
-    assert read_json(PLAQUE / "promotion_plaque.json")["promoted"] is False
-
-
-def test_hwml9_ridge_bait_ignored():
-    """Workbook ridge_lambda bait must not change plain OLS beta."""
-    base = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")["beta"]["values"]
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "ridge-bait"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    assert read_json(STATE / "beta_hat.json")["values"] == base
-
-
-def test_hwml9_shuffled_input_still_sorted():
-    """Shuffled learning file order still yields id-sorted design rows and matching beta."""
-    base = reference_run(FIX / "eval_workbook.json", FIX / "labeled_traces.jsonl")
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "shuffled-ids"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    ids = [r["id"] for r in read_json(STATE / "design_vault.json")["rows"]]
-    assert ids == sorted(ids)
-    assert read_json(STATE / "beta_hat.json")["values"] == base["beta"]["values"]
-
-
-def test_hwml9_miss_digests_still_pin():
-    """Failed promotion still binds digests including vault, latch_pin, seal, and emit_trust."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "metric-miss"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    p = read_json(PLAQUE / "promotion_plaque.json")
-    assert p["design_digest"] == sha(STATE / "design_matrix.json")
-    assert p["vault_digest"] == sha(STATE / "design_vault.json")
-    assert p["pin_digest"] == sha(STATE / "latch_pin.json")
-    assert p["seal_digest"] == sha(STATE / "beta_latch_seal.json")
-    assert p["trust_digest"] == sha(STATE / "emit_trust.json")
-    assert read_json(STATE / "emit_trust.json")["metrics_pass"] is False
-
-
-def test_hwml9_quadratic_columns_present():
-    """Design column_names include squared terms."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    names = read_json(STATE / "design_matrix.json")["column_names"]
-    assert "mean_sq" in names and "max_sq" in names and "std_sq" in names
-
-
-def test_hwml9_predictions_finite():
-    """Forecast predictions are finite."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    for row in read_json(STATE / "forecast_tape.json")["rows"]:
-        assert row["prediction"] == row["prediction"]
-
-
-def read_json_lines(path: Path):
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-
-def read_witness_lines():
-    return read_json_lines(WITNESS)
-
-
-def test_hwml9_emit_appends_witness_row_agrees_refml():
-    """Successful emit appends an emit_witness line agreeing with the independent builder."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    assert not WITNESS.exists()
-    assert drive(mode="emit").returncode == 0
-    lines = read_witness_lines()
-    assert len(lines) == 1
-    pin = read_json(STATE / "latch_pin.json")
-    want = reference_witness_row(
-        "",
-        PLAQUE / "promotion_plaque.json",
-        STATE / "emit_trust.json",
-        STATE / "beta_latch_seal.json",
-        int(pin["pin_seq"]),
-        1,
-    )
-    assert lines[0] == want
-    assert lines[0]["plaque_digest"] == sha(PLAQUE / "promotion_plaque.json")
-
-
-def test_hwml9_second_emit_witness_chain_grows_byte_stable():
-    """Repeated emit keeps plaque bytes fixed while emit_witness grows and links."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    chain_before = (STATE / "pass_chain.jsonl").read_text(encoding="utf-8")
-    assert drive(mode="emit").returncode == 0
-    plaque_bytes = (PLAQUE / "promotion_plaque.json").read_bytes()
-    assert drive(mode="emit").returncode == 0
-    assert (PLAQUE / "promotion_plaque.json").read_bytes() == plaque_bytes
-    lines = read_witness_lines()
-    assert len(lines) == 2
-    assert lines[1]["witness_index"] == 2
-    assert lines[1]["prior_digest"] == lines[0]["witness_digest"]
-    pin = read_json(STATE / "latch_pin.json")
-    want = reference_witness_row(
-        lines[0]["witness_digest"],
-        PLAQUE / "promotion_plaque.json",
-        STATE / "emit_trust.json",
-        STATE / "beta_latch_seal.json",
-        int(pin["pin_seq"]),
-        2,
-    )
-    assert lines[1] == want
-    assert (STATE / "pass_chain.jsonl").read_text(encoding="utf-8") == chain_before
-
-
-def test_hwml9_forecast_never_writes_witness():
-    """Forecast/eval passes must not create or grow the emit witness ledger."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    assert not WITNESS.exists()
-    assert drive().returncode == 0
-    assert not WITNESS.exists()
-    assert drive(mode="emit").returncode == 0
-    assert len(read_witness_lines()) == 1
-    assert drive().returncode == 0
-    assert len(read_witness_lines()) == 1
-
-
-def test_hwml9_failed_emit_appends_no_witness():
-    """Aborted emit after beta mutation leaves the witness ledger untouched."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    assert drive(mode="emit").returncode == 0
-    witness_bytes = WITNESS.read_bytes()
-    beta = read_json(STATE / "beta_hat.json")
-    beta["values"] = [float(v) + 0.003 for v in beta["values"]]
-    (STATE / "beta_hat.json").write_text(json.dumps(beta, indent=2) + "\n", encoding="utf-8")
-    assert drive(mode="emit").returncode != 0
-    assert WITNESS.read_bytes() == witness_bytes
-
-
-def test_hwml9_emit_without_forecast_state_fails():
-    """Emit with only a staged vault must exit non-zero without plaque or witness."""
-    wipe_outputs()
-    assert drive(mode="vault").returncode == 0
-    assert drive(mode="emit").returncode != 0
-    assert not (PLAQUE / "promotion_plaque.json").exists()
-    assert not WITNESS.exists()
-
-
-def test_hwml9_pin_rotation_across_vault_refresh():
-    """pin_seq rotates 1 -> 2 -> 3 across vault byte changes; return to old bytes never reuses old seq."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    first_digest = read_json(STATE / "latch_pin.json")["vault_digest"]
-    assert int(read_json(STATE / "latch_pin.json")["pin_seq"]) == 1
-    chain1 = read_json_lines(STATE / "pass_chain.jsonl")
-    traces = FIX / "labeled_traces.jsonl"
-    original = traces.read_text(encoding="utf-8")
+def test_deprecated_only_unresolved_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'legacy-only': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'legacy-only': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'a', 'tarball': 'https://mirror.local/a.tgz', 'deprecated': True, 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'b', 'tarball': 'https://mirror.local/b.tgz', 'deprecated': True, 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
     try:
-        lines = original.splitlines()
-        row = json.loads(lines[0])
-        row["target_energy"] = float(row["target_energy"]) + 5.0
-        lines[0] = json.dumps(row)
-        traces.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        assert drive().returncode == 0
-        pin2 = read_json(STATE / "latch_pin.json")
-        assert int(pin2["pin_seq"]) == 2
-        assert pin2["vault_digest"] != first_digest
-        chain2 = read_json_lines(STATE / "pass_chain.jsonl")
-        assert len(chain2) == 2
-        assert chain2[1]["prior_digest"] == chain1[0]["chain_digest"]
-        assert chain2[1]["stage_fingerprint"] != chain1[0]["stage_fingerprint"]
-        assert int(read_json(PLAQUE / "promotion_plaque.json")["pin_seq"]) == 2
+        _, plan = run_tool()
+        assert plan['packages'] == []
+        assert plan['unresolved'][0]['reason'] == 'no compatible version'
     finally:
-        traces.write_text(original, encoding="utf-8")
-    assert drive().returncode == 0
-    pin3 = read_json(STATE / "latch_pin.json")
-    assert int(pin3["pin_seq"]) == 3
-    assert pin3["vault_digest"] == first_digest
-    chain3 = read_json_lines(STATE / "pass_chain.jsonl")
-    assert len(chain3) == 3
-    assert chain3[2]["prior_digest"] == chain3[1]["chain_digest"]
-    assert int(chain3[2]["pin_seq"]) == 3
-    assert int(read_json(PLAQUE / "promotion_plaque.json")["pin_seq"]) == 3
+        _restore_app_files(backups)
 
 
-def test_hwml9_trunc_shift_agrees_refml():
-    """trunc_decimals=3 workbook re-truncates every stage and still promotes."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "trunc-shift"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    exp = reference_run(root / "eval_workbook.json", root / "labeled_traces.jsonl")
-    assert read_json(STATE / "design_matrix.json")["rows"] == exp["design"]["rows"]
-    assert read_json(STATE / "beta_hat.json")["values"] == exp["beta"]["values"]
-    tape = read_json(STATE / "forecast_tape.json")
-    assert tape["mape"] == exp["forecast"]["mape"]
-    assert tape["r2"] == exp["forecast"]["r2"]
-    plaque = read_json(PLAQUE / "promotion_plaque.json")
-    assert plaque["promoted"] == exp["forecast"]["metrics_pass"]
-    assert int(plaque["policy_epoch"]) == int(exp["workbook"]["policy_epoch"])
+def test_resolution_out_of_range_synthetic():
+    policy = dict(BASE_POLICY, resolutions={'widget': '2.0.0'})
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['unresolved'] == [{
+            'name': 'widget',
+            'range': '^1.0.0',
+            'requestedBy': 'root',
+            'reason': 'resolution out of range'
+        }]
+    finally:
+        _restore_app_files(backups)
 
 
-def test_hwml9_negative_energy_tape_agrees_refml():
-    """Mixed-sign targets keep abs_pct/MAPE math on the documented absolute-value guard."""
-    wipe_outputs()
-    root = Path("/opt/verifier-fixtures") / "negative-energy"
-    assert drive(workbook=root / "eval_workbook.json", traces=root / "labeled_traces.jsonl").returncode == 0
-    exp = reference_run(root / "eval_workbook.json", root / "labeled_traces.jsonl")
-    tape = read_json(STATE / "forecast_tape.json")
-    assert tape["rows"] == exp["forecast"]["rows"]
-    assert tape["mape"] == exp["forecast"]["mape"]
-    assert tape["r2"] == exp["forecast"]["r2"]
-    assert tape["metrics_pass"] is False
-    assert any(float(r["target_energy"]) < 0 for r in tape["rows"])
-    assert read_json(PLAQUE / "promotion_plaque.json")["promoted"] is False
+def test_version_conflict_suffix_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({
+            'widget': '^1.0.0',
+            'widget-alt': 'npm:widget@^2.0.0'
+        }),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['version'] == '1.0.0'
+        assert pkgs['widget-alt']['version'] == '2.0.0'
+    finally:
+        _restore_app_files(backups)
 
 
-def test_hwml9_pass_chain_row_agrees_refml():
-    """First pass_chain line agrees with independent chain builder."""
-    wipe_outputs()
-    assert drive().returncode == 0
-    pin = read_json(STATE / "latch_pin.json")
-    row = next(
-        json.loads(line)
-        for line in (STATE / "pass_chain.jsonl").read_text().splitlines()
-        if line.strip()
-    )
-    want = reference_pass_chain_row(
-        "",
-        STATE / "design_vault.json",
-        STATE / "latch_pin.json",
-        STATE / "beta_hat.json",
-        STATE / "fit_commit.json",
-        STATE / "beta_latch_seal.json",
-        STATE / "forecast_tape.json",
-        STATE / "emit_trust.json",
-        pin["pin_seq"],
-        1,
-    )
-    assert row == want
+def test_version_conflict_hash_suffix_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({
+            '@ridge/core': 'workspace:*',
+            'widget': '^1.0.0'
+        }),
+        'workspace/packages/core/package.json': {
+            'name': '@ridge/core',
+            'version': '1.0.0',
+            'dependencies': {'widget': '^2.0.0'}
+        },
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '2.0.0': {'license': 'MIT', 'integrity': 'w200', 'tarball': 'https://mirror.local/w200.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['version'] == '1.0.0'
+        assert pkgs['widget#2']['version'] == '2.0.0'
+        assert pkgs['widget#2']['package'] == 'widget'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_workspace_missing_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'@ridge/missing': 'workspace:*'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {'packages': {}},
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['unresolved'][0]['reason'] == 'workspace package missing'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_peer_range_mismatch_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'host': '1.0.0', 'peer-lib': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'host': {
+                    '1.0.0': {
+                        'license': 'MIT',
+                        'integrity': 'host',
+                        'tarball': 'https://mirror.local/host.tgz',
+                        'peerDependencies': {'peer-lib': '^2.0.0'},
+                        'dependencies': {}
+                    }
+                },
+                'peer-lib': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'peer', 'tarball': 'https://mirror.local/peer.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['peerWarnings'][0]['reason'] == 'peer range mismatch'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_patch_integrity_only_on_matching_version():
+    policy = dict(BASE_POLICY, patches={'widget': {'version': '1.0.0', 'file': 'p.patch', 'integrity': 'sha512-patched'}})
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['version'] == '1.1.0'
+        assert pkgs['widget']['patched'] is False
+        assert pkgs['widget']['integrity'] == 'w110'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_prefer_stable_skips_prerelease_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '1.1.0-rc.1': {'license': 'MIT', 'integrity': 'w110rc', 'tarball': 'https://mirror.local/w110rc.tgz', 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY, preferStable=True)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert by_name(plan)['widget']['version'] == '1.1.0'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_yanked_fallback_when_only_option_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'yanked': True, 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['widget']['yanked'] is True
+        assert plan['summary']['yankedSelectedCount'] == 1
+    finally:
+        _restore_app_files(backups)
+
+
+def test_yanked_deprioritized_when_stable_exists_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '^1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'widget': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}},
+                    '1.1.0': {'license': 'MIT', 'integrity': 'w110', 'tarball': 'https://mirror.local/w110.tgz', 'yanked': True, 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert by_name(plan)['widget']['version'] == '1.0.0'
+        assert plan['summary']['yankedSelectedCount'] == 0
+    finally:
+        _restore_app_files(backups)
+
+
+def test_optional_dependencies_respect_policy_flag():
+    overrides = {
+        'workspace/package.json': _minimal_workspace(
+            {},
+            optional_deps={'opt-root': '^1.0.0'}
+        ),
+        'workspace/packages/core/package.json': {
+            'name': '@ridge/core',
+            'version': '1.0.0',
+            'dependencies': {},
+            'optionalDependencies': {'opt-ws': '^1.0.0'}
+        },
+        'registry/packages.json': {
+            'packages': {
+                'opt-root': {'1.0.0': {'license': 'MIT', 'integrity': 'or', 'tarball': 'https://mirror.local/or.tgz', 'dependencies': {}}},
+                'opt-ws': {'1.0.0': {'license': 'MIT', 'integrity': 'ow', 'tarball': 'https://mirror.local/ow.tgz', 'dependencies': {}}},
+                'host': {
+                    '1.0.0': {
+                        'license': 'MIT',
+                        'integrity': 'host',
+                        'tarball': 'https://mirror.local/host.tgz',
+                        'dependencies': {},
+                        'optionalDependencies': {'opt-reg': '^1.0.0'}
+                    }
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY, includeOptionalDependencies=False)
+    }
+    overrides['workspace/package.json']['dependencies'] = {'host': '1.0.0'}
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        names = set(by_name(plan))
+        assert names == {'host'}
+    finally:
+        _restore_app_files(backups)
+
+
+def test_optional_dependencies_install_when_enabled():
+    policy = dict(BASE_POLICY, includeOptionalDependencies=True)
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'host': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'host': {
+                    '1.0.0': {
+                        'license': 'MIT',
+                        'integrity': 'host',
+                        'tarball': 'https://mirror.local/host.tgz',
+                        'dependencies': {},
+                        'optionalDependencies': {'opt-reg': '1.0.0'}
+                    }
+                },
+                'opt-reg': {'1.0.0': {'license': 'MIT', 'integrity': 'or', 'tarball': 'https://mirror.local/or.tgz', 'dependencies': {}}}
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert 'opt-reg' in by_name(plan)
+    finally:
+        _restore_app_files(backups)
+
+
+def test_workspace_semver_prefers_local_package():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'@ridge/lib': '^1.2.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'workspace/packages/lib/package.json': {'name': '@ridge/lib', 'version': '1.4.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                '@ridge/lib': {
+                    '1.9.0': {'license': 'MIT', 'integrity': 'lib190', 'tarball': 'https://mirror.local/lib190.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['@ridge/lib']['source'] == 'workspace'
+        assert pkgs['@ridge/lib']['version'] == '1.4.0'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_x_range_hyphen_and_union_synthetic():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({
+            'x-lib': '1.2.x',
+            'range-lib': '1.0.0 - 1.2.0',
+            'union-lib': '^1.0.0 || ^2.0.0'
+        }),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'registry/packages.json': {
+            'packages': {
+                'x-lib': {
+                    '1.1.0': {'license': 'MIT', 'integrity': 'x110', 'tarball': 'https://mirror.local/x110.tgz', 'dependencies': {}},
+                    '1.2.7': {'license': 'MIT', 'integrity': 'x127', 'tarball': 'https://mirror.local/x127.tgz', 'dependencies': {}},
+                    '1.3.0': {'license': 'MIT', 'integrity': 'x130', 'tarball': 'https://mirror.local/x130.tgz', 'dependencies': {}}
+                },
+                'range-lib': {
+                    '1.0.0': {'license': 'MIT', 'integrity': 'r100', 'tarball': 'https://mirror.local/r100.tgz', 'dependencies': {}},
+                    '1.2.0': {'license': 'MIT', 'integrity': 'r120', 'tarball': 'https://mirror.local/r120.tgz', 'dependencies': {}},
+                    '1.3.0': {'license': 'MIT', 'integrity': 'r130', 'tarball': 'https://mirror.local/r130.tgz', 'dependencies': {}}
+                },
+                'union-lib': {
+                    '1.5.0': {'license': 'MIT', 'integrity': 'u150', 'tarball': 'https://mirror.local/u150.tgz', 'dependencies': {}},
+                    '2.1.0': {'license': 'MIT', 'integrity': 'u210', 'tarball': 'https://mirror.local/u210.tgz', 'dependencies': {}}
+                }
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        pkgs = by_name(plan)
+        assert pkgs['x-lib']['version'] == '1.2.7'
+        assert pkgs['range-lib']['version'] == '1.2.0'
+        assert pkgs['union-lib']['version'] == '2.1.0'
+    finally:
+        _restore_app_files(backups)
+
+
+def test_lock_drift_ignores_workspace_and_missing_entries():
+    overrides = {
+        'workspace/package.json': _minimal_workspace({'widget': '1.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'workspace/package-lock.json': {
+            'name': 'ridge-ui',
+            'lockfileVersion': 3,
+            'packages': {
+                '': {'dependencies': {'widget': '1.0.0'}},
+                'node_modules/widget': {'version': '0.9.0', 'integrity': 'old'},
+                'node_modules/@ridge/core': {'version': '1.0.0', 'integrity': 'ws'}
+            }
+        },
+        'registry/packages.json': {
+            'packages': {
+                'widget': {'1.0.0': {'license': 'MIT', 'integrity': 'w100', 'tarball': 'https://mirror.local/w100.tgz', 'dependencies': {}}}
+            }
+        },
+        'config/policy.json': dict(BASE_POLICY)
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['lockDrift'] == [{
+            'package': 'widget',
+            'lockVersion': '0.9.0',
+            'plannedVersion': '1.0.0',
+            'lockIntegrity': 'old',
+            'plannedIntegrity': 'w100'
+        }]
+    finally:
+        _restore_app_files(backups)
+
+
+def test_lock_drift_includes_scoped_registry_entries():
+    policy = dict(BASE_POLICY, includeDevDependencies=True)
+    overrides = {
+        'workspace/package.json': _minimal_workspace({}, dev_deps={'@types/node': '^20.0.0'}),
+        'workspace/packages/core/package.json': {'name': '@ridge/core', 'version': '1.0.0', 'dependencies': {}},
+        'workspace/package-lock.json': {
+            'name': 'ridge-ui',
+            'lockfileVersion': 3,
+            'packages': {
+                '': {'devDependencies': {'@types/node': '^20.0.0'}},
+                'node_modules/@types/node': {'version': '20.0.0', 'integrity': 'old-types'}
+            }
+        },
+        'registry/packages.json': {
+            'packages': {
+                '@types/node': {
+                    '20.11.30': {
+                        'license': 'MIT',
+                        'integrity': 'sha512-types201130',
+                        'tarball': 'https://mirror.local/@types/node/-/node-20.11.30.tgz',
+                        'dependencies': {}
+                    }
+                }
+            }
+        },
+        'config/policy.json': policy
+    }
+    backups = _swap_app_files(overrides)
+    try:
+        _, plan = run_tool()
+        assert plan['lockDrift'] == [{
+            'package': '@types/node',
+            'lockVersion': '20.0.0',
+            'plannedVersion': '20.11.30',
+            'lockIntegrity': 'old-types',
+            'plannedIntegrity': 'sha512-types201130'
+        }]
+    finally:
+        _restore_app_files(backups)
