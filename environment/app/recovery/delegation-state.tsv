@@ -1,0 +1,40 @@
+record_type	field1	field2	field3	field4	field5	field6
+root	root-north	trusted				
+root	root-old	revoked				
+root	root-south	trusted				
+edge	bridge-a	compliance-echo	INC-2026-0721-SCREENING	2026-07-01	2026-12-31	active
+edge	bridge-b	ops-zulu	INC-2026-0721-SCREENING	2026-07-01	2026-12-31	active
+edge	root-north	bridge-a	INC-2026-0721-SCREENING	2026-07-01	2026-12-31	active
+edge	root-north	emergency-charlie	INC-2026-0721-SCREENING	2026-07-01	2026-12-31	active
+edge	root-north	ops-alpha	INC-2026-0721-SCREENING	2026-07-01	2026-12-31	active
+edge	root-north	ops-expired	INC-2026-0721-SCREENING	2026-01-01	2026-07-20	active
+edge	root-north	sec-bravo	INC-2026-0721-SCREENING	2026-07-01	2026-12-31	active
+edge	root-north	sec-shadow	INC-2026-0721-SCREENING	2026-07-01	2026-07-20	active
+edge	root-north	sec-wrong-incident	INC-2026-OTHER	2026-07-01	2026-12-31	active
+edge	root-old	ops-shadow	INC-2026-0721-SCREENING	2026-07-01	2026-12-31	active
+edge	root-south	bridge-b	INC-2026-0721-SCREENING	2026-07-01	2026-12-31	active
+edge	root-south	compliance-denied	INC-2026-0721-SCREENING	2026-07-01	2026-12-31	active
+edge	root-south	compliance-foxtrot	INC-2026-0721-SCREENING	2026-07-01	2026-12-31	active
+edge	root-south	ops-wrong-incident	INC-2026-OTHER	2026-07-01	2026-12-31	active
+edge	root-south	sec-delta	INC-2026-0721-SCREENING	2026-07-01	2026-12-31	active
+edge	root-south	sec-not-yet-valid	INC-2026-0721-SCREENING	2026-07-22	2026-12-31	active
+custody	compliance-denied	vault-denied	1			
+custody	compliance-echo	vault-echo	2			
+custody	compliance-foxtrot	vault-foxtrot	1			
+custody	emergency-charlie	vault-emergency	2			
+custody	ops-alpha	vault-alpha	4			
+custody	ops-expired	vault-expired	2			
+custody	ops-fingerprint-bad	vault-badfp	2			
+custody	ops-legacy	vault-legacy	2			
+custody	ops-shadow	vault-shadow	1			
+custody	ops-wrong-incident	vault-wrong	2			
+custody	ops-zulu	vault-zulu	3			
+custody	sec-bravo	vault-bravo	3			
+custody	sec-delta	vault-delta	2			
+custody	sec-fingerprint-bad	vault-badfp2	2			
+custody	sec-not-yet-valid	vault-future	2			
+custody	sec-shadow	vault-shadow	1			
+custody	sec-wrong-incident	vault-wrong2	2			
+denial	compliance-echo	sec-bravo	INC-2026-OTHER	1		
+denial	ops-alpha	sec-bravo	INC-2026-0721-SCREENING	1		
+denial	ops-zulu	sec-delta	INC-2026-0721-SCREENING	0		

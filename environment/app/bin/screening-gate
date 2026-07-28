@@ -1,0 +1,157 @@
+#!/bin/bash
+set -euo pipefail
+
+policy=/app/trust/release-policy.json
+signature=/app/trust/release-policy.sig
+public_key=/app/trust/release.pub
+db=/app/data/features.db
+output=/app/output/gate.json
+request=/app/recovery/recovery-request.json
+delegation_state=/app/recovery/delegation-state.tsv
+
+args=("$@")
+for ((i=0; i<${#args[@]}; i+=2)); do
+    case "${args[i]}" in
+        --policy) policy="${args[i+1]}" ;;
+        --signature) signature="${args[i+1]}" ;;
+        --public-key) public_key="${args[i+1]}" ;;
+        --db) db="${args[i+1]}" ;;
+        --output) output="${args[i+1]}" ;;
+    esac
+done
+
+fail() {
+    mkdir -p "$(dirname "$output")"
+    printf '{"error":"%s"}\n' "$1" > "$output"
+    exit 1
+}
+
+mapfile -t signers < <(jq -er '.signer_ids[]' "$policy" 2>/dev/null) || fail policy_invalid
+[ "${#signers[@]}" -ge 2 ] || fail quorum_incomplete
+primary=$(jq -er '.signer_id' "$policy" 2>/dev/null) || fail policy_invalid
+[ "$primary" = "${signers[0]}" ] || fail primary_signer_mismatch
+sequence=$(jq -er '.release_sequence' "$policy" 2>/dev/null) || fail policy_invalid
+incident=$(jq -er '.incident_id' "$policy" 2>/dev/null) || fail policy_invalid
+effective_date=$(jq -er '.effective_date' "$request" 2>/dev/null) || fail request_invalid
+maximum_hops=$(jq -er '.maximum_delegation_hops' "$request" 2>/dev/null) || fail request_invalid
+minimum_roots=$(jq -er '.minimum_delegation_roots' "$request" 2>/dev/null) || fail request_invalid
+minimum_security=$(jq -er '.minimum_security_signers' "$request" 2>/dev/null) || fail request_invalid
+maximum_risk=$(jq -er '.maximum_custody_risk' "$request" 2>/dev/null) || fail request_invalid
+distinct_custodians=$(jq -er '.require_distinct_custodians' "$request" 2>/dev/null) || fail request_invalid
+mapfile -t required_roles < <(jq -er '.required_roles[]' "$request" 2>/dev/null) || fail request_invalid
+mapfile -t policy_roots < <(jq -er '.trust_roots[]' "$policy" 2>/dev/null) || fail policy_invalid
+
+expected_delegation_sha=$(jq -er '.delegation_state_sha256' "$policy" 2>/dev/null) || fail policy_invalid
+actual_delegation_sha=$(sha256sum "$delegation_state" | awk '{print $1}')
+[ "$actual_delegation_sha" = "$expected_delegation_sha" ] || fail delegation_state_mismatch
+expected_compromise_decisions_sha=$(jq -er '.compromise_decisions_sha256' "$policy" 2>/dev/null) || fail policy_invalid
+actual_compromise_decisions_sha=$(sha256sum /app/output/compromise_decisions.tsv | awk '{print $1}')
+[ "$actual_compromise_decisions_sha" = "$expected_compromise_decisions_sha" ] || fail compromise_evidence_mismatch
+expected_delegation_witnesses_sha=$(jq -er '.delegation_witnesses_sha256' "$policy" 2>/dev/null) || fail policy_invalid
+actual_delegation_witnesses_sha=$(sha256sum /app/output/delegation_witnesses.tsv | awk '{print $1}')
+[ "$actual_delegation_witnesses_sha" = "$expected_delegation_witnesses_sha" ] || fail delegation_witness_mismatch
+
+history=$(sqlite3 "$db" \
+    "SELECT signer_quorum FROM release_history WHERE release_sequence=$sequence;") \
+    || fail history_unavailable
+[ "$history" = "$(IFS=,; echo "${signers[*]}")" ] || fail history_mismatch
+
+for root in "${policy_roots[@]}"; do
+    status=$(sqlite3 "$db" "SELECT status FROM trust_roots WHERE root_id='$root';")
+    [ "$status" = trusted ] || fail trust_root_revoked
+done
+[ "${#policy_roots[@]}" -ge "$minimum_roots" ] || fail delegation_roots_incomplete
+
+declare -A roles_seen=()
+declare -A custodians_seen=()
+declare -A roots_seen=()
+total_risk=0
+security_count=0
+
+for idx in "${!signers[@]}"; do
+    signer="${signers[$idx]}"
+    status=$(sqlite3 "$db" \
+        "SELECT status FROM trusted_signers WHERE signer_id='$signer';")
+    [ "$status" = trusted ] || fail signer_revoked
+
+    role=$(sqlite3 "$db" \
+        "SELECT role FROM recovery_candidates WHERE signer_id='$signer';")
+    [ -n "$role" ] || fail signer_unknown
+    roles_seen["$role"]=1
+    [ "$role" != security ] || security_count=$((security_count + 1))
+
+    custody=$(sqlite3 -separator $'\t' "$db" \
+        "SELECT custodian,risk_score FROM custody_controls WHERE signer_id='$signer';")
+    [ -n "$custody" ] || fail custody_missing
+    IFS=$'\t' read -r custodian risk_score <<< "$custody"
+    if [ "$distinct_custodians" = true ] && [ -n "${custodians_seen[$custodian]:-}" ]; then
+        fail custody_conflict
+    fi
+    custodians_seen["$custodian"]=1
+    total_risk=$((total_risk + risk_score))
+
+    path_root=$(sqlite3 "$db" "
+WITH RECURSIVE paths(root_id,node_id,path,hops) AS (
+  SELECT root_id,root_id,root_id,0
+  FROM trust_roots
+  WHERE status='trusted'
+  UNION ALL
+  SELECT paths.root_id,
+         edges.child_id,
+         paths.path || '>' || edges.child_id,
+         paths.hops + 1
+  FROM paths
+  JOIN delegation_edges AS edges ON edges.parent_id=paths.node_id
+  WHERE edges.status='active'
+    AND edges.incident_id='$incident'
+    AND edges.not_before <= '$effective_date'
+    AND edges.not_after >= '$effective_date'
+    AND paths.hops < $maximum_hops
+    AND instr('>' || paths.path || '>', '>' || edges.child_id || '>') = 0
+)
+SELECT root_id
+FROM paths
+WHERE node_id='$signer'
+ORDER BY hops,root_id,path
+LIMIT 1;
+")
+    [ -n "$path_root" ] || fail delegation_invalid
+    roots_seen["$path_root"]=1
+
+    if [ "$idx" -eq 0 ]; then
+        key="$public_key"
+        sig="$signature"
+    else
+        key="/app/recovery/candidates/${signer}-verification.material"
+        sig="/app/trust/approvals/${signer}.sig"
+    fi
+    [ -s "$key" ] && [ -s "$sig" ] || fail quorum_incomplete
+    openssl dgst -sha256 -verify "$key" -signature "$sig" "$policy" \
+        >/dev/null 2>&1 || fail signature_invalid
+done
+
+[ "$security_count" -ge "$minimum_security" ] || fail security_coverage_incomplete
+[ "$total_risk" -le "$maximum_risk" ] || fail custody_risk_exceeded
+[ "${#roots_seen[@]}" -ge "$minimum_roots" ] || fail delegation_roots_incomplete
+for role in "${required_roles[@]}"; do
+    [ -n "${roles_seen[$role]:-}" ] || fail role_coverage_incomplete
+done
+
+for ((i=0; i<${#signers[@]}; i++)); do
+    for ((j=i+1; j<${#signers[@]}; j++)); do
+        denial=$(sqlite3 "$db" "
+SELECT COUNT(*)
+FROM pair_denials
+WHERE incident_id='$incident'
+  AND active=1
+  AND (
+    (signer_a='${signers[$i]}' AND signer_b='${signers[$j]}')
+    OR
+    (signer_a='${signers[$j]}' AND signer_b='${signers[$i]}')
+  );
+")
+        [ "$denial" -eq 0 ] || fail pair_denied
+    done
+done
+
+exec /app/bin/screening-core "$@"

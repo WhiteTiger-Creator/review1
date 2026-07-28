@@ -1,19 +1,3 @@
-Play the pinned board game of Kyoto Shogi as White through `/app/arena` and win
-specifically by checkmate. The task is to choose moves and drops in the active
-match; no software build or package modification is required. A
-stalemate/no-move win, rule-claim result, draw, resignation, loss, or unfinished
-game is not a successful outcome.
+The image-screening release is quarantined after a credential incident. Reconcile `/app/recovery/recovery-request.json`, the candidate snapshot, compromise ledger, delegation state, candidate materials, and `/app/data/features.db`; do not alter protected evidence, model files, candidate materials, gate files, C source, or baseline rows. Recover `/app/tools/compromise_reduce.pl` with CLI `LEDGER SNAPSHOT INCIDENT DATE OUTPUT`: write one candidate row using only `clear` or `blocked`; the latest matching record effective by DATE controls, a later clearance overrides a block, and no record means `clear` with empty `effective_on` and `reason`. Recover `/app/tools/delegation_verify.lua` with CLI `STATE PATHS INCIDENT DATE MAX_HOPS OUTPUT`: check trusted roots, active incident-scoped edges, dates, cycles, and hop limits. Write one witness row per path using only `valid` or `invalid`; write an invalid row before exiting non-zero. Select the smallest valid panel, then lower total priority, lower total risk, then alphabetical signer list, while satisfying every role, assurance, region, root, custody, key-family, custodian, and pair-denial rule.
 
-Kyoto Shogi is a 5-by-5 drop game whose pawn/rook, silver/bishop,
-knight/gold, and lance/gold pieces must flip faces after every board move.
-Captured identities return as holdings and may be dropped with either face.
-`/app/README.md` is the binding external specification for the complete rules,
-terminal conditions, exact move and drop tokens, arena commands, error results,
-and public JSON contract. The game has no reset, rewind, position loader, or
-analysis command.
-
-An accepted ongoing White action atomically includes Black's reply in its
-completed response. If the position becomes unrecoverable, use
-`/app/arena resign` instead of allowing the session to expire. A reported win,
-loss, draw, or resignation is terminal: issue no further arena commands and end
-your turn immediately.
+Follow `/app/docs/recovery-output-contract.md` for the exact TSV headers, row ordering, status values, blank-field rules, and delegation-path format for `compromise_decisions.tsv`, `signer_quorum.tsv`, `delegation_paths.tsv`, and `delegation_witnesses.tsv`. Use the same contract for the exact ordered fields, types, and source values of `/app/trust/release-policy.json`, `/app/output/quorum_summary.json`, and `/app/output/recovery_audit.json`; the complete policy schema is also at `/app/trust/policy.schema.json`. Update the policy in place. Install the primary key at `/app/trust/release.pub`, its signature at `/app/trust/release-policy.sig`, and other signatures at `/app/trust/approvals/{signer}.sig`. Preserve history in one SQLite transaction, keep the exposed signer revoked, and leave the gate result at `/app/output/gate.json`.

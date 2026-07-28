@@ -1,0 +1,5 @@
+{"signer_id":"ops-shadow","incident_id":"INC-2026-0721-SCREENING","effective_on":"2026-07-20","cleared":false,"reason":"shared build host compromise"}
+{"signer_id":"sec-shadow","incident_id":"INC-2026-0721-SCREENING","effective_on":"2026-07-21","cleared":false,"reason":"unverified custody transfer"}
+{"signer_id":"compliance-denied","incident_id":"INC-2026-0721-SCREENING","effective_on":"2026-07-19","cleared":false,"reason":"audit token exposure"}
+{"signer_id":"ops-legacy","incident_id":"INC-2026-0701-SCREENING","effective_on":"2026-07-01","cleared":false,"reason":"prior release compromise"}
+{"signer_id":"emergency-charlie","incident_id":"INC-2026-0721-SCREENING","effective_on":"2026-07-21","cleared":true,"reason":"false positive cleared"}
