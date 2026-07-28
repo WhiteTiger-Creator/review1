@@ -1,0 +1,6 @@
+name = "relaxed_fast"
+window_tokens = 2048
+fold_order = ["gamma", "alpha", "beta"]
+residual_floor = 0.05
+band_eps = 0.002
+holdout_fold = "beta"
