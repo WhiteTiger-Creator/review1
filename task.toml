@@ -4,31 +4,27 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "scientific-computing"
-subcategories = ["tool_specific"]
+category = "games"
+subcategories = []
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["cpp", "bash"]
-tags = [
-  "finite-elements",
-  "maxwell",
-  "eigensolver",
-  "mesh-orientation",
-  "checkpoint-restart",
-  "reproducibility"
-]
-expert_time_estimate_min = 240
-junior_time_estimate_min = 600
-
-[agent]
-timeout_sec = 1800
+codebase_size = "minimal"
+languages = ["cpp"]
+tags = ["board-game", "game-theory", "puzzle", "rules", "scoring"]
+expert_time_estimate_min = 120
+junior_time_estimate_min = 240
 
 [verifier]
 timeout_sec = 900
 
+[agent]
+timeout_sec = 1800
+
 [environment]
-build_timeout_sec = 900
+allow_internet = false
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
-storage_mb = 8192
-allow_internet = false
+storage_mb = 10240
+docker_flags = []
+gpus = 0
+gpu_types = []

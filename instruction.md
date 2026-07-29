@@ -1,19 +1,7 @@
-The electromagnetic cavity solver under `/app/emsolve` produces inconsistent
-physical mode payloads when the same cavity is described with different
-vertex numbering, element ordering, local tetrahedron orientation, or
-boundary-face listing, and checkpoint resume can disagree with a fresh run.
-Repeated or clustered modes must expose deterministic canonical coefficient
-payloads, including after checkpoint resume. Fix the C++ sources under
-`/app/emsolve`, rebuild with `/app/scripts/build.sh`, and invoke the rebuilt
-`/app/bin/emsolve` binary directly so `/output/modes.json` is produced by the
-solver after a normal compile — not by hand-written output or wrapper
-shortcuts.
+Garnet Board Watch sits at the near end of a shove-board that finishes at a ledge, watches a file of discs standing rim to rim, and for each board says who is winning. Two players take turns, and a turn is one thing: a player picks a single disc and shoves it forward toward the ledge, no further than the rim of the disc ahead. Shove the front disc the whole way to the ledge and it scores and is lifted off. Whoever makes the last shove wins.
 
-`/app/docs/solver-contract.md` and `/app/docs/checkpoint-format.md` are
-authoritative for the finite-element model, mode ordering, repeated-eigenspace
-canonicalization, checkpoint binary layout, and resume validation. The public
-CLI (`--mesh`, `--modes`, `--output`, `--config`, checkpoint flags, `--help`)
-and `/output/modes.json` schema are unchanged. Do not modify shipped fixtures
-under `/app/data`. Any mesh or checkpoint the contracts mark invalid must make
-`/app/bin/emsolve` exit nonzero without a successful mode payload and must leave
-an existing `--output` file untouched.
+A board is written as the rooms of the discs front to back: the space the front disc has to the ledge, then the space each further disc has to the disc ahead. The board file, the judge's only argument, can set the largest room a board allows and a nudge, the most spaces one disc may travel on a turn. Boards arrive on standard input, one to a line.
+
+Your deliverable is the working board judge built from the sources already in /app. The entry point is /app/main.cpp, and /app/shovehalf.cpp holds the game engine. Keep the judge building with g++ -std=c++17 /app/main.cpp /app/shovehalf.cpp, then make it call every board according to /app/docs/rules.md.
+
+Each answered board prints the rooms echoed in plain decimal joined by single spaces, then a pipe with one space on each side, then the call: VOID when a room is out of range here, STUCK when the player to move cannot force a win, or FORCED and one winning shove written 'shove disc I forward D'. A line that is not a list of numbers is passed over. One argument exactly, and a readable board file, or the exit is 2. A good run exits 0.
