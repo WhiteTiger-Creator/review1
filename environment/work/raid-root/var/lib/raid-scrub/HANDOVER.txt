@@ -1,0 +1,7 @@
+Handover note from the storage team.
+
+The array chassis was relocated during the last maintenance window and this
+tree is the staged copy that came across with it. Member metadata lives under
+var/lib/raid-scrub/members, runtime state under var/lib/raid-scrub/state, and
+scrub journals under var/lib/raid-scrub/checkpoints. Operational contracts for
+this host are published under /app.

@@ -1,0 +1,33 @@
+Examples for administrators editing the staged RAID root. These fragments show file syntax only. They are deliberately partial, several of them are drawn from the failed controller and are wrong on purpose, and none of them is a configuration that passes on its own. The binding rules are in /app/raid-contract.txt and /app/array-inventory.txt.
+
+Place DEVICE and MAILADDR only in RAID_ROOT/etc/mdadm/mdadm.conf. ARRAY lines belong in drop-ins under RAID_ROOT/etc/mdadm/mdadm.conf.d, and one file per array keeps a lexical reorder easy to reason about.
+
+An ARRAY line for the boot mirror has the shape ARRAY /dev/md/bootmirror UUID=11111111-2222-3333-4444-555555555555 spare-group=boot bitmap=internal AUTO=yes. The other two arrays use their own UUID, their own spare-group, and the bitmap and degraded settings that the contract requires for their level.
+
+The defaults file RAID_ROOT/etc/default/mdadm holds one assignment per line, for example BOOT_DEGRADED=yes on its own line, with the parity policy assignment on another line.
+
+The per-array ceiling file RAID_ROOT/etc/raid-scrub/io-budget.conf uses one assignment per line. The old controller shipped this file, and the values it left behind were the published floors copied straight in:
+
+bootmirror=20000
+data5=80000
+fast10=60000
+
+That file loads without a parse error and still fails budget_ok, because the floors are a lower bound rather than a distribution and the contract states what the three ceilings must add up to. Treat the shape of those three lines as the syntax to reuse and recompute the numbers.
+
+The triage file RAID_ROOT/etc/raid-scrub/urgency.conf holds a single assignment of the form urgent=ARRAYNAME where ARRAYNAME is one of the array names in the protected inventory. Which array belongs there for the standard campaign is stated in the contract, not here.
+
+The change-board file that gates repair alongside repair.authorize is described in /app/raid-contract.txt, including its path, its line syntax, and the wildcard value. No sample of it is reproduced here.
+
+A repair authorization file contains one UUID per line, and the UUID of the parity array is the one the standard campaign needs.
+
+Timer units live under RAID_ROOT/etc/systemd/system and use a Timer section with an OnCalendar line and a Unit line. An OnCalendar value has the shape OnCalendar=*-*-4 03:00:00 where 4 is an unpadded day of the month. The old controller wrote OnCalendar=*-*-01 03:00:00 for one unit, which is a padded form and is not recognized at all. The day 4 above is only a syntax illustration; the permitted window per array and the separation rule decide which days are usable.
+
+Each scrub helper RAID_ROOT/usr/local/lib/raid-scrub/scrub-<array>.sh must read state/<array>/sync_action and exit without scrubbing when the value is rebuild. When that path is exercised, scrub-events.jsonl records event scrub_skipped_rebuild for that array.
+
+notify.sh must write last-state.json before printing removal text, ignore a second degraded alert for the same UUID, and print a recovery line containing recovered without any serial= token.
+
+speed-limits.conf holds the two assignments speed_limit_min and speed_limit_max, one per line, with the accepted restored values given in the contract.
+
+A checkpoint that has been set aside is named like data5.offset.bad, which is the name form the contract requires for a damaged journal. A checkpoint that is still live keeps the .offset suffix and holds a positive decimal byte offset.
+
+Evaluate with RAID_ROOT and RAID_OUTPUT pointing at the staged tree and output directory, then run /opt/raid-scrub/bin/raidscrubctl apply and read raid-report.json.
