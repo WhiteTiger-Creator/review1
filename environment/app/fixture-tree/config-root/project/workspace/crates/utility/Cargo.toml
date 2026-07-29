@@ -1,0 +1,9 @@
+[package]
+name = "utility"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+audit-metrics = "0.1.0"
+audit-trace = "0.1.0"

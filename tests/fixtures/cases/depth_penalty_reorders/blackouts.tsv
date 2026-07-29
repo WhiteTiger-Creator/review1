@@ -1,4 +1,0 @@
-zone_id	parent_id	rack_lo	rack_hi	masked
-ZROOT	-	10	30	0
-ZPAR	-	1	5	0
-ZCH	ZPAR	40	60	1

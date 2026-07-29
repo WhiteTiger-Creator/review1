@@ -1,0 +1,8 @@
+{
+  "maximum_include_depth": 8,
+  "maximum_include_count": 32,
+  "maximum_replacement_depth": 8,
+  "maximum_config_file_size_bytes": 65536,
+  "maximum_source_package_count": 64,
+  "output_decimal_places": 0
+}

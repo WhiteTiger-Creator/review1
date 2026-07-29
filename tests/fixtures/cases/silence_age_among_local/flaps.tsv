@@ -1,3 +1,0 @@
-flap_id	lamp_id	first_minute	last_minute	severity	raw_text	clock_id
-F1	L1	110	140	HIGH	new	CLK-A
-F9	L9	90	140	HIGH	old	CLK-A

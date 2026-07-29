@@ -2,33 +2,33 @@ version = "2.0"
 
 [metadata]
 author_name = "anonymous"
-author_email = "ochre-panel-lamp-dispatch@invalid.example"
+author_email = "anonymous"
 difficulty = "hard"
-category = "data-processing"
+category = "build-and-dependency-management"
 subcategories = []
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["perl", "make"]
+codebase_size = "large"
+languages = ["rust"]
 tags = [
-  "perl",
-  "noc-operations",
-  "alarm-dispatch",
-  "runner-routing",
-  "fixed-width-output",
-  "data-processing"
+  "cargo",
+  "configuration",
+  "source-replacement",
+  "vendor",
+  "local-registry",
+  "precedence"
 ]
-expert_time_estimate_min = 240
-junior_time_estimate_min = 480
-
-[agent]
-timeout_sec = 1200.0
+expert_time_estimate_min = 300
+junior_time_estimate_min = 600
 
 [verifier]
-timeout_sec = 460.0
+timeout_sec = 600.0
+
+[agent]
+timeout_sec = 1800.0
 
 [environment]
-build_timeout_sec = 900.0
-cpus = 2
-memory_mb = 4096
-storage_mb = 10240
 allow_internet = false
+build_timeout_sec = 1800.0
+cpus = 2
+memory_mb = 8192
+storage_mb = 20480

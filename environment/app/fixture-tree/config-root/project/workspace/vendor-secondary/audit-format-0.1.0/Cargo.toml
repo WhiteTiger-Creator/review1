@@ -1,0 +1,9 @@
+[package]
+name = "audit-format"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "fixture package"
+
+[lib]
+path = "src/lib.rs"

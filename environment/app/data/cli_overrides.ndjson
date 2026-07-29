@@ -1,0 +1,4 @@
+{"profile_id":"cli-none","sequence":1,"override_kind":"inline","value":"term.quiet=false"}
+{"profile_id":"cli-ltr","sequence":1,"override_kind":"inline","value":"build.jobs=5"}
+{"profile_id":"cli-ltr","sequence":2,"override_kind":"file","value":"project/config/environment.toml"}
+{"profile_id":"cli-local-registry","sequence":1,"override_kind":"inline","value":"source.crates-io.replace-with=\"local-registry\""}

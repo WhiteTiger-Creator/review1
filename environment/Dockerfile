@@ -1,46 +1,46 @@
-FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS ochre_panel_room
+# Canonical Terminal-Bench Rust base (digest-pinned).
+# Single-stage is intentional: the agent and verifier must compile Rust offline
+# at runtime (cargo build --release --locked --offline).
+# Run as root — no USER agent / ENTRYPOINT (Daytona Harbor boot).
+FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
 
-ENV DEBIAN_FRONTEND=noninteractive
-WORKDIR /app
+ENV DEBIAN_FRONTEND=noninteractive \
+    CARGO_TERM_COLOR=never \
+    CARGO_NET_OFFLINE=true
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates \
-       bash \
-       make \
-       perl \
-       python3 \
-       python3-pip \
-       python3-venv \
-       coreutils \
-       findutils \
-       gawk \
-       tmux \
-       asciinema \
-    && rm -rf /var/lib/apt/lists/*
+        tmux \
+        asciinema \
+        python3 \
+        python3-pip \
+        ca-certificates \
+        tar \
+        gzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/output /logs/verifier /logs/agent
 
 COPY requirements.lock /tmp/requirements.lock
-COPY wheels /tmp/wheels
-RUN sed -i 's/\r$//' /tmp/requirements.lock \
-    && python3 -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir --no-index --find-links=/tmp/wheels --require-hashes -r /tmp/requirements.lock \
-    && rm -rf /tmp/wheels /tmp/requirements.lock \
-    && ln -sf /opt/venv/bin/pytest /usr/local/bin/pytest \
-    && ln -sf /opt/venv/bin/python /usr/local/bin/verifier-python
+RUN pip3 install --break-system-packages --no-cache-dir \
+        --require-hashes \
+        -r /tmp/requirements.lock \
+    && rm -f /tmp/requirements.lock
 
+WORKDIR /app
 COPY app/ /app/
+RUN chmod a+rwx /app/output
 
-RUN find /app -type f \( -name '*.pl' -o -name '*.pm' -o -name '*.tsv' -o -name '*.txt' -o -name '*.md' -o -name 'Makefile' \) \
-        -exec sed -i 's/\r$//' {} + \
-    && mkdir -p /app/out /app/notes \
-    && printf '\n' > /app/out/.keep \
-    && printf '\n' > /app/notes/.keep \
-    && test -f /app/lamps/smoke/operators.tsv \
-    && test -f /app/lamps/smoke/widths.tsv \
-    && make -C /app clean \
-    && make -C /app dispatch PANEL=/app/lamps/smoke OUT=/app/out \
-    && test -f /app/out/beacon.queue \
-    && test -f /app/out/runner.fold \
-    && make -C /app clean
+# Sanity: starter builds locked offline; fixture packages present.
+# Runtime toolchain stays in-image because agents rebuild the auditor.
+RUN set -eu \
+    && cd /app/auditor \
+    && cargo build --release --locked --offline \
+    && test -x /app/auditor/target/release/cargo-config-source-replacement-precedence-auditor \
+    && test -f /app/fixture-tree/config-root/project/workspace/Cargo.lock \
+    && test -d /app/fixture-tree/config-root/project/workspace/vendor-primary \
+    && test -d /app/fixture-tree/config-root/project/workspace/local-registry \
+    && rm -rf /app/auditor/target \
+    && mkdir -p /app/output \
+    && chmod a+rwx /app/output
 
 CMD ["sleep", "infinity"]
