@@ -1,0 +1,11 @@
+{
+  "files": {
+    "meshes/cavity_canonical.mesh": "400412dd2584eddf77828feebd130a2635b366e894d5a057269d1782cf64343f",
+    "meshes/cavity_elements_reordered.mesh": "522d41e261904af21be00701025489973297546129027c27eb831ed6603901e3",
+    "meshes/cavity_local_orientation.mesh": "990f8eb29a123572b71adf07ed759bd8aed90c1b8faf89599fc5ab5b39bdba39",
+    "meshes/cavity_vertex_permuted.mesh": "72ff6039bcb77d8b17ef6db58acea428a83ee05a580b3ca5e8c99a4228cf0e5d",
+    "meshes/invalid_nonmanifold.mesh": "01aaeef51857a8bbf94f9583a81002c93eb0a25979a59980d452443a963572f1",
+    "configs/default.toml": "92298710d6d1361fc27627c0e7b40ba9ddd7d78ba35efbfb743954b75fed2618",
+    "configs/strict.toml": "771f956158392cccd0f1536127316fd591b3ed00f752128e38049d8d12e4bbd9"
+  }
+}

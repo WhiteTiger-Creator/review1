@@ -1,0 +1,5 @@
+# Spectra header-only eigensolver (vendored snapshot)
+# Version: 1.0.1
+# Upstream: https://github.com/yixuan/spectra
+# This task uses Eigen-based subspace iteration in eigensolver.cpp; Spectra is
+# available for optional future extensions.

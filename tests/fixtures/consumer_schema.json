@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["requested_modes", "computed_modes", "active_dofs", "iterations", "mesh", "modes"],
+  "properties": {
+    "requested_modes": { "type": "integer" },
+    "computed_modes": { "type": "integer" },
+    "active_dofs": { "type": "integer" },
+    "iterations": { "type": "integer" },
+    "mesh": { "type": "string" },
+    "modes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "eigenvalue", "cluster_id", "residuals", "coefficients"],
+        "properties": {
+          "index": { "type": "integer" },
+          "eigenvalue": { "type": "number" },
+          "cluster_id": { "type": "integer" },
+          "residuals": {
+            "type": "object",
+            "required": ["algebraic", "boundary_trace", "divergence"],
+            "properties": {
+              "algebraic": { "type": "number" },
+              "boundary_trace": { "type": "number" },
+              "divergence": { "type": "number" }
+            }
+          },
+          "coefficients": {
+            "type": "array",
+            "items": { "type": "number" }
+          }
+        }
+      }
+    }
+  }
+}

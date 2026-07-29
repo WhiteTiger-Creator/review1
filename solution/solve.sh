@@ -1,266 +1,188 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /app
+solution_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+reference_src="${solution_dir}/reference/src"
 
-cat > src/repair.rs <<'RS_EOF'
-//! Core repair logic for `rotctl repair`. See
-//! `/app/docs/rotation-contract.md` for the input/output contract
-//! `main.rs` already handles.
-//!
-//! A recorded tag at slot i implies an anchor l = i - tag(i) (0-indexed):
-//! the rotate command that would have produced this tag, if the slot is
-//! kept as-is, started at l. A slot can only ever be kept if 0 <= l <=
-//! n-m. The question is which subset of slots can be kept simultaneously
-//! by some real rotate history, and among the largest such subset, which
-//! anchors to use to fill in the rest.
-//!
-//! Two kept slots i < j with anchors L_i, L_j chain together (can both
-//! survive under one history) in exactly three cases:
-//!   - same anchor (L_j == L_i): they're part of the same rotate command's
-//!     window.
-//!   - L_j is larger than every anchor used so far in the chain: a clean
-//!     reset, safe to apply strictly after everything before it.
-//!   - j lies at or beyond where anchor L_i's own window closes (j >=
-//!     L_i + m), even if L_j doesn't clear every earlier anchor. This
-//!     still forces L_j > L_i, but it's weaker than a clean reset — a
-//!     command sharing that weaker link has to be applied *before* the
-//!     command it chains from, since its window can still reach back into
-//!     already-kept slots.
-//!
-//! This three-way structure is exactly a longest-chain DP over three
-//! running arrays (a straightforward longest non-decreasing anchor
-//! subsequence is not enough — it misses the third case and undercounts).
-//! `pref[k]` tracks the best chain using only slots below k, `dpvl[l]`
-//! the best chain currently on anchor l, and `suf[k]` the best chain whose
-//! anchor has fully closed by slot k. Backpointers on all three let us
-//! recover which slots the optimal chain actually kept, not just its
-//! length.
-//!
-//! Once we have the kept-slot chain, we group it into blocks (a new block
-//! on every "reset" link and at the start), which are mutually
-//! non-interfering and apply left-to-right in time. Within a block, the
-//! weaker link means later segments must be applied *before* earlier
-//! ones. That gives a total application order; we replay it highest
-//! priority first with a union-find "next empty slot" sweep so painting a
-//! wide window costs next to nothing once most of it is already filled,
-//! then tile any slots no kept anchor reaches with filler commands.
+install -m 0644 "${solution_dir}/reference/checkpoint.hpp" "/app/emsolve/include/emsolve/checkpoint.hpp"
+for file in assembly.cpp checkpoint.cpp diagnostics.cpp eigensolver.cpp mesh.cpp modes.cpp topology.cpp; do
+  install -m 0644 "${reference_src}/${file}" "/app/emsolve/src/${file}"
+done
 
-const NEG_INF: i64 = -1_000_000_000;
+mkdir -p /output /app/bin
+/app/scripts/build.sh
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Link {
-    Start,
-    SameAnchor,
-    Reset,
-    Weak,
-}
+/app/bin/emsolve --mesh /app/data/meshes/cavity_canonical.mesh --modes 4 --output /output/modes.json
+/app/bin/emsolve --mesh /app/data/meshes/cavity_vertex_permuted.mesh --modes 4 --output /tmp/permuted.json
 
-/// Union-find returning the smallest not-yet-filled index >= x (with a
-/// sentinel at index n meaning "nothing free left").
-struct FreeSlots {
-    parent: Vec<usize>,
-}
+python3 - <<'PY'
+import json
+from pathlib import Path
 
-impl FreeSlots {
-    fn new(n: usize) -> Self {
-        FreeSlots {
-            parent: (0..=n).collect(),
-        }
-    }
+ZERO_TOL = 1e-8
+SCALE = 1.7
 
-    fn find(&mut self, x: usize) -> usize {
-        let mut root = x;
-        while self.parent[root] != root {
-            root = self.parent[root];
-        }
-        let mut cur = x;
-        while self.parent[cur] != root {
-            let next = self.parent[cur];
-            self.parent[cur] = root;
-            cur = next;
-        }
-        root
-    }
 
-    fn fill(&mut self, x: usize) {
-        self.parent[x] = x + 1;
-    }
-}
+def load(path: Path) -> dict:
+    return json.loads(path.read_text())
 
-/// a: 0-indexed tags in [0, m-1]. Returns (kept_count, chain) where chain
-/// lists the kept slots in increasing order as (slot, anchor, link).
-fn longest_kept_chain(n: usize, m: usize, a: &[i64]) -> (i64, Vec<(usize, usize, Link)>) {
-    let mut pref = vec![NEG_INF; n + 1];
-    let mut suf = vec![NEG_INF; n + 1];
-    let mut dpvl = vec![NEG_INF; n + 1];
-    pref[0] = 0;
 
-    let mut pref_bp: Vec<i64> = vec![-1; n + 1];
-    let mut suf_bp: Vec<i64> = vec![-1; n + 1];
-    let mut dpvl_bp: Vec<i64> = vec![-1; n + 1];
+def compare_eigenvalues(a: dict, b: dict) -> None:
+    va = [m["eigenvalue"] for m in a["modes"]]
+    vb = [m["eigenvalue"] for m in b["modes"]]
+    if len(va) != len(vb):
+        raise SystemExit("oracle smoke: mode count mismatch")
+    for i, (x, y) in enumerate(zip(va, vb)):
+        if abs(x - y) > 1e-5:
+            raise SystemExit(f"oracle smoke: eigenvalue mismatch at {i}")
 
-    let mut parent: Vec<i64> = vec![-1; n];
-    let mut link: Vec<Link> = vec![Link::Start; n];
 
-    for i in 0..n {
-        let anchor: i64 = i as i64 - a[i];
+def check_positive_physical_modes(payload: dict) -> None:
+    if not payload["modes"]:
+        raise SystemExit("oracle smoke: no modes reported")
+    scale = max(1.0, max(abs(m["eigenvalue"]) for m in payload["modes"]))
+    threshold = ZERO_TOL * scale
+    first = payload["modes"][0]["eigenvalue"]
+    if first <= threshold:
+        raise SystemExit(f"oracle smoke: first mode is non-physical ({first} <= {threshold})")
+    for mode in payload["modes"]:
+        if mode["eigenvalue"] <= threshold:
+            raise SystemExit("oracle smoke: reported a null-space mode")
+        if mode["residuals"]["algebraic"] > 1e-6:
+            raise SystemExit("oracle smoke: algebraic residual too large")
+        if mode["residuals"]["boundary_trace"] > 1e-8:
+            raise SystemExit("oracle smoke: boundary_trace residual too large")
+        if mode["residuals"]["divergence"] > 1e-7:
+            raise SystemExit("oracle smoke: divergence residual too large")
 
-        let mut best_val = suf[i];
-        let mut best_bp = suf_bp[i];
-        let mut best_link = Link::Weak;
 
-        if anchor >= 0 {
-            let l = anchor as usize;
-            if dpvl[l] > best_val {
-                best_val = dpvl[l];
-                best_bp = dpvl_bp[l];
-                best_link = Link::SameAnchor;
-            }
-            if pref[l] > best_val {
-                best_val = pref[l];
-                best_bp = pref_bp[l];
-                best_link = Link::Reset;
-            }
-        }
+canonical = load(Path("/output/modes.json"))
+permuted = load(Path("/tmp/permuted.json"))
+compare_eigenvalues(canonical, permuted)
+check_positive_physical_modes(canonical)
 
-        let c = best_val + 1;
-        parent[i] = best_bp;
-        link[i] = best_link;
+# Simple uniform-scale smoke: eigenvalues should scale approximately by 1/s^2.
+def scale_mesh_text(text: str, factor: float) -> str:
+    lines = text.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        if line.startswith("vertices "):
+            count = int(line.split()[1])
+            for _ in range(count):
+                i += 1
+                vid, x, y, z = lines[i].split()
+                out.append(
+                    f"{vid} {float(x) * factor} {float(y) * factor} {float(z) * factor}"
+                )
+        i += 1
+    return "\n".join(out) + "\n"
 
-        if c > pref[i] {
-            pref[i + 1] = c;
-            pref_bp[i + 1] = i as i64;
-        } else {
-            pref[i + 1] = pref[i];
-            pref_bp[i + 1] = pref_bp[i];
-        }
 
-        if suf[i] > suf[i + 1] {
-            suf[i + 1] = suf[i];
-            suf_bp[i + 1] = suf_bp[i];
-        }
+base_mesh = Path("/tmp/oracle_base.mesh")
+scaled_mesh = Path("/tmp/oracle_scaled.mesh")
+canonical_mesh = Path("/app/data/meshes/cavity_canonical.mesh")
+base_mesh.write_text(canonical_mesh.read_text())
+scaled_mesh.write_text(scale_mesh_text(canonical_mesh.read_text(), SCALE))
 
-        if anchor >= 0 {
-            let l = anchor as usize;
-            if c > dpvl[l] {
-                dpvl[l] = c;
-                dpvl_bp[l] = i as i64;
-            }
-            if l + m <= n && c > suf[l + m] {
-                suf[l + m] = c;
-                suf_bp[l + m] = i as i64;
-            }
-        }
-    }
+out_base = Path("/tmp/oracle_base.json")
+out_scaled = Path("/tmp/oracle_scaled.json")
+import subprocess
 
-    let kept = std::cmp::max(suf[n], 0);
-    if kept <= 0 {
-        return (kept, Vec::new());
-    }
+subprocess.run(
+    ["/app/bin/emsolve", "--mesh", str(base_mesh), "--modes", "3", "--output", str(out_base)],
+    check=True,
+)
+subprocess.run(
+    ["/app/bin/emsolve", "--mesh", str(scaled_mesh), "--modes", "3", "--output", str(out_scaled)],
+    check=True,
+)
+base = load(out_base)
+scaled = load(out_scaled)
+check_positive_physical_modes(base)
+check_positive_physical_modes(scaled)
+for mb, ms in zip(base["modes"], scaled["modes"]):
+    expected = mb["eigenvalue"] / (SCALE * SCALE)
+    if abs(ms["eigenvalue"] - expected) / max(expected, 1e-12) > 1e-3:
+        raise SystemExit("oracle smoke: scale law mismatch")
 
-    let mut slots: Vec<usize> = Vec::with_capacity(kept as usize);
-    let mut cur = suf_bp[n];
-    while cur != -1 {
-        slots.push(cur as usize);
-        cur = parent[cur as usize];
-    }
-    slots.reverse();
+# Coefficient-level canonicalization across one representation-only transform.
+combined_mesh = Path("/tmp/oracle_combined.mesh")
+combined_mesh.write_text(Path("/app/data/meshes/cavity_vertex_permuted.mesh").read_text())
+out_combined = Path("/tmp/oracle_combined.json")
+subprocess.run(
+    [
+        "/app/bin/emsolve",
+        "--mesh",
+        str(combined_mesh),
+        "--modes",
+        "6",
+        "--output",
+        str(out_combined),
+    ],
+    check=True,
+)
+canonical6 = load(Path("/output/modes.json"))
+subprocess.run(
+    [
+        "/app/bin/emsolve",
+        "--mesh",
+        str(canonical_mesh),
+        "--modes",
+        "6",
+        "--output",
+        "/tmp/oracle_canonical6.json",
+    ],
+    check=True,
+)
+canonical6 = load(Path("/tmp/oracle_canonical6.json"))
+combined = load(out_combined)
+if len(combined["modes"]) != len(canonical6["modes"]):
+    raise SystemExit("oracle smoke: combined mode count mismatch")
+for ma, mb in zip(canonical6["modes"], combined["modes"]):
+    if abs(ma["eigenvalue"] - mb["eigenvalue"]) > 1e-5:
+        raise SystemExit("oracle smoke: combined eigenvalue mismatch")
+    if max(abs(x - y) for x, y in zip(ma["coefficients"], mb["coefficients"])) > 1e-7:
+        raise SystemExit("oracle smoke: canonical coefficient mismatch across transform")
 
-    let mut chain = Vec::with_capacity(slots.len());
-    for (idx, &slot) in slots.iter().enumerate() {
-        let anchor = slot - a[slot] as usize;
-        let this_link = if idx == 0 { Link::Start } else { link[slot] };
-        chain.push((slot, anchor, this_link));
-    }
-    (kept, chain)
-}
+# Checkpoint/resume smoke with coefficient agreement.
+ckpt = Path("/tmp/oracle_ckpt.bin")
+subprocess.run(
+    [
+        "/app/bin/emsolve",
+        "--mesh",
+        str(canonical_mesh),
+        "--modes",
+        "6",
+        "--output",
+        "/tmp/oracle_ckpt_partial.json",
+        "--checkpoint",
+        str(ckpt),
+        "--checkpoint-after",
+        "3",
+    ],
+    check=True,
+)
+subprocess.run(
+    [
+        "/app/bin/emsolve",
+        "--mesh",
+        str(canonical_mesh),
+        "--modes",
+        "6",
+        "--output",
+        "/tmp/oracle_resumed.json",
+        "--resume",
+        str(ckpt),
+    ],
+    check=True,
+)
+resumed = load(Path("/tmp/oracle_resumed.json"))
+for ma, mb in zip(canonical6["modes"], resumed["modes"]):
+    if max(abs(x - y) for x, y in zip(ma["coefficients"], mb["coefficients"])) > 1e-7:
+        raise SystemExit("oracle smoke: resume coefficient mismatch")
 
-struct Segment {
-    anchor: usize,
-    block: usize,
-}
-
-/// Group the kept chain into (anchor, block) segments per the block rule
-/// above: a new block on `Start`/`Reset`, continued by `SameAnchor`/`Weak`.
-fn group_into_blocks(chain: &[(usize, usize, Link)]) -> Vec<Segment> {
-    let mut segments: Vec<Segment> = Vec::new();
-    let mut block: i64 = -1;
-    let mut anchor = 0usize;
-
-    for &(_slot, a, l) in chain {
-        match l {
-            Link::Start | Link::Reset => {
-                block += 1;
-                anchor = a;
-                segments.push(Segment {
-                    anchor,
-                    block: block as usize,
-                });
-            }
-            Link::SameAnchor => debug_assert_eq!(a, anchor),
-            Link::Weak => {
-                anchor = a;
-                segments.push(Segment {
-                    anchor,
-                    block: block as usize,
-                });
-            }
-        }
-    }
-    segments
-}
-
-/// Compute the minimum number of tags to correct in `a` (1-indexed values
-/// in `[1, m]`) so the window becomes producible by some rotate history,
-/// and return an explicit corrected array achieving that minimum.
-pub fn repair(n: usize, m: usize, a: &[u32]) -> (usize, Vec<u32>) {
-    let zeroed: Vec<i64> = a.iter().map(|&x| x as i64 - 1).collect();
-    let (kept, chain) = longest_kept_chain(n, m, &zeroed);
-    let corrections = n - kept as usize;
-
-    let mut result: Vec<i64> = vec![-1; n];
-    let mut free = FreeSlots::new(n);
-
-    if !chain.is_empty() {
-        let mut segments = group_into_blocks(&chain);
-        // Highest priority (applied most recently) first: later block,
-        // then smaller anchor within a block.
-        segments.sort_by(|x, y| y.block.cmp(&x.block).then(x.anchor.cmp(&y.anchor)));
-
-        for seg in &segments {
-            let l = seg.anchor;
-            let hi = std::cmp::min(l + m - 1, n - 1);
-            let mut pos = free.find(l);
-            while pos <= hi {
-                result[pos] = (pos - l) as i64;
-                free.fill(pos);
-                pos = free.find(pos);
-            }
-        }
-    }
-
-    // Anything no kept segment reaches is a real gap; tile it with filler
-    // rotate commands (any valid placement works, nothing there needs
-    // protecting).
-    loop {
-        let pos = free.find(0);
-        if pos >= n {
-            break;
-        }
-        let l = std::cmp::min(pos, n - m);
-        let hi = std::cmp::min(l + m - 1, n - 1);
-        let mut p = free.find(l);
-        while p <= hi {
-            result[p] = (p - l) as i64;
-            free.fill(p);
-            p = free.find(p);
-        }
-    }
-
-    let corrected: Vec<u32> = result.iter().map(|&v| (v + 1) as u32).collect();
-    (corrections, corrected)
-}
-RS_EOF
-
-cargo build --release --offline --manifest-path /app/Cargo.toml
+print("oracle smoke ok")
+PY
