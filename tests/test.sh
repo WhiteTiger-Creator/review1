@@ -1,22 +1,17 @@
-#!/usr/bin/env bash
-set -uo pipefail
+#!/bin/bash
 
 mkdir -p /logs/verifier
 echo 0 > /logs/verifier/reward.txt
 
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-unset PYTHONPATH PYTHONHOME
-export PYTHONSAFEPATH=1
-
 if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile before running this script."
-    false
-else
-    cd /tests
-    /usr/bin/python3 -I -P -m pytest -c /dev/null --confcutdir=/tests /tests/test_outputs.py -rA
+    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile."
+    exit 1
 fi
-rc=$?
-if [ "$rc" -eq 0 ]; then
+
+
+pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+status=$?
+if [ "$status" -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt

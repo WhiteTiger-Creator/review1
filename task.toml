@@ -3,32 +3,28 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "hard"
-category = "system-administration"
-subcategories = ["tool_specific", "db_interaction"]
+difficulty = "medium"
+category = "games"
+tags = ["strategy-game", "deterministic-simulation", "replay-analysis", "turn-resolution", "grid-puzzle"]
+languages = ["cpp"]
+codebase_size = "minimal"
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["bash", "ldif"]
-tags = [
-  "openldap",
-  "syncrepl",
-  "replication",
-  "accesslog",
-  "restore",
-  "ldap",
-]
-expert_time_estimate_min = 150
-junior_time_estimate_min = 360
+subcategories = []
+expert_time_estimate_min = 40
+junior_time_estimate_min = 120
+
+[reference_pattern]
+justification_if_none = "No promoted reference in docs/reference_tasks/index.json matches this Anisotropic deterministic grid-arena replay analyzer with portals, dash microsteps, echo trails, pressure gates, charge tiles, turret line-of-sight, simultaneous conflict resolution, scoring, and digest-bound reports."
 
 [agent]
 timeout_sec = 1800
 
 [verifier]
-timeout_sec = 600
+timeout_sec = 900
 
 [environment]
-build_timeout_sec = 900
+allow_internet = false
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-allow_internet = false
