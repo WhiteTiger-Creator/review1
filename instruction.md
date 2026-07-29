@@ -1,5 +1,28 @@
-The staged mdraid host under /app/work/raid-root came from a controller that died mid campaign, and its configuration is wrong in several places at once. Assembly still leans on host disk paths, every scrub timer fires on the same night, the notification helper prints drive serials, throughput and approval files carry values from a smaller chassis, and the parity checkpoint reads back damaged.
+Our fleet controller rolls out canary batches by tagging m consecutive
+server slots 1 through m, left to right, each time it runs a rotate
+command. A later rotate overwrites whatever tag an earlier one left on any
+slot it also covers. By the time a window closes, every slot in scope has
+to have been tagged at least once, otherwise it silently kept running the
+pre-rollout build.
 
-Rebuild that staged root until a full scrub campaign is accepted. Identity is the array UUID and never a device node. Honour the degraded policies for the mirror and the parity set, keep foreign metadata out of assembly, and give each array a throughput ceiling that agrees with both the global rebuild allowance and its own floor. Space the three maintenance windows so two passes can never overlap. Spare replacement follows the declared urgent array, repairing a high mismatch count needs two separate approvals, and a damaged checkpoint must be retired rather than resumed.
+The audit exporter that streams these tags out had a race condition during
+last night's incident, so a chunk of what it recorded almost certainly
+doesn't match anything the controller could have actually produced, and we
+need it cleaned up before it goes into the incident report.
 
-Authoritative rules live in /app/raid-contract.txt, /app/array-inventory.txt, /app/acceptance.txt, /app/scenarios.txt and /app/examples.txt; samples there are partial by design. The protected controller under /opt/raid-scrub stays unchanged. Acceptance means an apply report publishes with every required gate true and the campaign accepted.
+`rotctl` is the on-call repair tool for this. The CLI and I/O plumbing are
+already wired up in `/app/src/main.rs`; what's missing is the repair logic
+in `/app/src/repair.rs`. For each recorded window, it needs to report the
+fewest tags that must have been corrupted, and hand back a corrected tag
+array that some legitimate rotate history really could have produced.
+`/app/docs/rotation-contract.md` has the exact input and output format
+`main.rs` expects.
+
+A single report can bundle up to 10000 windows totaling half a million
+slots, and on-call doesn't have all night — this needs to come back in a
+couple of seconds, nothing that scales with trying out every correction.
+
+If time gets tight, get a correct `rotctl repair` running end to end on
+smaller windows first and tighten it for the half-million-slot case after —
+a slower pass that's actually wired up beats a faster design that never
+made it into `repair.rs`.
