@@ -1,0 +1,3 @@
+flap_id	operator_id	ack_minute	grace_minutes	clock_id
+F1	OP1	100	50	CLK-A
+F1	OP1	110	5	CLK-A

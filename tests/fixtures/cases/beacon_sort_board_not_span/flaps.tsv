@@ -1,0 +1,4 @@
+flap_id	lamp_id	first_minute	last_minute	severity	raw_text	clock_id
+F1	L1	100	140	HIGH	wide-span	CLK-A
+F2a	L2	90	115	HIGH	older-board	CLK-A
+F2b	L2	100	140	LOW	older-board	CLK-A

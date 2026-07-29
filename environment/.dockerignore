@@ -1,6 +1,5 @@
 .git
 .gitignore
-**/target/
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
@@ -11,6 +10,18 @@
 **/venv/
 .env
 *.log
+*.zip
+*.tar
+*.tar.gz
 solution/
 tests/
-authoring/
+**/beacon.queue
+**/runner.fold
+**/*~
+**/*.swp
+**/.DS_Store
+**/cases_work/
+app/panel/cases/
+**/panel/cases/
+.idea/
+.vscode/

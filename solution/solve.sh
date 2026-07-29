@@ -1,35 +1,22 @@
 #!/usr/bin/env bash
+sed -i 's/\r$//' "$0" 2>/dev/null || true
 set -euo pipefail
 
-APP_ROOT="${APP_ROOT:-/app}"
-SOLUTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+OVERLAY="${ROOT}/lamps_overlay"
 
-rm -rf "${APP_ROOT}/auditor/target"
-rm -rf "${APP_ROOT}/auditor/src"
-mkdir -p "${APP_ROOT}/auditor/src"
-
-cp -a "${SOLUTION_DIR}/oracle_src/src/." "${APP_ROOT}/auditor/src/"
-cp -a "${SOLUTION_DIR}/oracle_src/Cargo.toml" "${APP_ROOT}/auditor/Cargo.toml"
-if ! cmp -s "${SOLUTION_DIR}/oracle_src/Cargo.lock" "${APP_ROOT}/auditor/Cargo.lock"; then
-  cp -a "${SOLUTION_DIR}/oracle_src/Cargo.lock" "${APP_ROOT}/auditor/Cargo.lock"
-  rm -rf "${APP_ROOT}/auditor/vendor" "${APP_ROOT}/auditor/.cargo"
-  cp -a "${SOLUTION_DIR}/oracle_src/vendor" "${APP_ROOT}/auditor/vendor"
-  cp -a "${SOLUTION_DIR}/oracle_src/.cargo" "${APP_ROOT}/auditor/.cargo"
+if [[ ! -d "${OVERLAY}" ]]; then
+  echo "ERROR: overlay missing at ${OVERLAY}" >&2
+  exit 1
 fi
 
-cd "${APP_ROOT}/auditor"
-cargo build --release --locked --offline
+for f in dispatch.pl Panel.pm Flaps.pm Blackout.pm Routes.pm Bells.pm Promote.pm Render.pm; do
+  cp -f "${OVERLAY}/${f}" "/app/lamps/${f}"
+  sed -i 's/\r$//' "/app/lamps/${f}"
+done
 
-rm -f "${APP_ROOT}/output/audit_report.json"
-mkdir -p "${APP_ROOT}/output"
-
-"${APP_ROOT}/auditor/target/release/cargo-config-source-replacement-precedence-auditor" \
-  --fixture-root "${APP_ROOT}/fixture-tree/config-root" \
-  --requests "${APP_ROOT}/data/audit_requests.ndjson" \
-  --environment-overrides "${APP_ROOT}/data/environment_overrides.json" \
-  --cli-overrides "${APP_ROOT}/data/cli_overrides.ndjson" \
-  --source-profiles "${APP_ROOT}/data/source_profiles.json" \
-  --solver-config "${APP_ROOT}/data/solver_config.json" \
-  --output "${APP_ROOT}/output/audit_report.json"
-
-test -s "${APP_ROOT}/output/audit_report.json"
+make -C /app clean
+make -C /app dispatch PANEL=/app/panel OUT=/app/out
+test -f /app/out/beacon.queue
+test -f /app/out/runner.fold
+echo "oracle: beacon.queue and runner.fold published"

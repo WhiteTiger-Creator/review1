@@ -1,0 +1,10 @@
+severity	color	priority	bell_name	tie_rule
+LOW	ochre	8	MURMUR	-
+MED	ochre	4	TAP	-
+HIGH	ochre	1	CLANG	-
+LOW	cyan	10	HUSH	-
+MED	cyan	6	TONE	-
+HIGH	cyan	3	RING	-
+LOW	amber	9	SOFT	-
+MED	amber	5	CHIME	-
+HIGH	amber	2	KLING	-

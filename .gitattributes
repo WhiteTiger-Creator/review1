@@ -1,5 +1,0 @@
-# Vendored crates must keep exact on-disk bytes (including CRLF) so
-# .cargo-checksum.json hashes stay valid for cargo --locked --offline.
-environment/app/auditor/vendor/** -text
-solution/oracle_src/vendor/** -text
-tests/reference/vendor/** -text

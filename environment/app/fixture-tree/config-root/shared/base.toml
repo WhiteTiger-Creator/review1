@@ -1,9 +1,0 @@
-include = [
-  "arrays.toml",
-]
-
-[build]
-incremental = false
-
-[net]
-offline = true

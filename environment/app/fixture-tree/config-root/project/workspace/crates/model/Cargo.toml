@@ -1,9 +1,0 @@
-[package]
-name = "model"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-
-[dependencies]
-audit-core = "0.1.0"
-audit-schema = "0.1.0"

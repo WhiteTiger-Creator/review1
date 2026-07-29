@@ -1,0 +1,3 @@
+flap_id	lamp_id	first_minute	last_minute	severity	raw_text	clock_id
+F1	L1	100	140	HIGH	edge lo	CLK-A
+F2	L2	100	140	MED	edge hi	CLK-A

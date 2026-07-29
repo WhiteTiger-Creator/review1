@@ -1,8 +1,0 @@
-[package]
-name = "build-helper"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-
-[dependencies]
-audit-util = "0.1.0"

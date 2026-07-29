@@ -1,5 +1,0 @@
-[build]
-target-dir = "target-audit"
-
-[term]
-color = "never"
