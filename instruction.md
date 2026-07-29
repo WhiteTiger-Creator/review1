@@ -1,13 +1,10 @@
-Complete the Anisotropic deterministic arena replay analyzer in `/app/environment/src/flux_recon.cpp`.
+On this host, cgroup memory.peak accounting for named slice lanes is driven by the systemd oneshot unit `/app/environment/systemd/hwm-unit@.service` (`MemoryAccounting=yes`). Per-slice high-water must stay isolated across lane reset and systemd-style service reload. The live ops report at `/app/output/peak_report.json` is out of policy for the cgroup memcg service path.
 
-The program reads every `*.flux` replay case from `/app/environment/cases` unless `--case-dir <path>` is supplied. It writes `/app/output/flux_report.json` unless `--out <path>` is supplied. It must implement the complete visible contract in `/app/environment/docs/reconstruction_contract.md`.
+Observed ops failures (the interim file `/app/environment/fixtures/q9/haze.json` can look locally fine):
 
-This is a strategy-game replay task, not a numerical-fitting task. Each case describes a grid arena, actors, portals, and per-round commands. Your analyzer must simulate all rounds exactly, including dash microsteps, portal teleports, one-round echo trails, simultaneous move conflicts, direct swaps, iterative occupancy blocking, energy updates, pressure gates, charge tiles, turret line-of-sight attacks, exits, event ordering, scoring, and canonical FNV-1a digests.
+1. Reported memory.peak values disagree with journal-plus-membership recomputation for the same residency samples.
+2. Some path_mode rows disagree for the same cgroup slice on recover.
+3. A slice reload handoff leaves sticky prior-lane high-water on the next slice.
+4. Holdout slices and the wide budget arm break invariants required under the same memcg attribution rules.
 
-The internal `case_id` inside a `.flux` file is authoritative. File names are only containers and may differ from `case_id`; do not use file names for sorting, validation, output fields, or digest tokens.
-
-Important parsing details: trim leading and trailing whitespace from every input line before comment checks, tokenization, or grid-row length checks. This means indented grid rows are valid after trimming. Bump events must include the winner id exactly as `r<round>:<actor>:bump:<winner>`; do not emit a shorter `:bump` event. The `blocks` counter is only for phase-3 iterative occupancy blocking; wall, gate, echo, tired, hazard, laser, and bump outcomes must not increment it.
-
-The verifier uses bundled fixtures and freshly generated replay cases with different paths and edge cases. Implement the generalized replay rules rather than memorizing bundled case outputs. Invalid `.flux` inputs and CLI errors must exit with code `2`, delete any stale output file on every early-exit path, and print a diagnostic to stderr containing `invalid` or `error` after lowercasing. Unknown command diagnostics must also include the word `command`.
-
-The JSON schema is exact. Do not add unlisted keys, debug counters, timestamps, raw input paths, or comments. The digest is computed from canonical tokens described in the contract, not from pretty-printed JSON.
+`/app/environment/docs/pact_n4.md` is the authoritative normative specification for the graded report schema, path_mode coverage, budget arms, membership maps (including `/app/environment/fixtures/members/map_a.json` and `/app/environment/fixtures/members/map_b.json`), journal kind strings, roster patch timing, fence/reload isolation, checkpoint-hint vs journal-reconstruct authority, and reconstruct invariants. Operator tooling is in `/app/environment/docs/operators.md`, including `/app/environment/scripts/prep_run.sh`, `/app/environment/scripts/drive_matrix.sh` (with `--wide`), and `/app/environment/migrations/mig9.sh`. Live journal and checkpoint bytes land under `/app/output/scratch/` (including `/app/output/scratch/hwm.jnl` and `/app/output/scratch/hwm.ckpt`). Restore correct cgroup memory.peak accounting under `/app/environment` so the normal systemd unit path regenerates `/app/output/peak_report.json`. Static or hand-written JSON writes are not enough.

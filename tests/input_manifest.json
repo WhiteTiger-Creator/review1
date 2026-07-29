@@ -1,0 +1,15 @@
+{
+  "files": {
+    "fixtures/members/map_a.json": "300cee3f9c03939cd9911553f0dd07d06b918f72803f242328b8fdf14c42f129",
+    "fixtures/members/map_b.json": "7d8efa9ccf71b1a999e85fb96733ab59789cea848ffc98378d4120549fe7ad58",
+    "fixtures/q9/haze.json": "bd3539c7c8546f86cde4aa8891346eb0096ba68962d0877502541bd4791d1b4f",
+    "fixtures/roster/ash.json": "9531c7f1d395f3dd6d731edf884fb5b0ff426114e8a35477b06e834b9d6e430b",
+    "fixtures/roster/elm.json": "ce151aaf9140ce91345ba60970029cfa648c07bea24bb1357ebad4f7ac1365ad",
+    "fixtures/roster/oak.json": "01674d9a01f879cb82962bbd2afa090efc6d274ce4e86fe200327efaf9764618",
+    "fixtures/roster/pine.json": "c01f1ee71d4f5b17062e18f39d832c5c895e3002f8e354b0348cedb30e1cb432",
+    "fixtures/samples/r1.jsonl": "5e02ccb7ca65b90d38fcace72e186caf274e1e07f495e0017692655020e734d0",
+    "fixtures/samples/r2.jsonl": "096b3fc14327e9446b1fdef1f83349e6e89c97e5ccbfd074fd1aa2ba79b944ef",
+    "fixtures/samples/r3.jsonl": "0d0814db1ea046e1a852e6cdd68b02d7e1e8ae7b40b4db73bf948f2d81d4212e",
+    "fixtures/samples/r4.jsonl": "4c06d96dc7690c633da6de27d2ce89e8f5a2f8c486be62acaaa40ca429375aea"
+  }
+}

@@ -1,751 +1,532 @@
+"""Domain checks for memcg peak journal reload report."""
+from __future__ import annotations
+
 import json
+import os
+import re
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
 import pytest
 
-ROOT = Path("/app") if Path("/app/environment").exists() else Path(__file__).resolve().parents[1]
-ENV = ROOT / "environment"
-SRC = ENV / "src" / "flux_recon.cpp"
-BUNDLED = ENV / "cases"
+OUT = Path("/app/output/peak_report.json")
+ROOT = Path("/app/environment")
+UNIT = ROOT / "systemd" / "hwm-unit@.service"
+APP_BIN = Path("/app/bin/hwm_drive")
+TESTS = Path(os.environ.get("TEST_DIR", "/tests"))
+HELDOUT = TESTS / "heldout"
+MANIFEST = TESTS / "input_manifest.json"
+NONCE_FILE = TESTS / "verifier_nonce"
+VERIFIER_BIN = Path("/tmp/verifier-hwm_drive")
+PRIMARY = ("oak", "pine", "ash")
+HOLDOUT = "elm"
+TIGHT = 48
+WIDE = 96
+LANE_SAMPLES = (
+    ("oak", "r1.jsonl"),
+    ("pine", "r2.jsonl"),
+    ("ash", "r3.jsonl"),
+    ("elm", "r4.jsonl"),
+)
 
-
-DIRS = {
-    "N": (-1, 0),
-    "S": (1, 0),
-    "E": (0, 1),
-    "WST": (0, -1),
-    "DN": (-1, 0),
-    "DS": (1, 0),
-    "DE": (0, 1),
-    "DW": (0, -1),
+AGENT_ENV = {
+    "HOME": "/tmp",
+    "PATH": os.environ.get("PATH", "/bin"),
+    "GOPATH": "/tmp/go",
+    "GOMODCACHE": "/tmp/go/pkg/mod",
 }
 
 
-class InvalidCase(ValueError):
-    pass
+def _harden_verifier_fs() -> None:
+    """Lock /tests so the dropped agent uid cannot read verifier material."""
+    if TESTS.is_dir() and os.geteuid() == 0:
+        for root, _dirs, files in os.walk(TESTS):
+            os.chown(root, 0, 0)
+            os.chmod(root, 0o700)
+            for name in files:
+                fp = Path(root) / name
+                os.chown(fp, 0, 0)
+                os.chmod(fp, 0o600)
 
 
-@pytest.fixture(scope="session")
-def binary(tmp_path_factory):
-    build_dir = tmp_path_factory.mktemp("build")
-    exe = build_dir / "flux_recon"
-    subprocess.run(
-        ["g++", "-std=c++17", "-O2", "-Wall", "-Wextra", str(SRC), "-o", str(exe)],
+_harden_verifier_fs()
+
+
+def _world_writable(path: Path) -> None:
+    mode = path.stat().st_mode
+    os.chmod(path, mode | stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+
+
+def _prepare_workspace() -> None:
+    out_dir = Path("/app/output")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scratch = out_dir / "scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    _world_writable(out_dir)
+    _world_writable(scratch)
+    bin_dir = Path("/app/bin")
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _world_writable(bin_dir)
+
+
+def _run_agent(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run candidate tooling as an unprivileged uid that cannot read /tests."""
+    check = kwargs.pop("check", False)
+    return subprocess.run(
+        cmd,
+        user="nobody",
+        group="nogroup",
+        env=AGENT_ENV,
+        check=check,
+        capture_output=True,
+        text=True,
+        **kwargs,
+    )
+
+
+def _sha256(target: Path) -> str:
+    proc = subprocess.run(
+        ["sha256sum", str(target)],
         check=True,
+        capture_output=True,
+        text=True,
     )
-    return exe
+    return proc.stdout.split()[0]
 
 
-def strip_comments(text):
-    tokens = []
+def _page_delta() -> int:
+    """Verifier-only bump applied to live samples so fixed report rows cannot pass."""
+    raw = NONCE_FILE.read_text(encoding="utf-8").strip()
+    assert raw, "missing verifier nonce"
+    n = 0
+    for ch in raw:
+        n = (n * 33 + ord(ch)) & 0xFFFFFFFF
+    return (n % 5) + 1
+
+
+def _restore_and_seal_fixtures() -> None:
+    """Restore graded fixtures from heldout copies and enforce sealed digests."""
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    files = manifest["files"]
+    assert files, "input manifest must list protected inputs"
+    for rel, want_hash in files.items():
+        pinned = HELDOUT / rel
+        live = ROOT / rel
+        assert pinned.is_file(), f"missing heldout input {pinned}"
+        live.parent.mkdir(parents=True, exist_ok=True)
+        live.write_bytes(pinned.read_bytes())
+        live_digest = _sha256(live)
+        pinned_digest = _sha256(pinned)
+        assert pinned_digest == want_hash, f"tampered heldout input {rel}"
+        assert live_digest == want_hash, f"tampered live input {rel}"
+
+
+def _mutate_live_samples() -> int:
+    """Perturb live sample streams after seal restore; returns the applied delta."""
+    delta = _page_delta()
+    for _lane, fname in LANE_SAMPLES:
+        sample_file = ROOT / "fixtures" / "samples" / fname
+        lines = [ln for ln in sample_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert len(lines) > 3, f"sample stream too short: {fname}"
+        rec = json.loads(lines[3])
+        rec["pages"] = int(rec["pages"]) + delta
+        lines[3] = json.dumps(rec, separators=(",", ":"))
+        sample_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return delta
+
+
+def _rebuild_driver() -> Path:
+    """Rebuild hwm_drive from submitted sources into the unit ExecStart binary path."""
+    if VERIFIER_BIN.exists():
+        VERIFIER_BIN.unlink()
+    proc = subprocess.run(
+        ["go", "build", "-o", str(VERIFIER_BIN), "./cmd/hwm_drive"],
+        cwd=ROOT,
+        env={**os.environ, **AGENT_ENV},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    os.chmod(VERIFIER_BIN, 0o755)
+    APP_BIN.parent.mkdir(parents=True, exist_ok=True)
+    _world_writable(APP_BIN.parent)
+    shutil.copy2(VERIFIER_BIN, APP_BIN)
+    os.chmod(APP_BIN, 0o755)
+    return APP_BIN
+
+
+def _unit_execstart_argv() -> list[str]:
+    """Parse and validate the lane unit ExecStart against the public unit contract."""
+    assert UNIT.is_file(), f"missing unit template {UNIT}"
+    text = UNIT.read_text(encoding="utf-8")
+    exec_line = None
     for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith(";"):
+        if line.startswith("ExecStart="):
+            exec_line = line.split("=", 1)[1].strip()
+            break
+    assert exec_line, "unit template missing ExecStart"
+    argv = exec_line.split()
+    assert argv[0] == str(APP_BIN), f"ExecStart binary must be {APP_BIN}"
+    assert "--root" in argv and str(ROOT) in argv
+    assert "--out" in argv and str(OUT) in argv
+    return argv
+
+
+def _run_matrix(*, wide: bool = False) -> tuple[subprocess.CompletedProcess, int]:
+    _prepare_workspace()
+    _restore_and_seal_fixtures()
+    delta = _mutate_live_samples()
+    _rebuild_driver()
+    unit_argv = _unit_execstart_argv()
+    prep = _run_agent(["bash", str(ROOT / "scripts" / "prep_run.sh")])
+    assert prep.returncode == 0, prep.stderr + prep.stdout
+    cmd = list(unit_argv)
+    if wide:
+        cmd.append("--wide")
+    return _run_agent(cmd), delta
+
+
+def _load() -> dict:
+    return json.loads(OUT.read_text(encoding="utf-8"))
+
+
+def _by_mode(report: dict) -> dict[tuple[str, str], dict]:
+    out = {}
+    for row in report["cases"]:
+        out[(row["slice_id"], row["path_mode"])] = row
+    return out
+
+
+def _members(path: Path) -> dict[int, str]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return {int(k): v for k, v in raw.items()}
+
+
+def _roster(slice_id: str) -> tuple[int, dict[str, str]] | None:
+    roster_file = ROOT / "fixtures" / "roster" / f"{slice_id}.json"
+    if not roster_file.exists():
+        return None
+    raw = json.loads(roster_file.read_text(encoding="utf-8"))
+    return int(raw["after"]), {str(k): str(v) for k, v in raw["patch"].items()}
+
+
+def _peak_from_samples(
+    sample: Path, lane: str, mem: dict[int, str], plan: tuple[int, dict[str, str]] | None
+) -> int:
+    live: dict[int, int] = {}
+    peak = 0
+    lines = [ln for ln in sample.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    for i, raw in enumerate(lines):
+        if plan is not None and i == plan[0]:
+            for pid_s, dest in plan[1].items():
+                mem[int(pid_s)] = dest
+            live = {pid: pages for pid, pages in live.items() if mem.get(pid) == lane}
+        rec = json.loads(raw)
+        pid = int(rec["pid"])
+        pages = int(rec["pages"])
+        if mem.get(pid) != lane:
             continue
-        tokens.extend(line.split())
-    return tokens
+        live[pid] = pages
+        total = sum(live.values())
+        peak = max(peak, total)
+    return peak
 
 
-def parse_case(path):
-    toks = strip_comments(path.read_text())
-    idx = 0
-
-    def need(expected=None):
-        nonlocal idx
-        if idx >= len(toks):
-            raise InvalidCase("unexpected end")
-        tok = toks[idx]
-        idx += 1
-        if expected is not None and tok != expected:
-            raise InvalidCase(f"expected {expected}, got {tok}")
-        return tok
-
-    need("case_id")
-    case_id = need()
-    if not case_id.replace("-", "").replace("_", "").isalnum():
-        raise InvalidCase("bad case id")
-    need("rows")
-    rows = int(need())
-    need("cols")
-    cols = int(need())
-    need("rounds")
-    rounds = int(need())
-    if rows <= 0 or cols <= 0 or rounds <= 0:
-        raise InvalidCase("bad dimensions")
-    need("grid")
-    grid = []
-    for _ in range(rows):
-        row = need()
-        if len(row) != cols:
-            raise InvalidCase("wrong row length")
-        for ch in row:
-            if ch not in "#.EH0123456789+PGT":
-                raise InvalidCase("bad grid char")
-        grid.append(row)
-    need("end_grid")
-    portals = {}
-    for r, row in enumerate(grid):
-        for c, ch in enumerate(row):
-            if ch.isdigit():
-                portals.setdefault(ch, []).append((r, c))
-    for cells in portals.values():
-        if len(cells) != 2:
-            raise InvalidCase("portal count")
-
-    need("actors")
-    actors = {}
-    starts = set()
-    while True:
-        tok = need()
-        if tok == "end_actors":
-            break
-        actor_id = tok
-        if not actor_id.replace("-", "").replace("_", "").isalnum() or actor_id in actors:
-            raise InvalidCase("bad actor")
-        r = int(need())
-        c = int(need())
-        energy = int(need())
-        priority = int(need())
-        if not (0 <= r < rows and 0 <= c < cols) or grid[r][c] == "#":
-            raise InvalidCase("bad actor position")
-        if (r, c) in starts:
-            raise InvalidCase("duplicate position")
-        if energy < 0 or energy > 9 or priority < 0 or priority > 99:
-            raise InvalidCase("bad actor stats")
-        starts.add((r, c))
-        actors[actor_id] = {
-            "id": actor_id,
-            "row": r,
-            "col": c,
-            "energy": energy,
-            "priority": priority,
-            "status": "active",
-            "bumps": 0,
-            "blocks": 0,
-        }
-    if not actors:
-        raise InvalidCase("no actors")
-
-    need("commands")
-    commands = {}
-    while True:
-        tok = need()
-        if tok == "end_commands":
-            break
-        actor_id = tok
-        if actor_id not in actors or actor_id in commands:
-            raise InvalidCase("bad command actor")
-        row = [need() for _ in range(rounds)]
-        if any(cmd not in {"W", "N", "S", "E", "WST", "DN", "DS", "DE", "DW"} for cmd in row):
-            raise InvalidCase("bad command")
-        commands[actor_id] = row
-    if set(commands) != set(actors):
-        raise InvalidCase("missing commands")
-    if idx != len(toks):
-        raise InvalidCase("trailing tokens")
-    return {
-        "case_id": case_id,
-        "rows": rows,
-        "cols": cols,
-        "rounds": rounds,
-        "grid": grid,
-        "portals": portals,
-        "actors": actors,
-        "commands": commands,
-    }
-
-
-def fnv(tokens):
-    h = 0xCBF29CE484222325
-    for token in tokens:
-        for b in token.encode("ascii"):
-            h ^= b
-            h = (h * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
-    return f"{h:016x}"
-
-
-def portal_target(case, r, c):
-    ch = case["grid"][r][c]
-    if not ch.isdigit():
-        return r, c, None
-    cells = case["portals"][ch]
-
-    target = cells[1] if cells[0] == (r, c) else cells[0]
-    return target[0], target[1], ch
-
-
-def turret_hits(case, row, col, gates_open):
-    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-        r, c = row + dr, col + dc
-        while 0 <= r < case["rows"] and 0 <= c < case["cols"]:
-            tile = case["grid"][r][c]
-            if tile == "#" or (tile == "G" and not gates_open):
-                break
-            if tile == "T":
-                return True
-            r += dr
-            c += dc
-    return False
-
-
-def simulate_case(case, max_rounds=None):
-    actors = {aid: dict(actor) for aid, actor in case["actors"].items()}
-    rounds = min(case["rounds"], max_rounds) if max_rounds is not None else case["rounds"]
-    echoes = set()
-    events = []
-    gates_open = False
-
-    for rnd in range(rounds):
-        active_ids = [aid for aid in sorted(actors) if actors[aid]["status"] == "active"]
-        proposals = {}
-        costs = {}
-        blocked_initial = set()
-        for aid in active_ids:
-            actor = actors[aid]
-            cmd = case["commands"][aid][rnd]
-            cost = 0 if cmd == "W" else (2 if cmd.startswith("D") else 1)
-            if actor["energy"] < cost:
-                events.append(f"r{rnd}:{aid}:tired")
-                proposals[aid] = (actor["row"], actor["col"])
-                costs[aid] = 0
-                continue
-            if cmd == "W":
-                proposals[aid] = (actor["row"], actor["col"])
-                costs[aid] = 0
-                continue
-            dr, dc = DIRS[cmd]
-            steps = 2 if cmd.startswith("D") else 1
-            cr, cc = actor["row"], actor["col"]
-            failed = False
-            for _ in range(steps):
-                nr, nc = cr + dr, cc + dc
-                if not (0 <= nr < case["rows"] and 0 <= nc < case["cols"]) or case["grid"][nr][nc] == "#":
-                    events.append(f"r{rnd}:{aid}:wall")
-                    failed = True
-                    break
-                if case["grid"][nr][nc] == "G" and not gates_open:
-                    events.append(f"r{rnd}:{aid}:gate")
-                    failed = True
-                    break
-                if (nr, nc) in echoes:
-                    events.append(f"r{rnd}:{aid}:echo")
-                    failed = True
-                    break
-                cr, cc = nr, nc
-                pr, pc, digit = portal_target(case, cr, cc)
-                if digit is not None:
-                    cr, cc = pr, pc
-                    events.append(f"r{rnd}:{aid}:portal:{digit}")
-            if failed:
-                proposals[aid] = (actor["row"], actor["col"])
-                costs[aid] = 0
-                blocked_initial.add(aid)
-            else:
-                proposals[aid] = (cr, cc)
-                costs[aid] = cost
-
-        accepted = {aid for aid in active_ids if proposals[aid] != (actors[aid]["row"], actors[aid]["col"])}
-        dest_to_ids = {}
-        for aid in accepted:
-            dest_to_ids.setdefault(proposals[aid], []).append(aid)
-        for dest in sorted(dest_to_ids):
-            ids = sorted(dest_to_ids[dest])
-            if len(ids) > 1:
-                winner = min(ids, key=lambda x: (actors[x]["priority"], x))
-                for aid in ids:
-                    if aid != winner:
-                        accepted.discard(aid)
-                        actors[aid]["bumps"] += 1
-                        events.append(f"r{rnd}:{aid}:bump:{winner}")
-
-        changed = True
-        while changed:
-            changed = False
-            occupied_by = {(actors[aid]["row"], actors[aid]["col"]): aid for aid in active_ids}
-            for aid in sorted(accepted):
-                dest = proposals[aid]
-                occupant = occupied_by.get(dest)
-                if occupant is None or occupant == aid:
-                    continue
-                direct_swap = occupant in accepted and proposals[occupant] == (actors[aid]["row"], actors[aid]["col"])
-                if direct_swap:
-                    continue
-                if occupant not in accepted:
-                    accepted.discard(aid)
-                    actors[aid]["blocks"] += 1
-                    events.append(f"r{rnd}:{aid}:blocked:{occupant}")
-                    changed = True
-                    break
-
-        next_echoes = set()
-        for aid in sorted(active_ids):
-            actor = actors[aid]
-            start = (actor["row"], actor["col"])
-            if aid in accepted:
-                actor["row"], actor["col"] = proposals[aid]
-                actor["energy"] -= costs[aid]
-                if start != proposals[aid]:
-                    next_echoes.add(start)
-            elif costs[aid] == 0 and proposals[aid] == start and aid not in blocked_initial:
-                actor["energy"] = min(9, actor["energy"] + 1)
-
-        for aid in sorted(active_ids):
-            actor = actors[aid]
-            if actor["status"] != "active":
-                continue
-            tile = case["grid"][actor["row"]][actor["col"]]
-            if tile == "H":
-                actor["energy"] -= 1
-                events.append(f"r{rnd}:{aid}:hazard")
-            if tile == "+":
-                before = actor["energy"]
-                actor["energy"] = min(9, actor["energy"] + 2)
-                if actor["energy"] != before:
-                    events.append(f"r{rnd}:{aid}:charge")
-            if actor["energy"] < 0:
-                actor["status"] = "down"
-                events.append(f"r{rnd}:{aid}:down")
-
-        if not gates_open and any(
-            actors[aid]["status"] == "active" and case["grid"][actors[aid]["row"]][actors[aid]["col"]] == "P"
-            for aid in active_ids
-        ):
-            gates_open = True
-            events.append(f"r{rnd}:arena:gate_open")
-
-        for aid in sorted(active_ids):
-            actor = actors[aid]
-            if actor["status"] != "active":
-                continue
-            if turret_hits(case, actor["row"], actor["col"], gates_open):
-                actor["energy"] -= 2
-                events.append(f"r{rnd}:{aid}:laser")
-                if actor["energy"] < 0:
-                    actor["status"] = "down"
-                    events.append(f"r{rnd}:{aid}:down")
-
-        for aid in sorted(active_ids):
-            actor = actors[aid]
-            if actor["status"] == "active" and case["grid"][actor["row"]][actor["col"]] == "E":
-                actor["status"] = "exited"
-                events.append(f"r{rnd}:{aid}:exit")
-
-        echoes = next_echoes
-
-    actor_rows = []
-    for aid in sorted(actors):
-        actor = actors[aid]
-        actor_rows.append(
-            {
-                "id": aid,
-                "row": actor["row"],
-                "col": actor["col"],
-                "energy": actor["energy"],
-                "status": actor["status"],
-                "bumps": actor["bumps"],
-                "blocks": actor["blocks"],
-            }
+def _expected_clean(wide: bool = False) -> dict[str, int]:
+    """Recompute from live (mutated) fixtures the driver actually consumed."""
+    mem_path = ROOT / "fixtures" / "members" / ("map_b.json" if wide else "map_a.json")
+    out: dict[str, int] = {}
+    for lane, fname in LANE_SAMPLES:
+        mem = _members(mem_path)
+        out[lane] = _peak_from_samples(
+            ROOT / "fixtures" / "samples" / fname,
+            lane,
+            mem,
+            _roster(lane),
         )
-    score = 0
-    for actor in actor_rows:
-        if actor["status"] == "exited":
-            score += 100
-        if actor["status"] == "down":
-            score -= 40
-        else:
-            score += 5 * actor["energy"]
-        score -= 7 * actor["bumps"]
-        score -= 3 * actor["blocks"]
-    digest_tokens = [f"case:{case['case_id']}", f"rounds:{rounds}"]
-    digest_tokens.extend(
-        f"actor:{a['id']}:{a['row']}:{a['col']}:{a['energy']}:{a['status']}:{a['bumps']}:{a['blocks']}"
-        for a in actor_rows
+    return out
+
+
+def _parse_journal(path: Path) -> list[dict]:
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        out.append(json.loads(line))
+    return out
+
+
+def _assert_scratch_binds_live(*, wide: bool = False) -> None:
+    """Journal/checkpoint must reflect live fixtures, not placeholder stubs."""
+    scratch = Path("/app/output/scratch")
+    jnl = scratch / "hwm.jnl"
+    ckpt = scratch / "hwm.ckpt"
+    assert jnl.is_file() and jnl.stat().st_size > 0
+    assert ckpt.is_file() and ckpt.stat().st_size > 0
+    recs = _parse_journal(jnl)
+    kinds = {r.get("kind") for r in recs}
+    assert "sample" in kinds
+    assert "fence" in kinds
+    assert "roster" in kinds
+
+    samples = [r for r in recs if r.get("kind") == "sample"]
+    rosters = [r for r in recs if r.get("kind") == "roster"]
+    fences = [r for r in recs if r.get("kind") == "fence"]
+    assert len(fences) >= 4
+
+    cursor = 0
+    for lane, fname in LANE_SAMPLES:
+        live_lines = [
+            json.loads(ln)
+            for ln in (ROOT / "fixtures" / "samples" / fname).read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        for want in live_lines:
+            matched = False
+            while cursor < len(samples):
+                got = samples[cursor]
+                cursor += 1
+                if (
+                    got.get("lane") == lane
+                    and int(got.get("pid", -1)) == int(want["pid"])
+                    and int(got.get("pages", -1)) == int(want["pages"])
+                ):
+                    matched = True
+                    break
+            assert matched, f"journal missing live sample lane={lane} {want}"
+        plan = _roster(lane)
+        if plan is not None:
+            assert any(
+                r.get("lane") == lane and r.get("patch") == plan[1] for r in rosters
+            ), f"journal missing roster for {lane}"
+
+    hint = json.loads(ckpt.read_text(encoding="utf-8"))
+    assert isinstance(hint.get("peaks"), dict)
+    assert "gen" in hint
+    # Checkpoint raw tallies must not equal graded clean peaks for every lane.
+    exp = _expected_clean(wide)
+    raw_peaks = {k: int(v) for k, v in hint["peaks"].items()}
+    assert any(raw_peaks.get(lane, -1) != exp[lane] for lane in exp), (
+        "checkpoint peaks look pre-baked to graded values"
     )
-    digest_tokens.extend(f"event:{event}" for event in events)
-    digest_tokens.append(f"score:{score}")
-    return {
-        "case_id": case["case_id"],
-        "rounds_completed": rounds,
-        "actors": actor_rows,
-        "events": events,
-        "score": score,
-        "digest": fnv(digest_tokens),
+
+
+def _heldout_baseline_peak(lane: str, fname: str) -> int:
+    mem = _members(HELDOUT / "fixtures" / "members" / "map_a.json")
+    plan_path = HELDOUT / "fixtures" / "roster" / f"{lane}.json"
+    plan = None
+    if plan_path.exists():
+        raw = json.loads(plan_path.read_text(encoding="utf-8"))
+        plan = (int(raw["after"]), {str(k): str(v) for k, v in raw["patch"].items()})
+    return _peak_from_samples(
+        HELDOUT / "fixtures" / "samples" / fname,
+        lane,
+        mem,
+        plan,
+    )
+
+
+def _assert_report_uses_delta(report: dict, delta: int) -> None:
+    """Fixed unmutated answers cannot survive the verifier-only sample bump."""
+    assert delta >= 1
+    rows = _by_mode(report)
+    base = _heldout_baseline_peak("oak", "r1.jsonl")
+    assert rows[("oak", "clean")]["peak_pages"] == base + delta
+
+
+@pytest.fixture(scope="module")
+def report_bundle():
+    _harden_verifier_fs()
+    proc, delta = _run_matrix()
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert OUT.exists()
+    rep = _load()
+    _assert_scratch_binds_live(wide=False)
+    _assert_report_uses_delta(rep, delta)
+    exp = _expected_clean(False)
+    return {"report": rep, "exp": exp, "delta": delta}
+
+
+@pytest.fixture(scope="module")
+def report(report_bundle):
+    return report_bundle["report"]
+
+
+def test_q0_tests_not_readable_by_agent():
+    """Dropped agent uid cannot read verifier-only material under /tests."""
+    _harden_verifier_fs()
+    proc = _run_agent(["/bin/cat", str(MANIFEST)])
+    assert proc.returncode != 0
+    proc2 = _run_agent(["/bin/cat", str(HELDOUT / "fixtures" / "members" / "map_a.json")])
+    assert proc2.returncode != 0
+    proc3 = _run_agent(["/bin/cat", str(NONCE_FILE)])
+    assert proc3.returncode != 0
+
+
+def test_q0_fixture_seals():
+    """Live graded fixtures match sealed heldout digests before mutation."""
+    _restore_and_seal_fixtures()
+    before = _sha256(ROOT / "fixtures" / "samples" / "r1.jsonl")
+    delta = _mutate_live_samples()
+    after = _sha256(ROOT / "fixtures" / "samples" / "r1.jsonl")
+    assert delta >= 1
+    assert before != after
+    _restore_and_seal_fixtures()
+
+
+def test_q0_unit_execstart():
+    """Lane unit template ExecStart targets the installed driver binary and report path."""
+    argv = _unit_execstart_argv()
+    assert argv[0] == str(APP_BIN)
+    assert UNIT.read_text(encoding="utf-8").count("ExecStart=") == 1
+
+
+def test_q1_clean_cap(report):
+    """Clean path rows for primary lanes stay under tight budget."""
+    rows = _by_mode(report)
+    for lane in PRIMARY:
+        row = rows[(lane, "clean")]
+        assert row["budget_cap"] == TIGHT
+        assert row["peak_pages"] <= TIGHT
+        assert row["harness_exit"] == 0
+
+
+def test_q2_recompute_band(report_bundle):
+    """Report clean peaks match independent live sample+membership+roster recompute."""
+    rows = _by_mode(report_bundle["report"])
+    for lane, want in report_bundle["exp"].items():
+        assert rows[(lane, "clean")]["peak_pages"] == want
+
+
+def test_q3_path_parity(report_bundle):
+    """Mended peaks equal clean peaks per lane and match recomputed values."""
+    rows = _by_mode(report_bundle["report"])
+    exp = report_bundle["exp"]
+    for lane in (*PRIMARY, HOLDOUT):
+        assert rows[(lane, "mended")]["peak_pages"] == rows[(lane, "clean")]["peak_pages"]
+        assert rows[(lane, "mended")]["peak_pages"] == exp[lane]
+        assert rows[(lane, "clean")]["peak_pages"] == exp[lane]
+
+
+def test_q4_handoff_isolation(report_bundle):
+    """Reloaded peaks match clean peaks (no sticky prior high-water)."""
+    rows = _by_mode(report_bundle["report"])
+    exp = report_bundle["exp"]
+    for lane in PRIMARY:
+        assert rows[(lane, "reloaded")]["peak_pages"] == rows[(lane, "clean")]["peak_pages"]
+        assert rows[(lane, "reloaded")]["peak_pages"] == exp[lane]
+        assert rows[(lane, "reloaded")]["harness_exit"] == 0
+        assert rows[(lane, "reloaded")]["budget_cap"] == TIGHT
+
+
+def test_q5_holdout_arm(report):
+    """Holdout elm appears on clean and mended under budget."""
+    rows = _by_mode(report)
+    for mode in ("clean", "mended"):
+        row = rows[(HOLDOUT, mode)]
+        assert row["peak_pages"] <= TIGHT
+        assert row["harness_exit"] == 0
+    assert (HOLDOUT, "reloaded") not in rows
+
+
+def test_q6_wide_arm():
+    """Wide arm uses budget_cap 96 with full clean/mended/reloaded coverage."""
+    _run_agent(["bash", str(ROOT / "migrations" / "mig9.sh")], check=True)
+    proc, delta = _run_matrix(wide=True)
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    rep = _load()
+    _assert_scratch_binds_live(wide=True)
+    _assert_report_uses_delta(rep, delta)
+    exp = _expected_clean(True)
+    rows = _by_mode(rep)
+    for lane in PRIMARY:
+        for mode in ("clean", "mended", "reloaded"):
+            assert rows[(lane, mode)]["budget_cap"] == WIDE
+            assert rows[(lane, mode)]["peak_pages"] == exp[lane]
+            assert rows[(lane, mode)]["harness_exit"] == 0
+        assert rows[(lane, "mended")]["peak_pages"] == rows[(lane, "clean")]["peak_pages"]
+        assert rows[(lane, "reloaded")]["peak_pages"] == rows[(lane, "clean")]["peak_pages"]
+    for mode in ("clean", "mended"):
+        assert rows[(HOLDOUT, mode)]["budget_cap"] == WIDE
+        assert rows[(HOLDOUT, mode)]["peak_pages"] == exp[HOLDOUT]
+        assert rows[(HOLDOUT, mode)]["harness_exit"] == 0
+    assert rows[(HOLDOUT, "mended")]["peak_pages"] == rows[(HOLDOUT, "clean")]["peak_pages"]
+    assert (HOLDOUT, "reloaded") not in rows
+
+
+def test_q7_handwrite_fail():
+    """Static JSON is overwritten; verifier-built driver must bind live fixtures and journal."""
+    fake = {
+        "schema": "peak_v1",
+        "cases": [
+            {
+                "slice_id": "oak",
+                "peak_pages": 1,
+                "budget_cap": 48,
+                "path_mode": "clean",
+                "harness_exit": 0,
+            }
+        ],
     }
+    OUT.write_text(json.dumps(fake, indent=2) + "\n", encoding="utf-8")
+    scratch = Path("/app/output/scratch")
+    if scratch.exists():
+        for p in scratch.glob("*"):
+            p.unlink()
+    proc, delta = _run_matrix()
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    rep = _load()
+    assert len(rep["cases"]) >= 8
+    _assert_scratch_binds_live(wide=False)
+    _assert_report_uses_delta(rep, delta)
+    jnl = (scratch / "hwm.jnl").read_text(encoding="utf-8")
+    assert re.search(r'"kind"\s*:\s*"roster"', jnl)
+    exp = _expected_clean(False)
+    rows = _by_mode(rep)
+    assert rows[("oak", "clean")]["peak_pages"] == exp["oak"]
+    assert rows[("oak", "mended")]["peak_pages"] == exp["oak"]
+    assert rows[("pine", "clean")]["peak_pages"] == exp["pine"]
+    assert rows[("ash", "mended")]["peak_pages"] == exp["ash"]
+    assert rows[("elm", "clean")]["peak_pages"] == exp["elm"]
 
 
-def expected_report(case_dir, max_rounds=None):
-    cases = [parse_case(path) for path in Path(case_dir).glob("*.flux")]
-    matches = sorted((simulate_case(case, max_rounds=max_rounds) for case in cases), key=lambda item: item["case_id"])
-    total_score = sum(match["score"] for match in matches)
-    exited_count = sum(actor["status"] == "exited" for match in matches for actor in match["actors"])
-    down_count = sum(actor["status"] == "down" for match in matches for actor in match["actors"])
-    tokens = [f"match:{m['case_id']}:{m['digest']}:{m['score']}" for m in matches]
-    tokens.append(f"counts:{len(matches)}:{total_score}:{exited_count}:{down_count}")
-    return {
-        "matches": matches,
-        "summary": {
-            "match_count": len(matches),
-            "total_score": total_score,
-            "exited_count": exited_count,
-            "down_count": down_count,
-            "digest": fnv(tokens),
-        },
-    }
+def test_q8_schema_rows(report):
+    """Required schema and case fields match the public pact contract."""
+    pact = (ROOT / "docs" / "pact_n4.md").read_text(encoding="utf-8")
+    assert "peak_v1" in pact
+    assert report["schema"] in pact
+    assert isinstance(report["cases"], list)
+    seen = set()
+    modes = set()
+    for row in report["cases"]:
+        for key in ("slice_id", "peak_pages", "budget_cap", "path_mode", "harness_exit"):
+            assert key in row
+        assert isinstance(row["peak_pages"], int)
+        assert isinstance(row["budget_cap"], int)
+        assert isinstance(row["harness_exit"], int)
+        modes.add(row["path_mode"])
+        seen.add((row["slice_id"], row["path_mode"]))
+    for token in ("clean", "mended", "reloaded"):
+        assert token in pact
+        assert token in modes
+    for lane in PRIMARY:
+        for mode in ("clean", "mended", "reloaded"):
+            assert (lane, mode) in seen
+    assert (HOLDOUT, "clean") in seen
+    assert (HOLDOUT, "mended") in seen
+    assert all(mode in modes for mode in ("clean", "mended", "reloaded"))
 
 
-def run_tool(binary, case_dir, out_path, extra=None, check=True):
-    cmd = [str(binary), "--case-dir", str(case_dir), "--out", str(out_path)]
-    if extra:
-        cmd.extend(extra)
-    return subprocess.run(cmd, text=True, capture_output=True, check=check)
-
-
-def assert_report(actual, expected):
-    assert actual == expected
-    assert list(actual) == ["matches", "summary"]
-    assert list(actual["summary"]) == ["match_count", "total_score", "exited_count", "down_count", "digest"]
-    for match in actual["matches"]:
-        assert list(match) == ["case_id", "rounds_completed", "actors", "events", "score", "digest"]
-        for actor in match["actors"]:
-            assert list(actor) == ["id", "row", "col", "energy", "status", "bumps", "blocks"]
-            assert actor["status"] in {"active", "exited", "down"}
-            assert isinstance(actor["row"], int)
-            assert isinstance(actor["energy"], int)
-        assert len(match["digest"]) == 16
-    assert len(actual["summary"]["digest"]) == 16
-
-
-def copy_bundled(tmp_path):
-    case_dir = tmp_path / "cases"
-    shutil.copytree(BUNDLED, case_dir)
-    return case_dir
-
-
-def write_case(directory, name, text):
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / name
-    path.write_text(text.strip() + "\n")
-    return path
-
-
-def test_bundled_replays_match_reference_and_digest(binary, tmp_path):
-    case_dir = copy_bundled(tmp_path)
-    out = tmp_path / "report.json"
-    run_tool(binary, case_dir, out)
-    actual = json.loads(out.read_text())
-    assert_report(actual, expected_report(case_dir))
-    assert [m["case_id"] for m in actual["matches"]] == ["alpha-patrol", "beta-swap", "delta-indent", "gamma-echo"]
-
-
-def test_dynamic_portal_dash_echo_and_conflicts(binary, tmp_path):
-    case_dir = tmp_path / "fresh"
-    write_case(
-        case_dir,
-        "container-name-does-not-match.flux",
-        """
-        case_id omega-rift
-        rows 6
-        cols 8
-        rounds 6
-        grid
-        ########
-        #..0..E#
-        #.H#...#
-        #..0...#
-        #......#
-        ########
-        end_grid
-        actors
-        C 4 1 5 3
-        A 4 2 4 1
-        B 4 3 4 2
-        end_actors
-        commands
-        A E E DN E WST W
-        B WST N DE WST W W
-        C DE N WST E E W
-        end_commands
-        """,
-    )
-    write_case(
-        case_dir,
-        "zeta.flux",
-        """
-        case_id alpha-before-omega
-        rows 5
-        cols 6
-        rounds 4
-        grid
-        ######
-        #E...#
-        #.H..#
-        #....#
-        ######
-        end_grid
-        actors
-        X 3 1 2 2
-        Y 3 2 2 1
-        end_actors
-        commands
-        X E N N W
-        Y WST N E W
-        end_commands
-        """,
-    )
-    out = tmp_path / "nested" / "report.json"
-    run_tool(binary, case_dir, out)
-    actual = json.loads(out.read_text())
-    expected = expected_report(case_dir)
-    assert_report(actual, expected)
-    assert [m["case_id"] for m in actual["matches"]] == ["alpha-before-omega", "omega-rift"]
-    assert any(":portal:0" in event or ":echo" in event or ":bump:" in event for m in actual["matches"] for event in m["events"])
-    assert "container-name-does-not-match" not in json.dumps(actual)
-
-
-def test_max_rounds_changes_state_score_and_summary_digest(binary, tmp_path):
-    case_dir = copy_bundled(tmp_path)
-    full_out = tmp_path / "full.json"
-    capped_out = tmp_path / "capped.json"
-    run_tool(binary, case_dir, full_out)
-    run_tool(binary, case_dir, capped_out, ["--max-rounds", "2"])
-    full = json.loads(full_out.read_text())
-    capped = json.loads(capped_out.read_text())
-    assert_report(capped, expected_report(case_dir, max_rounds=2))
-    assert capped != full
-    assert capped["summary"]["digest"] != full["summary"]["digest"]
-    assert {match["rounds_completed"] for match in capped["matches"]} == {2}
-
-
-def test_dynamic_swap_and_iterative_blocking(binary, tmp_path):
-    case_dir = tmp_path / "cases"
-    write_case(
-        case_dir,
-        "swap.flux",
-        """
-        case_id swap-cycle-check
-        rows 5
-        cols 7
-        rounds 5
-        grid
-        #######
-        #.....#
-        #..E..#
-        #.....#
-        #######
-        end_grid
-        actors
-        A 2 2 3 5
-        B 2 3 3 4
-        C 2 4 3 1
-        D 3 4 1 2
-        end_actors
-        commands
-        A E E E W W
-        B WST WST E W W
-        C WST WST WST W W
-        D N N WST W W
-        end_commands
-        """,
-    )
-    out = tmp_path / "report.json"
-    run_tool(binary, case_dir, out)
-    actual = json.loads(out.read_text())
-    expected = expected_report(case_dir)
-    assert_report(actual, expected)
-    events = actual["matches"][0]["events"]
-    assert any(":blocked:" in event for event in events)
-    assert any(":bump:" in event for event in events)
-
-
-def test_dynamic_hazard_down_exit_and_tired_events(binary, tmp_path):
-    case_dir = tmp_path / "cases"
-    write_case(
-        case_dir,
-        "hazard.flux",
-        """
-        case_id hazard-ledger
-        rows 5
-        cols 7
-        rounds 5
-        grid
-        #######
-        #..H.E#
-        #.....#
-        #.....#
-        #######
-        end_grid
-        actors
-        A 1 1 2 1
-        B 3 1 1 2
-        end_actors
-        commands
-        A E E E E W
-        B DE DE N E W
-        end_commands
-        """,
-    )
-    out = tmp_path / "report.json"
-    run_tool(binary, case_dir, out)
-    actual = json.loads(out.read_text())
-    expected = expected_report(case_dir)
-    assert_report(actual, expected)
-    event_text = "|".join(actual["matches"][0]["events"])
-    assert "hazard" in event_text
-    assert "exit" in event_text or "down" in event_text or "tired" in event_text
-
-
-def test_dynamic_gate_charge_and_turret_state_machine(binary, tmp_path):
-    case_dir = tmp_path / "cases"
-    write_case(
-        case_dir,
-        "not-the-id.flux",
-        """
-        case_id gate-charge-laser
-        rows 7
-        cols 9
-        rounds 7
-        grid
-        #########
-        #..G..E.#
-        #..#....#
-        #.P+..T.#
-        #.......#
-        #.......#
-        #########
-        end_grid
-        actors
-        A 4 2 3 2
-        B 4 3 2 1
-        C 1 2 5 3
-        end_actors
-        commands
-        A N N E E E E W
-        B N W W W W W W
-        C E W W W W W W
-        end_commands
-        """,
-    )
-    out = tmp_path / "report.json"
-    run_tool(binary, case_dir, out)
-    actual = json.loads(out.read_text())
-    expected = expected_report(case_dir)
-    assert_report(actual, expected)
-    events = "|".join(actual["matches"][0]["events"])
-    assert "gate" in events
-    assert "gate_open" in events
-    assert "charge" in events
-    assert "laser" in events
-    assert actual["matches"][0]["digest"] == expected["matches"][0]["digest"]
-
-
-def test_round_cap_preserves_gate_prefix_and_laser_absence(binary, tmp_path):
-    case_dir = tmp_path / "cases"
-    write_case(
-        case_dir,
-        "gated.flux",
-        """
-        case_id prefix-gate-audit
-        rows 6
-        cols 8
-        rounds 6
-        grid
-        ########
-        #..G.E.#
-        #.P+T..#
-        #......#
-        #......#
-        ########
-        end_grid
-        actors
-        A 4 2 5 1
-        B 4 4 4 2
-        end_actors
-        commands
-        A N N E N E W
-        B N WST WST E E W
-        end_commands
-        """,
-    )
-    full_out = tmp_path / "full.json"
-    cap_out = tmp_path / "cap.json"
-    run_tool(binary, case_dir, full_out)
-    run_tool(binary, case_dir, cap_out, ["--max-rounds", "3"])
-    full = json.loads(full_out.read_text())
-    cap = json.loads(cap_out.read_text())
-    assert_report(full, expected_report(case_dir))
-    assert_report(cap, expected_report(case_dir, max_rounds=3))
-    assert full["summary"]["digest"] != cap["summary"]["digest"]
-    assert cap["matches"][0]["rounds_completed"] == 3
-    assert "gate_open" in "|".join(cap["matches"][0]["events"])
-
-
-@pytest.mark.parametrize(
-    ("body", "needle"),
-    [
-        (
-            """
-            case_id bad-portal
-            rows 3
-            cols 5
-            rounds 1
-            grid
-            #####
-            #0..#
-            #####
-            end_grid
-            actors
-            A 1 2 1 1
-            end_actors
-            commands
-            A W
-            end_commands
-            """,
-            "portal",
-        ),
-        (
-            """
-            case_id bad-command
-            rows 3
-            cols 5
-            rounds 1
-            grid
-            #####
-            #...#
-            #####
-            end_grid
-            actors
-            A 1 2 1 1
-            end_actors
-            commands
-            A WEST
-            end_commands
-            """,
-            "command",
-        ),
-    ],
-)
-def test_invalid_cases_exit_two_delete_stale_output(binary, tmp_path, body, needle):
-    case_dir = tmp_path / "cases"
-    write_case(case_dir, "bad.flux", body)
-    out = tmp_path / "report.json"
-    out.write_text("stale")
-    proc = run_tool(binary, case_dir, out, check=False)
-    assert proc.returncode == 2
-    assert not out.exists()
-    assert "invalid" in proc.stderr.lower() or "error" in proc.stderr.lower()
-    assert needle in proc.stderr.lower()
-
-
-def test_unknown_option_and_bad_round_cap_are_atomic(binary, tmp_path):
-    case_dir = copy_bundled(tmp_path)
-    out = tmp_path / "report.json"
-    out.write_text("old")
-    proc = run_tool(binary, case_dir, out, ["--max-rounds", "0"], check=False)
-    assert proc.returncode == 2
-    assert not out.exists()
-    out.write_text("old")
-    proc = run_tool(binary, case_dir, out, ["--bogus", "x"], check=False)
-    assert proc.returncode == 2
-    assert not out.exists()
+def test_q9_shallow_not_graded(report):
+    """Shallow q9 interim file is not a substitute for the graded report."""
+    haze = ROOT / "fixtures" / "q9" / "haze.json"
+    assert haze.exists()
+    stub = json.loads(haze.read_text(encoding="utf-8"))
+    assert stub.get("schema") != report["schema"]
+    rows = _by_mode(report)
+    assert rows[("oak", "clean")]["peak_pages"] != stub.get("peak_pages", -1)
+    assert len(report["cases"]) > 1

@@ -4,23 +4,38 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "medium"
-category = "games"
-tags = ["strategy-game", "deterministic-simulation", "replay-analysis", "turn-resolution", "grid-puzzle"]
-languages = ["cpp"]
-codebase_size = "minimal"
-number_of_milestones = 0
+category = "system-administration"
 subcategories = []
-expert_time_estimate_min = 40
-junior_time_estimate_min = 120
+number_of_milestones = 0
+codebase_size = "small"
+languages = ["go", "bash"]
+tags = [
+    "system-administration",
+    "systemd",
+    "cgroup",
+    "memcg",
+    "memory.peak",
+    "MemoryAccounting",
+    "service-reload",
+    "ops-restore",
+]
+expert_time_estimate_min = 90
+junior_time_estimate_min = 240
 
-[reference_pattern]
-justification_if_none = "No promoted reference in docs/reference_tasks/index.json matches this Anisotropic deterministic grid-arena replay analyzer with portals, dash microsteps, echo trails, pressure gates, charge tiles, turret line-of-sight, simultaneous conflict resolution, scoring, and digest-bound reports."
+[category_profile]
+challenge_family = "cgroup memcg peak accounting under systemd lane units"
+profile_name = "filesystem_state_reconstruction"
+allowed_instruction_disclosures = "Unit path, pact schema, budget arms, membership maps, journal/checkpoint paths, roster timing, fence/reload isolation, checkpoint vs journal authority"
+forbidden_instruction_leaks = "Exact broken package sites, oracle transcript, which single file flips each check"
+category_specific_hardness_bar = "Live attributed memory.peak sums, mid-window roster migrations, fence/reload isolation, and checkpoint vs journal reconstruct must all align for systemd lane units"
+category_specific_verifier_risks = "False greens from static peak_report.json or placeholder journals that ignore sealed cgroup fixtures"
+coverage_role = "System-administration memcg/cgroup service accounting with systemd unit ExecStart and reload isolation"
 
 [agent]
-timeout_sec = 1800
+timeout_sec = 1200
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 600
 
 [environment]
 allow_internet = false
