@@ -1,50 +1,24 @@
-#!/usr/bin/env bash
-set -euo pipefail
+//! Standalone ground-truth checker for the fleet-rotation-log-repair task.
+//!
+//! Independently re-implements the same "minimum tag corrections" and
+//! "is this array producible" computation the task's solution/solve.sh
+//! implements, so test_outputs.py can cross-check an agent's submission
+//! without trusting its own arithmetic. Compiled at test time by
+//! tests/test.sh (rustc is already baked into the image) — never shipped
+//! to the agent.
+//!
+//! Reads the same batch format as `rotctl repair` (see
+//! environment/app/docs/rotation-contract.md) from stdin, and for each
+//! window prints a single line: the minimum number of tag corrections
+//! needed to make that window producible. Feeding a candidate corrected
+//! array back through this checker and confirming it prints 0 is how
+//! test_outputs.py verifies a submitted array is actually producible, not
+//! just "close" to the original.
+//!
+//! Single-file, std-only, no external crates — compiled directly with
+//! `rustc`, no Cargo project needed.
 
-cd /app
-
-cat > src/repair.rs <<'RS_EOF'
-//! Core repair logic for `rotctl repair`. See
-//! `/app/docs/rotation-contract.md` for the input/output contract
-//! `main.rs` already handles.
-//!
-//! A recorded tag at slot i implies an anchor l = i - tag(i) (0-indexed):
-//! the rotate command that would have produced this tag, if the slot is
-//! kept as-is, started at l. A slot can only ever be kept if 0 <= l <=
-//! n-m. The question is which subset of slots can be kept simultaneously
-//! by some real rotate history, and among the largest such subset, which
-//! anchors to use to fill in the rest.
-//!
-//! Two kept slots i < j with anchors L_i, L_j chain together (can both
-//! survive under one history) in exactly three cases:
-//!   - same anchor (L_j == L_i): they're part of the same rotate command's
-//!     window.
-//!   - L_j is larger than every anchor used so far in the chain: a clean
-//!     reset, safe to apply strictly after everything before it.
-//!   - j lies at or beyond where anchor L_i's own window closes (j >=
-//!     L_i + m), even if L_j doesn't clear every earlier anchor. This
-//!     still forces L_j > L_i, but it's weaker than a clean reset — a
-//!     command sharing that weaker link has to be applied *before* the
-//!     command it chains from, since its window can still reach back into
-//!     already-kept slots.
-//!
-//! This three-way structure is exactly a longest-chain DP over three
-//! running arrays (a straightforward longest non-decreasing anchor
-//! subsequence is not enough — it misses the third case and undercounts).
-//! `pref[k]` tracks the best chain using only slots below k, `dpvl[l]`
-//! the best chain currently on anchor l, and `suf[k]` the best chain whose
-//! anchor has fully closed by slot k. Backpointers on all three let us
-//! recover which slots the optimal chain actually kept, not just its
-//! length.
-//!
-//! Once we have the kept-slot chain, we group it into blocks (a new block
-//! on every "reset" link and at the start), which are mutually
-//! non-interfering and apply left-to-right in time. Within a block, the
-//! weaker link means later segments must be applied *before* earlier
-//! ones. That gives a total application order; we replay it highest
-//! priority first with a union-find "next empty slot" sweep so painting a
-//! wide window costs next to nothing once most of it is already filled,
-//! then tile any slots no kept anchor reaches with filler commands.
+use std::io::{self, Read, Write};
 
 const NEG_INF: i64 = -1_000_000_000;
 
@@ -56,8 +30,6 @@ enum Link {
     Weak,
 }
 
-/// Union-find returning the smallest not-yet-filled index >= x (with a
-/// sentinel at index n meaning "nothing free left").
 struct FreeSlots {
     parent: Vec<usize>,
 }
@@ -88,8 +60,6 @@ impl FreeSlots {
     }
 }
 
-/// a: 0-indexed tags in [0, m-1]. Returns (kept_count, chain) where chain
-/// lists the kept slots in increasing order as (slot, anchor, link).
 fn longest_kept_chain(n: usize, m: usize, a: &[i64]) -> (i64, Vec<(usize, usize, Link)>) {
     let mut pref = vec![NEG_INF; n + 1];
     let mut suf = vec![NEG_INF; n + 1];
@@ -181,8 +151,6 @@ struct Segment {
     block: usize,
 }
 
-/// Group the kept chain into (anchor, block) segments per the block rule
-/// above: a new block on `Start`/`Reset`, continued by `SameAnchor`/`Weak`.
 fn group_into_blocks(chain: &[(usize, usize, Link)]) -> Vec<Segment> {
     let mut segments: Vec<Segment> = Vec::new();
     let mut block: i64 = -1;
@@ -211,10 +179,7 @@ fn group_into_blocks(chain: &[(usize, usize, Link)]) -> Vec<Segment> {
     segments
 }
 
-/// Compute the minimum number of tags to correct in `a` (1-indexed values
-/// in `[1, m]`) so the window becomes producible by some rotate history,
-/// and return an explicit corrected array achieving that minimum.
-pub fn repair(n: usize, m: usize, a: &[u32]) -> (usize, Vec<u32>) {
+fn repair(n: usize, m: usize, a: &[u32]) -> (usize, Vec<u32>) {
     let zeroed: Vec<i64> = a.iter().map(|&x| x as i64 - 1).collect();
     let (kept, chain) = longest_kept_chain(n, m, &zeroed);
     let corrections = n - kept as usize;
@@ -224,8 +189,6 @@ pub fn repair(n: usize, m: usize, a: &[u32]) -> (usize, Vec<u32>) {
 
     if !chain.is_empty() {
         let mut segments = group_into_blocks(&chain);
-        // Highest priority (applied most recently) first: later block,
-        // then smaller anchor within a block.
         segments.sort_by(|x, y| y.block.cmp(&x.block).then(x.anchor.cmp(&y.anchor)));
 
         for seg in &segments {
@@ -240,9 +203,6 @@ pub fn repair(n: usize, m: usize, a: &[u32]) -> (usize, Vec<u32>) {
         }
     }
 
-    // Anything no kept segment reaches is a real gap; tile it with filler
-    // rotate commands (any valid placement works, nothing there needs
-    // protecting).
     loop {
         let pos = free.find(0);
         if pos >= n {
@@ -261,6 +221,33 @@ pub fn repair(n: usize, m: usize, a: &[u32]) -> (usize, Vec<u32>) {
     let corrected: Vec<u32> = result.iter().map(|&v| (v + 1) as u32).collect();
     (corrections, corrected)
 }
-RS_EOF
 
-cargo build --release --offline --manifest-path /app/Cargo.toml
+fn main() {
+    let mut input = String::new();
+    io::stdin()
+        .read_to_string(&mut input)
+        .expect("failed to read stdin");
+
+    let mut tokens = input
+        .split_ascii_whitespace()
+        .map(|tok| tok.parse::<i64>().expect("malformed integer in input"));
+
+    let window_count = tokens.next().expect("missing window count") as usize;
+
+    let mut out = String::new();
+    for _ in 0..window_count {
+        let n = tokens.next().expect("missing slot count") as usize;
+        let m = tokens.next().expect("missing batch size") as usize;
+        let tags: Vec<u32> = (0..n)
+            .map(|_| tokens.next().expect("missing slot tag") as u32)
+            .collect();
+
+        let (corrections, _fixed) = repair(n, m, &tags);
+        out.push_str(&corrections.to_string());
+        out.push('\n');
+    }
+
+    io::stdout()
+        .write_all(out.as_bytes())
+        .expect("failed to write stdout");
+}

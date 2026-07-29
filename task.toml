@@ -5,33 +5,23 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "system-administration"
-subcategories = ["db_interaction"]
+subcategories = []
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["rust", "sql", "bash"]
-tags = [
-  "credential-store",
-  "daemon-administration",
-  "generation-handoff",
-  "sqlite",
-  "reader-snapshots",
-  "crash-recovery",
-]
-expert_time_estimate_min = 210
-junior_time_estimate_min = 480
-
-[agent]
-timeout_sec = 1800
+codebase_size = "minimal"
+languages = ["rust"]
+tags = ["fleet-operations", "audit-log-repair", "rolling-restart", "cli-tool", "rust"]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 600
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 450.0
+
+[agent]
+timeout_sec = 1800.0
 
 [environment]
-build_timeout_sec = 900
-cpus = 2
-memory_mb = 4096
-storage_mb = 8192
 allow_internet = false
-docker_flags = []
-gpus = 0
-gpu_types = []
+build_timeout_sec = 600.0
+cpus = 2
+memory_mb = 2048
+storage_mb = 4096
