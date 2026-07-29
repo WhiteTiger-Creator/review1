@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "migrations": [
+    {
+      "migration_id": "mig-app-rename",
+      "from_principal": "applications-team-old",
+      "to_principal": "build-service",
+      "tenant": "applications",
+      "namespace_pattern": "apps/payments/**",
+      "predicates": [
+        "build"
+      ],
+      "valid_from_epoch": 10,
+      "valid_through_epoch": null
+    }
+  ],
+  "revocations": [
+    {
+      "event_id": "rev-future-key",
+      "effective_epoch": 200,
+      "scope": "key",
+      "target": "release-a-1"
+    },
+    {
+      "event_id": "rev-decoy-key",
+      "effective_epoch": 80,
+      "scope": "key",
+      "target": "revoked-key-1"
+    },
+    {
+      "event_id": "rev-decoy-key",
+      "effective_epoch": 80,
+      "scope": "key",
+      "target": "revoked-key-1"
+    }
+  ]
+}

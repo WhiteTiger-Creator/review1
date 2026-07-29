@@ -1,0 +1,321 @@
+diff --git a/crates/admission-gateway/src/commands/evaluate.rs b/crates/admission-gateway/src/commands/evaluate.rs
+index 9eb1800..6c4a594 100644
+--- a/crates/admission-gateway/src/commands/evaluate.rs
++++ b/crates/admission-gateway/src/commands/evaluate.rs
+@@ -131,7 +131,21 @@ pub fn run(request: PathBuf, output: PathBuf) -> Result<()> {
+             if binding.artifact_digest != artifact.digest {
+                 continue;
+             }
+-            let principal = principal_for_key(&binding.attestation.key_id, &keys).unwrap_or("");
++            if binding.attestation.issued_epoch > evaluation_epoch {
++                continue;
++            }
++            let Some(key_record) = keys
++                .iter()
++                .find(|record| record.key_id == binding.attestation.key_id)
++            else {
++                continue;
++            };
++            if !trust_model::key::active_at(key_record, binding.attestation.issued_epoch)
++                || !trust_model::key::active_at(key_record, evaluation_epoch)
++            {
++                continue;
++            }
++            let principal = key_record.principal.as_str();
+             let resolved = resolve_principal(
+                 principal,
+                 &artifact.tenant,
+diff --git a/crates/compatibility/src/legacy.rs b/crates/compatibility/src/legacy.rs
+index 9e287a1..f9f8787 100644
+--- a/crates/compatibility/src/legacy.rs
++++ b/crates/compatibility/src/legacy.rs
+@@ -26,7 +26,7 @@ pub fn verify_legacy_receipt(
+ }
+ 
+ pub fn legacy_allows_predicate(predicate: &str) -> bool {
+-    matches!(predicate, "build" | "test" | "package" | "release-approval")
++    predicate == "build"
+ }
+ 
+ 
+diff --git a/crates/decision-publish/src/generation.rs b/crates/decision-publish/src/generation.rs
+index 27f959e..af577b2 100644
+--- a/crates/decision-publish/src/generation.rs
++++ b/crates/decision-publish/src/generation.rs
+@@ -15,6 +15,7 @@ pub fn publish_generation(
+ ) -> anyhow::Result<PathBuf> {
+     let generation_root = output_dir.join(".admission-generations");
+     fs::create_dir_all(&generation_root)?;
++    validate::validate_outputs(decision, evidence)?;
+     let generation_id = validate::generation_id(decision, evidence);
+     let staging = output_dir.join(format!(".staging-{generation_id}"));
+     if staging.exists() {
+@@ -24,7 +25,6 @@ pub fn publish_generation(
+     let decision_bytes = evidence_format::decision::canonical_decision_bytes(decision)?;
+     fs::write(staging.join("decision.json"), &decision_bytes)?;
+     fs::write(staging.join("evidence.cbor"), evidence)?;
+-    update_public_links(output_dir, &staging)?;
+     let generation_meta = serde_json::json!({
+         "schema_version": 1,
+         "generation_id": generation_id,
+@@ -35,8 +35,10 @@ pub fn publish_generation(
+     });
+     let meta_bytes = serde_json::to_vec(&generation_meta)?;
+     fs::write(staging.join("generation.json"), &meta_bytes)?;
++    validate::validate_outputs(decision, evidence)?;
+     let committed = generation_root.join(&generation_id);
+     fs::rename(&staging, &committed)?;
++    update_public_links(output_dir, &committed)?;
+     Ok(committed)
+ }
+ 
+diff --git a/crates/envelope-format/src/digest.rs b/crates/envelope-format/src/digest.rs
+index 4befbf2..c63e901 100644
+--- a/crates/envelope-format/src/digest.rs
++++ b/crates/envelope-format/src/digest.rs
+@@ -30,8 +30,8 @@ pub fn artifact_digest(content: &[u8]) -> String {
+     digest_bytes(content)
+ }
+ 
+-pub fn subject_matches_artifact(subject: &str, artifact_digest: &str, envelope_digest: &str, payload_digest: &str) -> bool {
+-    subject == artifact_digest || subject == envelope_digest || subject == payload_digest
++pub fn subject_matches_artifact(subject: &str, artifact_digest: &str, _envelope_digest: &str, _payload_digest: &str) -> bool {
++    subject == artifact_digest
+ }
+ 
+ 
+diff --git a/crates/evidence-format/src/edge.rs b/crates/evidence-format/src/edge.rs
+index ca3a90f..c970ae7 100644
+--- a/crates/evidence-format/src/edge.rs
++++ b/crates/evidence-format/src/edge.rs
+@@ -40,10 +40,10 @@ pub fn dedupe_edges(edges: Vec<EvidenceEdge>) -> Vec<EvidenceEdge> {
+ }
+ 
+ pub fn merge_paths(paths: Vec<Vec<EvidenceEdge>>) -> Vec<EvidenceEdge> {
+-    if let Some(first) = paths.into_iter().next() {
+-        dedupe_edges(first)
+-    } else {
+-        Vec::new()
++    let mut out = Vec::new();
++    for path in paths {
++        out.extend(path);
+     }
++    dedupe_edges(out)
+ }
+ 
+diff --git a/crates/policy-engine/src/conflict.rs b/crates/policy-engine/src/conflict.rs
+index 0a0e346..fc78af8 100644
+--- a/crates/policy-engine/src/conflict.rs
++++ b/crates/policy-engine/src/conflict.rs
+@@ -8,11 +8,14 @@ pub fn collect_conflicts(items: &[ConflictRecord]) -> Vec<ConflictRecord> {
+     items.to_vec()
+ }
+ 
+-pub fn has_reachable_conflict(_conflicts: &[ConflictRecord]) -> bool {
+-    false
++pub fn has_reachable_conflict(conflicts: &[ConflictRecord]) -> bool {
++    !conflicts.is_empty()
+ }
+ 
+-pub fn reject_on_conflict(_conflicts: &[ConflictRecord]) -> anyhow::Result<()> {
++pub fn reject_on_conflict(conflicts: &[ConflictRecord]) -> anyhow::Result<()> {
++    if has_reachable_conflict(conflicts) {
++        anyhow::bail!("reachable conflict detected")
++    }
+     Ok(())
+ }
+ 
+diff --git a/crates/policy-engine/src/evaluate.rs b/crates/policy-engine/src/evaluate.rs
+index dd2beb4..9993e55 100644
+--- a/crates/policy-engine/src/evaluate.rs
++++ b/crates/policy-engine/src/evaluate.rs
+@@ -43,6 +43,9 @@ pub fn evaluate_artifact(
+             .filter(|(_, pred, _)| pred == predicate)
+             .map(|(key, _, principal)| (key.clone(), principal.clone()))
+             .collect();
++        if predicate_approvals.is_empty() {
++            anyhow::bail!("required predicate not satisfied: {predicate}");
++        }
+         satisfying.extend(
+             predicate_approvals
+                 .iter()
+diff --git a/crates/trust-model/src/delegation.rs b/crates/trust-model/src/delegation.rs
+index 32e1ee9..393f42d 100644
+--- a/crates/trust-model/src/delegation.rs
++++ b/crates/trust-model/src/delegation.rs
+@@ -27,13 +27,41 @@ fn namespace_matches(pattern: &str, namespace: &str) -> bool {
+ pub fn delegation_allows(
+     delegation: &DelegationRecord,
+     principal: &str,
+-    _tenant: &str,
+-    _namespace: &str,
+-    _predicate: &str,
+-    _media_type: &str,
+-    _epoch: u64,
++    tenant: &str,
++    namespace: &str,
++    predicate: &str,
++    media_type: &str,
++    epoch: u64,
+ ) -> bool {
+-    delegation.subject_principal == principal
++    if delegation.subject_principal != principal {
++        return false;
++    }
++    if delegation.tenant != tenant {
++        return false;
++    }
++    if epoch < delegation.valid_from_epoch {
++        return false;
++    }
++    if let Some(end) = delegation.valid_through_epoch {
++        if epoch > end {
++            return false;
++        }
++    }
++    if !namespace_matches(&delegation.namespace_pattern, namespace) {
++        return false;
++    }
++    if !delegation.predicates.iter().any(|p| p == predicate) {
++        return false;
++    }
++    if !delegation.artifact_media_types.is_empty()
++        && !delegation
++            .artifact_media_types
++            .iter()
++            .any(|mt| mt == media_type)
++    {
++        return false;
++    }
++    true
+ }
+ 
+ 
+diff --git a/crates/trust-model/src/migration.rs b/crates/trust-model/src/migration.rs
+index cec15ba..89296f9 100644
+--- a/crates/trust-model/src/migration.rs
++++ b/crates/trust-model/src/migration.rs
+@@ -14,21 +14,50 @@ pub struct MigrationRecord {
+ 
+ pub fn resolve_principal(
+     principal: &str,
+-    _tenant: &str,
+-    _namespace: &str,
+-    _predicate: &str,
+-    _epoch: u64,
++    tenant: &str,
++    namespace: &str,
++    predicate: &str,
++    epoch: u64,
+     migrations: &[MigrationRecord],
+ ) -> String {
+     let mut current = principal.to_string();
+     for record in migrations {
+-        if record.from_principal == current {
+-            current = record.to_principal.clone();
++        if record.from_principal != current {
++            continue;
+         }
++        if record.tenant != tenant {
++            continue;
++        }
++        if epoch < record.valid_from_epoch {
++            continue;
++        }
++        if let Some(end) = record.valid_through_epoch {
++            if epoch > end {
++                continue;
++            }
++        }
++        if !namespace_matches(&record.namespace_pattern, namespace) {
++            continue;
++        }
++        if !record.predicates.iter().any(|p| p == predicate) {
++            continue;
++        }
++        current = record.to_principal.clone();
+     }
+     current
+ }
+ 
++fn namespace_matches(pattern: &str, namespace: &str) -> bool {
++    if pattern == "**" {
++        return true;
++    }
++    if pattern.ends_with("/**") {
++        let prefix = pattern.trim_end_matches("/**");
++        return namespace == prefix || namespace.starts_with(&format!("{prefix}/"));
++    }
++    pattern == namespace
++}
++
+ pub fn load_migrations(value: &serde_json::Value) -> anyhow::Result<Vec<MigrationRecord>> {
+     let mut out = Vec::new();
+     let items = value
+diff --git a/crates/trust-model/src/revocation.rs b/crates/trust-model/src/revocation.rs
+index 04da214..0e9cfd7 100644
+--- a/crates/trust-model/src/revocation.rs
++++ b/crates/trust-model/src/revocation.rs
+@@ -6,18 +6,17 @@ pub struct RevocationEvent {
+     pub target: String,
+ }
+ 
+-pub fn effective_at(_event: &RevocationEvent, _evaluation_epoch: u64) -> bool {
+-    true
++pub fn effective_at(event: &RevocationEvent, evaluation_epoch: u64) -> bool {
++    event.effective_epoch <= evaluation_epoch
+ }
+ 
+ pub fn active_revocations(
+     events: &[RevocationEvent],
+-    _evaluation_epoch: u64,
++    evaluation_epoch: u64,
+ ) -> Vec<RevocationEvent> {
+-    let max_epoch = events.iter().map(|event| event.effective_epoch).max().unwrap_or(0);
+     events
+         .iter()
+-        .filter(|event| event.effective_epoch <= max_epoch)
++        .filter(|event| effective_at(event, evaluation_epoch))
+         .cloned()
+         .collect()
+ }
+diff --git a/crates/trust-model/src/threshold.rs b/crates/trust-model/src/threshold.rs
+index d83192b..4e693f1 100644
+--- a/crates/trust-model/src/threshold.rs
++++ b/crates/trust-model/src/threshold.rs
+@@ -10,11 +10,11 @@ pub fn threshold_satisfied(
+     minimum: usize,
+ ) -> bool {
+ 
+-    let keys: Vec<String> = approvals
++    let principals: Vec<String> = approvals
+         .iter()
+-        .map(|(key, _)| key.clone())
++        .map(|(_, principal)| principal.clone())
+         .collect();
+-    count_distinct(&keys) >= minimum
++    count_distinct(&principals) >= minimum
+ }
+ 
+ pub fn canonical_satisfying_set(
+@@ -22,15 +22,15 @@ pub fn canonical_satisfying_set(
+     minimum: usize,
+ ) -> Vec<String> {
+ 
+-    let mut keys: Vec<String> = approvals
++    let mut principals: Vec<String> = approvals
+         .iter()
+-        .map(|(key, _)| key.clone())
++        .map(|(_, principal)| principal.clone())
+         .collect::<BTreeSet<_>>()
+         .into_iter()
+         .collect();
+-    keys.sort();
+-    keys.truncate(minimum);
+-    keys
++    principals.sort();
++    principals.truncate(minimum);
++    principals
+ }
+ 
+ pub fn principal_for_key<'a>(

@@ -1,5 +1,0 @@
-logical_path = "mir-blk"
-source_device = "/dev/mir0"
-dest_device = "/dev/mir1"
-leg_a = "leg-a"
-leg_b = "leg-b"

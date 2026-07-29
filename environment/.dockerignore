@@ -1,8 +1,5 @@
-# Platform Dockerfile evaluation — keep build context small and offline-safe.
-# See docs/DOCKERFILE_BEST_PRACTICES.md §16 and scripts/align_docker_evaluation.py
 .git
 .gitignore
-**/.git/**
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
@@ -10,12 +7,13 @@
 **/.ruff_cache/
 **/node_modules/
 .env
-**/.env
+.venv/
 solution/
 tests/
 target/
-dist/
+**/target/
+jobs/
+logs/
 build/
-.venv/
-venv/
-**/.venv/
+vendor/
+**/vendor/

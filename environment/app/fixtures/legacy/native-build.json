@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "artifact_digest": "sha256:adbe7ced198fd0d8f28cfc3a603d85186dc84737b63a86f7d5e9ed4473d55ca7",
+  "builder_key_id": "legacy-builder-1",
+  "build_epoch": 90,
+  "source_digest": "sha256:b511ae2514b66c59c868a0555b02d39da31f9d86e7e0681af81b0dae3ead8210",
+  "signature": "M3930Hza59JHnUeqKs2C5nMgyXJBxpX22LIB+Na2L0yG7tCRj5dRCTT72OKUodr6bRpal/0SVWq9u/6CSMCSDg=="
+}

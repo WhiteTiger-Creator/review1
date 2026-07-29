@@ -1,0 +1,238 @@
+{
+  "schema_version": 1,
+  "root_authorities": [
+    {
+      "principal_id": "platform-root",
+      "tenant": "platform"
+    },
+    {
+      "principal_id": "app-root",
+      "tenant": "applications"
+    }
+  ],
+  "delegations": [
+    {
+      "delegation_id": "del-platform-build",
+      "issuer_principal": "platform-root",
+      "subject_principal": "build-service",
+      "tenant": "platform",
+      "namespace_pattern": "platform/**",
+      "predicates": [
+        "build"
+      ],
+      "artifact_media_types": [],
+      "valid_from_epoch": 0,
+      "valid_through_epoch": null,
+      "can_delegate": false,
+      "max_depth": 1
+    },
+    {
+      "delegation_id": "del-app-build",
+      "issuer_principal": "app-root",
+      "subject_principal": "build-service",
+      "tenant": "applications",
+      "namespace_pattern": "apps/**",
+      "predicates": [
+        "build"
+      ],
+      "artifact_media_types": [],
+      "valid_from_epoch": 0,
+      "valid_through_epoch": null,
+      "can_delegate": false,
+      "max_depth": 1
+    },
+    {
+      "delegation_id": "del-app-test",
+      "issuer_principal": "app-root",
+      "subject_principal": "test-service",
+      "tenant": "applications",
+      "namespace_pattern": "apps/**",
+      "predicates": [
+        "test"
+      ],
+      "artifact_media_types": [],
+      "valid_from_epoch": 0,
+      "valid_through_epoch": null,
+      "can_delegate": false,
+      "max_depth": 1
+    },
+    {
+      "delegation_id": "del-release-test",
+      "issuer_principal": "platform-root",
+      "subject_principal": "test-service",
+      "tenant": "platform",
+      "namespace_pattern": "releases/**",
+      "predicates": [
+        "test"
+      ],
+      "artifact_media_types": [],
+      "valid_from_epoch": 0,
+      "valid_through_epoch": null,
+      "can_delegate": false,
+      "max_depth": 1
+    },
+    {
+      "delegation_id": "del-app-package",
+      "issuer_principal": "app-root",
+      "subject_principal": "packaging-service",
+      "tenant": "applications",
+      "namespace_pattern": "apps/**",
+      "predicates": [
+        "package"
+      ],
+      "artifact_media_types": [],
+      "valid_from_epoch": 0,
+      "valid_through_epoch": null,
+      "can_delegate": false,
+      "max_depth": 1
+    },
+    {
+      "delegation_id": "del-release-package",
+      "issuer_principal": "platform-root",
+      "subject_principal": "packaging-service",
+      "tenant": "platform",
+      "namespace_pattern": "releases/**",
+      "predicates": [
+        "package"
+      ],
+      "artifact_media_types": [],
+      "valid_from_epoch": 0,
+      "valid_through_epoch": null,
+      "can_delegate": false,
+      "max_depth": 1
+    },
+    {
+      "delegation_id": "del-release-a",
+      "issuer_principal": "platform-root",
+      "subject_principal": "release-approver-a",
+      "tenant": "platform",
+      "namespace_pattern": "releases/**",
+      "predicates": [
+        "release-approval"
+      ],
+      "artifact_media_types": [],
+      "valid_from_epoch": 0,
+      "valid_through_epoch": null,
+      "can_delegate": false,
+      "max_depth": 1
+    },
+    {
+      "delegation_id": "del-release-b",
+      "issuer_principal": "platform-root",
+      "subject_principal": "release-approver-b",
+      "tenant": "platform",
+      "namespace_pattern": "releases/**",
+      "predicates": [
+        "release-approval"
+      ],
+      "artifact_media_types": [],
+      "valid_from_epoch": 0,
+      "valid_through_epoch": null,
+      "can_delegate": false,
+      "max_depth": 1
+    },
+    {
+      "delegation_id": "del-security",
+      "issuer_principal": "platform-root",
+      "subject_principal": "security-reviewer",
+      "tenant": "platform",
+      "namespace_pattern": "**",
+      "predicates": [
+        "vulnerability-review"
+      ],
+      "artifact_media_types": [],
+      "valid_from_epoch": 0,
+      "valid_through_epoch": null,
+      "can_delegate": false,
+      "max_depth": 1
+    }
+  ],
+  "requirements": [
+    {
+      "role": "release-bundle",
+      "selector": {
+        "tenant": "platform",
+        "namespace_pattern": "releases/**",
+        "media_type": "application/vnd.dac.release+bundle"
+      },
+      "required_predicates": [
+        "package",
+        "test",
+        "release-approval",
+        "vulnerability-review"
+      ],
+      "threshold_rules": [
+        {
+          "threshold_id": "release-quorum",
+          "predicate": "release-approval",
+          "minimum_principals": 2
+        }
+      ]
+    },
+    {
+      "role": "package",
+      "selector": {
+        "tenant": "applications",
+        "namespace_pattern": "apps/**",
+        "media_type": "application/vnd.dac.package+tar"
+      },
+      "required_predicates": [
+        "build",
+        "test",
+        "package"
+      ],
+      "threshold_rules": []
+    },
+    {
+      "role": "binary",
+      "selector": {
+        "tenant": "applications",
+        "namespace_pattern": "apps/**",
+        "media_type": "application/vnd.dac.binary+elf"
+      },
+      "required_predicates": [
+        "build",
+        "test"
+      ],
+      "threshold_rules": []
+    },
+    {
+      "role": "firmware",
+      "selector": {
+        "tenant": "applications",
+        "namespace_pattern": "apps/**",
+        "media_type": "application/vnd.dac.binary+firmware"
+      },
+      "required_predicates": [
+        "build",
+        "test"
+      ],
+      "threshold_rules": []
+    },
+    {
+      "role": "report",
+      "selector": {
+        "tenant": "applications",
+        "namespace_pattern": "apps/**",
+        "media_type": "application/vnd.dac.test-report+json"
+      },
+      "required_predicates": [
+        "test"
+      ],
+      "threshold_rules": []
+    },
+    {
+      "role": "default",
+      "selector": {
+        "tenant": "*",
+        "namespace_pattern": "**",
+        "media_type": "*"
+      },
+      "required_predicates": [
+        "build"
+      ],
+      "threshold_rules": []
+    }
+  ],
+  "predicate_claims": {}
+}

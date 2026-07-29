@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "payload_type": "application/vnd.dac.attestation+json",
+  "payload": "eyJjbGFpbXMiOnt9LCJpc3N1ZWRfZXBvY2giOjkwLCJpc3N1ZXIiOiJidWlsZC1zZXJ2aWNlIiwibWF0ZXJpYWxzIjpbXSwibmFtZXNwYWNlIjoicmVsZWFzZXMvcHJvZCIsInByZWRpY2F0ZSI6ImJ1aWxkIiwic2NoZW1hX3ZlcnNpb24iOjEsInN1YmplY3RzIjpbInNoYTI1Njo1Y2Y0N2Y4YWU4MjJiMzhmMGU1MmVlZmI5ZjAzN2M5MWNkN2Y2Y2QzYjU1MTNmYjc1MGJmZjVjNDBjMDQ3MjFjIl0sInRlbmFudCI6InBsYXRmb3JtIn0=",
+  "signatures": [
+    {
+      "key_id": "build-svc-a",
+      "signature": "Pm/ZDmpgh4VLdzmYZb8dls2hLrK5KE5meYmweXt4vhxq+LUQgvdBoPXylJbH9/xoWrYp6uOtRfxvbvojf60PDQ=="
+    }
+  ]
+}

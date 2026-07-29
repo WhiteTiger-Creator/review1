@@ -4,25 +4,32 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "system-administration"
-subcategories = ["tool_specific"]
+category = "security"
+subcategories = []
 number_of_milestones = 0
 codebase_size = "small"
-languages = ["go", "bash"]
-tags = ["block-mirror", "storage-replication", "convergence-audit", "maintenance-replay", "sysadmin", "go"]
-expert_time_estimate_min = 60
-junior_time_estimate_min = 150
-
-[verifier]
-timeout_sec = 1250
+languages = ["rust", "bash"]
+tags = [
+  "attestation",
+  "authorization",
+  "cryptography",
+  "delegation",
+  "supply-chain-security",
+]
+expert_time_estimate_min = 330
+junior_time_estimate_min = 780
 
 [agent]
 timeout_sec = 1800
 
+[verifier]
+timeout_sec = 1200
+
 [environment]
-allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 1200
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-workdir = "/app"
+gpus = 0
+gpu_types = []
+allow_internet = false

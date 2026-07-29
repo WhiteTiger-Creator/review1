@@ -1,0 +1,101 @@
+[
+  {
+    "key_id": "platform-root-1",
+    "algorithm": "ed25519",
+    "public_key": "yk34bLpp88m5EPp2GDg3lQyvPgnRwJaDKQFyVAwsBE4=",
+    "principal": "platform-root",
+    "tenant": "platform",
+    "valid_from_epoch": 0,
+    "valid_through_epoch": null
+  },
+  {
+    "key_id": "app-root-1",
+    "algorithm": "ed25519",
+    "public_key": "TMQcaxetxTGjbxb5LzSGLFLMLqQunhIi+Nl1nWI89Es=",
+    "principal": "app-root",
+    "tenant": "applications",
+    "valid_from_epoch": 0,
+    "valid_through_epoch": null
+  },
+  {
+    "key_id": "build-svc-a",
+    "algorithm": "ed25519",
+    "public_key": "Bl2fFBXqPs+GvxCi0I3sCgRtuKBY8yO52SIc1ukiTyk=",
+    "principal": "build-service",
+    "tenant": "platform",
+    "valid_from_epoch": 0,
+    "valid_through_epoch": null
+  },
+  {
+    "key_id": "build-svc-b",
+    "algorithm": "ed25519",
+    "public_key": "p3Aim8CO/s0Xtnik0fXW3R6XIKkhlNCYCI8y+k19D2E=",
+    "principal": "build-service",
+    "tenant": "platform",
+    "valid_from_epoch": 0,
+    "valid_through_epoch": null
+  },
+  {
+    "key_id": "test-svc-1",
+    "algorithm": "ed25519",
+    "public_key": "66gV6zIzNRBkuA876xOv61ftXPslbV9x00raaMAHSv8=",
+    "principal": "test-service",
+    "tenant": "applications",
+    "valid_from_epoch": 0,
+    "valid_through_epoch": null
+  },
+  {
+    "key_id": "pkg-svc-1",
+    "algorithm": "ed25519",
+    "public_key": "3HQqEooFORWWHPV8692+CkBOtY7HRgq+btvgAHhwayI=",
+    "principal": "packaging-service",
+    "tenant": "applications",
+    "valid_from_epoch": 0,
+    "valid_through_epoch": null
+  },
+  {
+    "key_id": "release-a-1",
+    "algorithm": "ed25519",
+    "public_key": "i5df8nuCMsbHNDI20mRL9Ol9iW5Pf0owehFH3DuXoZg=",
+    "principal": "release-approver-a",
+    "tenant": "platform",
+    "valid_from_epoch": 0,
+    "valid_through_epoch": null
+  },
+  {
+    "key_id": "release-b-1",
+    "algorithm": "ed25519",
+    "public_key": "GFs8otMtd7LEY2Ct9AawXh6MRlT2uo4x0szTG3HErAs=",
+    "principal": "release-approver-b",
+    "tenant": "platform",
+    "valid_from_epoch": 0,
+    "valid_through_epoch": null
+  },
+  {
+    "key_id": "security-1",
+    "algorithm": "ed25519",
+    "public_key": "MeIJy6XqtP6lvJHePs2JX7ehJmHtkGvgU9vVizmGhKk=",
+    "principal": "security-reviewer",
+    "tenant": "platform",
+    "valid_from_epoch": 0,
+    "valid_through_epoch": null
+  },
+  {
+    "key_id": "legacy-builder-1",
+    "algorithm": "ed25519",
+    "public_key": "JlpdWIdtGqFCtGCOpw77oznIRLS8TcrDAddz1igS/nc=",
+    "principal": "legacy-builder",
+    "tenant": "applications",
+    "valid_from_epoch": 0,
+    "valid_through_epoch": null
+  },
+  {
+    "key_id": "revoked-key-1",
+    "algorithm": "ed25519",
+    "public_key": "dAOI8yQp9qUOSsKPbbor1nEg8S6uAtIfmYChrZa2nsE=",
+    "principal": "build-service",
+    "tenant": "platform",
+    "valid_from_epoch": 0,
+    "valid_through_epoch": 50
+  }
+]
