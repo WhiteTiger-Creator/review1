@@ -1,19 +1,21 @@
+# Platform Dockerfile evaluation — keep build context small and offline-safe.
+# See docs/DOCKERFILE_BEST_PRACTICES.md §16 and scripts/align_docker_evaluation.py
 .git
 .gitignore
-__pycache__/
-*.pyc
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-solution/
-tests/
-.env
-*.o
-**/*.o
+**/.git/**
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
 **/.mypy_cache/
+**/.ruff_cache/
 **/node_modules/
-.DS_Store
-**/.DS_Store
+.env
+**/.env
+solution/
+tests/
+target/
+dist/
+build/
+.venv/
+venv/
+**/.venv/

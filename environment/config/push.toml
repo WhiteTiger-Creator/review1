@@ -1,0 +1,3 @@
+hold_us = 1200000
+byte_span = 8192
+delay_after_ms = 120

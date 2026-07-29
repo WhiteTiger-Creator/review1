@@ -1,3 +1,0 @@
-# Garnet board sample road. The same room line can change its call when a nudge is present.
-span: 512
-nudge: 6

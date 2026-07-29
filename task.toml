@@ -4,17 +4,17 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "games"
-subcategories = []
+category = "system-administration"
+subcategories = ["tool_specific"]
 number_of_milestones = 0
-codebase_size = "minimal"
-languages = ["cpp"]
-tags = ["board-game", "game-theory", "puzzle", "rules", "scoring"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 240
+codebase_size = "small"
+languages = ["go", "bash"]
+tags = ["block-mirror", "storage-replication", "convergence-audit", "maintenance-replay", "sysadmin", "go"]
+expert_time_estimate_min = 60
+junior_time_estimate_min = 150
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 1250
 
 [agent]
 timeout_sec = 1800
@@ -25,6 +25,4 @@ build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-docker_flags = []
-gpus = 0
-gpu_types = []
+workdir = "/app"
