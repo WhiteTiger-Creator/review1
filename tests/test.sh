@@ -12,10 +12,7 @@ fi
 mkdir -p /logs/verifier
 
 # pytest and pytest-json-ctrf must be pre-installed in the Docker image.
-python3 -m pytest \
-    --ctrf /logs/verifier/ctrf.json \
-    /tests/test_outputs.py \
-    -rA
+python -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 
 # Produce reward file (REQUIRED)
 rc=$?

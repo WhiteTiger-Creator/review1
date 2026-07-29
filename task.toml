@@ -4,32 +4,34 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "security"
-subcategories = []
+category = "system-administration"
+subcategories = ["db_interaction"]
 number_of_milestones = 0
 codebase_size = "small"
-languages = ["rust", "bash"]
+languages = ["rust", "sql", "bash"]
 tags = [
-  "attestation",
-  "authorization",
-  "cryptography",
-  "delegation",
-  "supply-chain-security",
+  "credential-store",
+  "daemon-administration",
+  "generation-handoff",
+  "sqlite",
+  "reader-snapshots",
+  "crash-recovery",
 ]
-expert_time_estimate_min = 330
-junior_time_estimate_min = 780
+expert_time_estimate_min = 210
+junior_time_estimate_min = 480
 
 [agent]
 timeout_sec = 1800
 
 [verifier]
-timeout_sec = 1200
+timeout_sec = 900
 
 [environment]
-build_timeout_sec = 1200
+build_timeout_sec = 900
 cpus = 2
 memory_mb = 4096
-storage_mb = 10240
+storage_mb = 8192
+allow_internet = false
+docker_flags = []
 gpus = 0
 gpu_types = []
-allow_internet = false
