@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source /app/lib/common.sh
+source /app/lib/compare-trees.sh
+source /app/lib/wait-sync.sh
+
+archive="${1:-/app/backups/consumer-state.tar}"
+if [[ ! -r "${archive}" ]]; then
+  echo "backup archive not found: ${archive}" >&2
+  exit 1
+fi
+
+render_role_conf() {
+  local role="$1"
+  local template="/app/config/${role}/slapd.conf.in"
+  local output="/app/ldap/${role}/slapd.conf"
+  local identity="/app/config/${role}/server-id"
+  local sid
+  if [[ -f "${identity}" ]]; then
+    sid="$(tr -d '[:space:]' <"${identity}")"
+  elif [[ "${role}" == provider ]]; then
+    sid="1"
+  else
+    sid="2"
+  fi
+  sed "s/@SERVER_ID@/${sid}/g" "${template}" >"${output}"
+}
+
+start_provider() {
+  render_role_conf provider
+  local pidfile="${LDAP_RUNTIME}/provider.pid"
+  local argsfile="${LDAP_RUNTIME}/provider.args"
+  if [[ -f "${pidfile}" ]] && kill -0 "$(cat "${pidfile}")" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "${pidfile}" "${argsfile}"
+  slapd -f "${PROVIDER_CONF}" -h "${PROVIDER_URI}" -u openldap -g openldap
+  wait_for_port "${PROVIDER_URI}" 60 1
+}
+
+restore_consumer_dirs() {
+  local source_root="$1"
+  if [[ -d "${source_root}/data" ]]; then
+    rm -rf /app/ldap/consumer/data
+    cp -a "${source_root}/data" /app/ldap/consumer/data
+  fi
+  if [[ -d "${source_root}/verifier-data" ]]; then
+    rm -rf /app/ldap/consumer/verifier-data
+    cp -a "${source_root}/verifier-data" /app/ldap/consumer/verifier-data
+  fi
+  chown -R openldap:openldap /app/ldap/consumer/data /app/ldap/consumer/verifier-data 2>/dev/null || true
+}
+
+prepare_refresh_consumer_primary() {
+  rm -rf /app/ldap/consumer/data
+  mkdir -p /app/ldap/consumer/data
+  chown -R openldap:openldap /app/ldap/consumer/data 2>/dev/null || true
+}
+
+clear_consumer_base_context_csn() {
+  local ldif
+  render_role_conf consumer
+  ldif="$(mktemp)"
+  cat >"${ldif}" <<EOF
+dn: ${BASE_DN}
+changetype: modify
+delete: contextCSN
+-
+EOF
+  if ! slapmodify -f "${CONSUMER_CONF}" -b "${BASE_DN}" -l "${ldif}" >/dev/null 2>&1; then
+    rm -f "${ldif}"
+    echo "failed to clear consumer contextCSN for ${BASE_DN}" >&2
+    return 1
+  fi
+  rm -f "${ldif}"
+}
+
+/app/bin/stop-ldap
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "${tmpdir}"' EXIT
+tar -xf "${archive}" -C "${tmpdir}"
+
+cookie_csn=""
+if [[ -f "${tmpdir}/meta/context-csn" ]]; then
+  cookie_csn="$(tr -d '[:space:]' <"${tmpdir}/meta/context-csn")"
+fi
+
+use_delta="false"
+if [[ -n "${cookie_csn}" ]]; then
+  start_provider
+  if /app/lib/accesslog-has-csn.sh "${cookie_csn}"; then
+    use_delta="true"
+  fi
+  /app/bin/stop-ldap
+fi
+
+restore_consumer_dirs "${tmpdir}"
+
+if [[ "${use_delta}" == "true" ]]; then
+  /app/bin/start-ldap
+else
+  if ! clear_consumer_base_context_csn; then
+    exit 1
+  fi
+  prepare_refresh_consumer_primary
+  chown -R openldap:openldap /app/ldap/consumer/data /app/ldap/consumer/verifier-data 2>/dev/null || true
+  /app/bin/start-ldap
+fi
+
+if ! wait_for_sync 180 1; then
+  echo "consumer did not converge after restore" >&2
+  exit 1
+fi
+
+if ! trees_equivalent; then
+  echo "consumer trees diverged after restore" >&2
+  exit 1
+fi

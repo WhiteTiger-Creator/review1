@@ -1,0 +1,16 @@
+dn: dc=verifier,dc=internal
+objectClass: top
+objectClass: dcObject
+objectClass: organization
+o: Verifier Internal
+dc: verifier
+
+dn: ou=records,dc=verifier,dc=internal
+objectClass: organizationalUnit
+ou: records
+
+dn: cn=admin,dc=verifier,dc=internal
+objectClass: simpleSecurityObject
+objectClass: organizationalRole
+cn: admin
+userPassword: adminsecret

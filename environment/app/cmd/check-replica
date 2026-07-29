@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source /app/lib/common.sh
+source /app/lib/compare-trees.sh
+source /app/lib/write-status.sh
+
+output="/output/replication-status.json"
+recovery_mode="none"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --report)
+      output="$2"
+      shift 2
+      ;;
+    *)
+      echo "usage: check-replica [--report PATH]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if ! wait_for_port "${PROVIDER_URI}" 5 1; then
+  echo "provider is not reachable" >&2
+  exit 1
+fi
+if ! wait_for_port "${CONSUMER_URI}" 5 1; then
+  echo "consumer is not reachable" >&2
+  exit 1
+fi
+
+write_replication_status "${output}" "${recovery_mode}"
+
+if trees_equivalent_for_base "${BASE_DN}"; then
+  exit 0
+fi
+exit 1

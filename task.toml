@@ -3,25 +3,32 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "medium"
+difficulty = "hard"
 category = "system-administration"
-subcategories = []
+subcategories = ["tool_specific", "db_interaction"]
 number_of_milestones = 0
-codebase_size = "minimal"
-languages = ["rust"]
-tags = ["fleet-operations", "audit-log-repair", "rolling-restart", "cli-tool", "rust"]
-expert_time_estimate_min = 180
-junior_time_estimate_min = 600
-
-[verifier]
-timeout_sec = 450.0
+codebase_size = "small"
+languages = ["bash", "ldif"]
+tags = [
+  "openldap",
+  "syncrepl",
+  "replication",
+  "accesslog",
+  "restore",
+  "ldap",
+]
+expert_time_estimate_min = 150
+junior_time_estimate_min = 360
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 600
 
 [environment]
-allow_internet = false
-build_timeout_sec = 600.0
+build_timeout_sec = 900
 cpus = 2
-memory_mb = 2048
-storage_mb = 4096
+memory_mb = 4096
+storage_mb = 10240
+allow_internet = false
