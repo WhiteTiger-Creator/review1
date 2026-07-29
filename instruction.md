@@ -1,20 +1,18 @@
-# RTS skirmish map weathering
+Averaged-perceptron training under `/app/environment` drifts across feature-pack
+merge, margin-gated updates, last-versus-average scoring, generation cut, torn
+dual-slot model pages, and resume rehydrate. Operators see ledgers that already
+name features and generation bumps, yet inactive-pack survivors, skipped updates
+that still move weights, predictions that disagree with the averaged plane,
+digest/fence lineage that ignores generation, and recoveries that keep a torn
+`active.page` instead of standby material.
 
-The RTS skirmish map kiln under `/app/environment` weathers battlefield tiles
-under a resident working-set budget and regenerates
-`/app/output/field_report.json` from the bundled map inputs.
-`/app/environment/scripts/build_and_run.sh` is the normal entrypoint; the
-verifier rebuilds from source and deletes prior output, so a hand-written
-report, stale artifact, wrapper-only change, or verifier edit is not
-sufficient.
-
-Budgets, tile streaming, rain profiles, report `runs` fields, mud-ledger
-tolerance, and digest rules are in
-`/app/environment/docs/skirmish_contract.md`. Keep the resident cell working
-set inside the budget and report `peak_cells` from that resident set. Both the
-default profile and the alternate profile selected through the build script
-must work. Reruns of the same profile must be byte-identical.
-
-Fix the game sources under `/app/environment` and let the normal commands
-regenerate the report. Signal completion after the source and regenerated
-report satisfy these requirements.
+Fix sources under `/app/environment` so
+`/bin/bash /app/environment/ci/rebuild.sh` regenerates
+`/app/output/perc_ledger.json` through `/app/bin/percctl` from the live
+pipeline. Hand-written JSON, test edits, wrapper-only changes, and harness
+patches are insufficient. Field rules, digest and fence formulas, margin skip
+reasons, dual-slot recovery, and resume behavior are in
+`/app/environment/docs/perc_contract.md`. Output shape notes are in
+`/app/environment/docs/output_shape.md`. Toolchain notes are in
+`/app/environment/docs/toolchain.md`. The verifier deletes the emit path,
+rebuilds from source, and reruns the cycle plus resume probe.

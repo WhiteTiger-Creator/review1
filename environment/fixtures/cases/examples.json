@@ -1,0 +1,10 @@
+{
+  "examples": [
+    {"id": "e_pos", "label": 1, "feats": ["bulk", "texture"]},
+    {"id": "e_neg", "label": -1, "feats": ["bulk"]},
+    {"id": "e_neg2", "label": -1, "feats": ["bulk"]},
+    {"id": "e_skip", "label": 1, "feats": ["bulk", "texture"]},
+    {"id": "e_solo", "label": 1, "feats": ["bulk"]},
+    {"id": "e_hold", "label": 1, "feats": ["texture"]}
+  ]
+}

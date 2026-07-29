@@ -1,0 +1,12 @@
+{
+  "cases": "fixtures/cases/examples.json",
+  "actions": [
+    {"op": "fold"},
+    {"op": "train", "case": "e_pos"},
+    {"op": "train", "case": "e_neg"},
+    {"op": "train", "case": "e_skip"},
+    {"op": "train", "case": "e_neg2"},
+    {"op": "cut"},
+    {"op": "publish"}
+  ]
+}

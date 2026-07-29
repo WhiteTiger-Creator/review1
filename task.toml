@@ -4,21 +4,20 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "games"
-category_profile = "floating_point_numeric_policy"
-tags = ["games", "rts", "skirmish-map", "java", "memory-budget", "repair"]
-languages = ["java"]
-codebase_size = "small"
-number_of_milestones = 0
+category = "machine-learning"
 subcategories = []
+number_of_milestones = 0
+codebase_size = "small"
+languages = ["c", "bash"]
+tags = ["averaged-perceptron", "feature-packs", "model-pages", "digest-fence", "margin-gate"]
 expert_time_estimate_min = 120
 junior_time_estimate_min = 300
 
-[agent]
-timeout_sec = 1500
-
 [verifier]
-timeout_sec = 700
+timeout_sec = 900
+
+[agent]
+timeout_sec = 1800
 
 [environment]
 allow_internet = false
@@ -26,3 +25,4 @@ build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+workdir = "/app"
