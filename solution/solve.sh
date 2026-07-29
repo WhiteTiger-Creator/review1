@@ -1,188 +1,326 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-solution_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-reference_src="${solution_dir}/reference/src"
-
-install -m 0644 "${solution_dir}/reference/checkpoint.hpp" "/app/emsolve/include/emsolve/checkpoint.hpp"
-for file in assembly.cpp checkpoint.cpp diagnostics.cpp eigensolver.cpp mesh.cpp modes.cpp topology.cpp; do
-  install -m 0644 "${reference_src}/${file}" "/app/emsolve/src/${file}"
-done
-
-mkdir -p /output /app/bin
-/app/scripts/build.sh
-
-/app/bin/emsolve --mesh /app/data/meshes/cavity_canonical.mesh --modes 4 --output /output/modes.json
-/app/bin/emsolve --mesh /app/data/meshes/cavity_vertex_permuted.mesh --modes 4 --output /tmp/permuted.json
+# Terminal-Bench Canary
 
 python3 - <<'PY'
-import json
 from pathlib import Path
+root = Path("/app/environment")
 
-ZERO_TOL = 1e-8
-SCALE = 1.7
+(root / "n7" / "isolate.go").write_text("""package n7
 
+import "environment/k3"
 
-def load(path: Path) -> dict:
-    return json.loads(path.read_text())
+// Isolate prepares st for a new lane window after a fence or reload handoff.
+func Isolate(st *k3.Buf, nextLane string) {
+	if st == nil {
+		return
+	}
+	st.Live = map[int]int{}
+	st.Peak = 0
+	if nextLane != "" {
+		st.Lane = nextLane
+	}
+	k3.Adopt(st, nil)
+}
+""", encoding="utf-8")
 
+(root / "k3" / "nudge.go").write_text("""package k3
 
-def compare_eigenvalues(a: dict, b: dict) -> None:
-    va = [m["eigenvalue"] for m in a["modes"]]
-    vb = [m["eigenvalue"] for m in b["modes"]]
-    if len(va) != len(vb):
-        raise SystemExit("oracle smoke: mode count mismatch")
-    for i, (x, y) in enumerate(zip(va, vb)):
-        if abs(x - y) > 1e-5:
-            raise SystemExit(f"oracle smoke: eigenvalue mismatch at {i}")
+func NudgeA(st *Buf, tick Tick, mem Members) int {
+	if st == nil {
+		return 0
+	}
+	if st.Live == nil {
+		st.Live = map[int]int{}
+	}
+	if st.Lane == "" {
+		return st.Peak
+	}
+	if tick.Pages < 0 {
+		tick.Pages = 0
+	}
+	if tick.Pid < 0 {
+		return st.Peak
+	}
+	if mem != nil {
+		lane, ok := mem[tick.Pid]
+		if !ok || lane != st.Lane {
+			total := 0
+			for pid, pages := range st.Live {
+				if pages < 0 {
+					continue
+				}
+				if mem[pid] == st.Lane {
+					total += pages
+				}
+			}
+			if total > st.Peak {
+				st.Peak = total
+			}
+			return st.Peak
+		}
+	}
+	st.Live[tick.Pid] = tick.Pages
+	total := 0
+	for pid, pages := range st.Live {
+		if pages < 0 {
+			continue
+		}
+		if mem == nil || mem[pid] == st.Lane {
+			total += pages
+		}
+	}
+	if total > st.Peak {
+		st.Peak = total
+	}
+	return st.Peak
+}
 
+func Adopt(st *Buf, mem Members) {
+	if st == nil || st.Live == nil {
+		return
+	}
+	for pid := range st.Live {
+		if mem == nil || mem[pid] != st.Lane {
+			delete(st.Live, pid)
+		}
+	}
+}
+""", encoding="utf-8")
 
-def check_positive_physical_modes(payload: dict) -> None:
-    if not payload["modes"]:
-        raise SystemExit("oracle smoke: no modes reported")
-    scale = max(1.0, max(abs(m["eigenvalue"]) for m in payload["modes"]))
-    threshold = ZERO_TOL * scale
-    first = payload["modes"][0]["eigenvalue"]
-    if first <= threshold:
-        raise SystemExit(f"oracle smoke: first mode is non-physical ({first} <= {threshold})")
-    for mode in payload["modes"]:
-        if mode["eigenvalue"] <= threshold:
-            raise SystemExit("oracle smoke: reported a null-space mode")
-        if mode["residuals"]["algebraic"] > 1e-6:
-            raise SystemExit("oracle smoke: algebraic residual too large")
-        if mode["residuals"]["boundary_trace"] > 1e-8:
-            raise SystemExit("oracle smoke: boundary_trace residual too large")
-        if mode["residuals"]["divergence"] > 1e-7:
-            raise SystemExit("oracle smoke: divergence residual too large")
+(root / "m8" / "weave.go").write_text("""package m8
 
+import (
+	"bufio"
+	"encoding/json"
+	"os"
+	"strconv"
 
-canonical = load(Path("/output/modes.json"))
-permuted = load(Path("/tmp/permuted.json"))
-compare_eigenvalues(canonical, permuted)
-check_positive_physical_modes(canonical)
-
-# Simple uniform-scale smoke: eigenvalues should scale approximately by 1/s^2.
-def scale_mesh_text(text: str, factor: float) -> str:
-    lines = text.splitlines()
-    out: list[str] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        out.append(line)
-        if line.startswith("vertices "):
-            count = int(line.split()[1])
-            for _ in range(count):
-                i += 1
-                vid, x, y, z = lines[i].split()
-                out.append(
-                    f"{vid} {float(x) * factor} {float(y) * factor} {float(z) * factor}"
-                )
-        i += 1
-    return "\n".join(out) + "\n"
-
-
-base_mesh = Path("/tmp/oracle_base.mesh")
-scaled_mesh = Path("/tmp/oracle_scaled.mesh")
-canonical_mesh = Path("/app/data/meshes/cavity_canonical.mesh")
-base_mesh.write_text(canonical_mesh.read_text())
-scaled_mesh.write_text(scale_mesh_text(canonical_mesh.read_text(), SCALE))
-
-out_base = Path("/tmp/oracle_base.json")
-out_scaled = Path("/tmp/oracle_scaled.json")
-import subprocess
-
-subprocess.run(
-    ["/app/bin/emsolve", "--mesh", str(base_mesh), "--modes", "3", "--output", str(out_base)],
-    check=True,
+	"environment/k3"
+	"environment/n7"
 )
-subprocess.run(
-    ["/app/bin/emsolve", "--mesh", str(scaled_mesh), "--modes", "3", "--output", str(out_scaled)],
-    check=True,
-)
-base = load(out_base)
-scaled = load(out_scaled)
-check_positive_physical_modes(base)
-check_positive_physical_modes(scaled)
-for mb, ms in zip(base["modes"], scaled["modes"]):
-    expected = mb["eigenvalue"] / (SCALE * SCALE)
-    if abs(ms["eigenvalue"] - expected) / max(expected, 1e-12) > 1e-3:
-        raise SystemExit("oracle smoke: scale law mismatch")
 
-# Coefficient-level canonicalization across one representation-only transform.
-combined_mesh = Path("/tmp/oracle_combined.mesh")
-combined_mesh.write_text(Path("/app/data/meshes/cavity_vertex_permuted.mesh").read_text())
-out_combined = Path("/tmp/oracle_combined.json")
-subprocess.run(
-    [
-        "/app/bin/emsolve",
-        "--mesh",
-        str(combined_mesh),
-        "--modes",
-        "6",
-        "--output",
-        str(out_combined),
-    ],
-    check=True,
-)
-canonical6 = load(Path("/output/modes.json"))
-subprocess.run(
-    [
-        "/app/bin/emsolve",
-        "--mesh",
-        str(canonical_mesh),
-        "--modes",
-        "6",
-        "--output",
-        "/tmp/oracle_canonical6.json",
-    ],
-    check=True,
-)
-canonical6 = load(Path("/tmp/oracle_canonical6.json"))
-combined = load(out_combined)
-if len(combined["modes"]) != len(canonical6["modes"]):
-    raise SystemExit("oracle smoke: combined mode count mismatch")
-for ma, mb in zip(canonical6["modes"], combined["modes"]):
-    if abs(ma["eigenvalue"] - mb["eigenvalue"]) > 1e-5:
-        raise SystemExit("oracle smoke: combined eigenvalue mismatch")
-    if max(abs(x - y) for x, y in zip(ma["coefficients"], mb["coefficients"])) > 1e-7:
-        raise SystemExit("oracle smoke: canonical coefficient mismatch across transform")
+func WeaveB(path string, mem k3.Members) (*WeaveResult, error) {
+	if path == "" {
+		return &WeaveResult{Peaks: map[string]int{}}, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
 
-# Checkpoint/resume smoke with coefficient agreement.
-ckpt = Path("/tmp/oracle_ckpt.bin")
-subprocess.run(
-    [
-        "/app/bin/emsolve",
-        "--mesh",
-        str(canonical_mesh),
-        "--modes",
-        "6",
-        "--output",
-        "/tmp/oracle_ckpt_partial.json",
-        "--checkpoint",
-        str(ckpt),
-        "--checkpoint-after",
-        "3",
-    ],
-    check=True,
-)
-subprocess.run(
-    [
-        "/app/bin/emsolve",
-        "--mesh",
-        str(canonical_mesh),
-        "--modes",
-        "6",
-        "--output",
-        "/tmp/oracle_resumed.json",
-        "--resume",
-        str(ckpt),
-    ],
-    check=True,
-)
-resumed = load(Path("/tmp/oracle_resumed.json"))
-for ma, mb in zip(canonical6["modes"], resumed["modes"]):
-    if max(abs(x - y) for x, y in zip(ma["coefficients"], mb["coefficients"])) > 1e-7:
-        raise SystemExit("oracle smoke: resume coefficient mismatch")
+	st := &k3.Buf{Live: map[int]int{}, Peak: 0, Lane: ""}
+	peaks := map[string]int{}
+	gen := 0
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var r Rec
+		if err := json.Unmarshal(line, &r); err != nil {
+			continue
+		}
+		kind := r.Kind
+		switch kind {
+		case "F", "f":
+			kind = KindFence
+		case "S", "s":
+			kind = KindSample
+		case "R", "r":
+			kind = KindRoster
+		}
+		switch kind {
+		case KindFence:
+			if st.Lane != "" {
+				cur := peaks[st.Lane]
+				if st.Peak > cur {
+					peaks[st.Lane] = st.Peak
+				}
+			}
+			n7.Isolate(st, r.Lane)
+			if r.Gen > gen {
+				gen = r.Gen
+			}
+			continue
+		case KindRoster:
+			if mem != nil && r.Patch != nil {
+				for k, v := range r.Patch {
+					pid, err := strconv.Atoi(k)
+					if err != nil {
+						continue
+					}
+					mem[pid] = v
+				}
+			}
+			k3.Adopt(st, mem)
+			continue
+		case KindSample:
+			if r.Lane != "" {
+				st.Lane = r.Lane
+			}
+			p := k3.NudgeA(st, k3.Tick{Pid: r.Pid, Pages: r.Pages}, mem)
+			if p < 0 {
+				p = 0
+			}
+			if st.Lane == "" {
+				continue
+			}
+			cur := peaks[st.Lane]
+			if p > cur {
+				peaks[st.Lane] = p
+			} else if _, ok := peaks[st.Lane]; !ok {
+				peaks[st.Lane] = p
+			}
+		default:
+			continue
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if st.Lane != "" {
+		cur := peaks[st.Lane]
+		if st.Peak > cur {
+			peaks[st.Lane] = st.Peak
+		}
+	}
+	return &WeaveResult{Peaks: peaks, Final: st, Gen: gen}, nil
+}
+""", encoding="utf-8")
 
-print("oracle smoke ok")
+(root / "v2" / "clamp.go").write_text("""package v2
+
+import (
+	"environment/k3"
+	"environment/n7"
+)
+
+func ClampC(st *k3.Buf, lane string, g *Gate) error {
+	if st == nil {
+		return nil
+	}
+	if lane == "" {
+		return nil
+	}
+	if g == nil {
+		g = &Gate{}
+	}
+	prev := g.Last
+	g.Soft = true
+	g.Last = lane
+	g.Hold = 0
+	needClear := prev != "" && prev != lane
+	if !needClear {
+		needClear = st.Peak != 0 || (st.Live != nil && len(st.Live) > 0)
+	}
+	if needClear {
+		n7.Isolate(st, lane)
+	} else {
+		st.Lane = lane
+		if st.Live == nil {
+			st.Live = map[int]int{}
+		}
+	}
+	g.Gen++
+	return nil
+}
+""", encoding="utf-8")
+
+(root / "s4" / "seal.go").write_text("""package s4
+
+import (
+	"encoding/json"
+	"os"
+)
+
+type Hint struct {
+	Gen   int            `json:"gen"`
+	Peaks map[string]int `json:"peaks"`
+}
+
+func SealD(woven map[string]int, hintPath string, journalGen int) (map[string]int, error) {
+	out := map[string]int{}
+	if woven != nil {
+		for k, v := range woven {
+			if v < 0 {
+				continue
+			}
+			out[k] = v
+		}
+	}
+	if len(out) > 0 || journalGen > 0 {
+		_, _ = os.Stat(hintPath)
+		_ = journalGen
+		return out, nil
+	}
+	b, err := os.ReadFile(hintPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return nil, err
+	}
+	var h Hint
+	if err := json.Unmarshal(b, &h); err != nil {
+		return nil, err
+	}
+	if h.Peaks == nil {
+		return out, nil
+	}
+	for lane, hp := range h.Peaks {
+		if hp < 0 {
+			continue
+		}
+		out[lane] = hp
+	}
+	return out, nil
+}
+""", encoding="utf-8")
+
+drive = (root / "phase" / "drive.go").read_text(encoding="utf-8")
+broken = """\tst.Lane = lane
+\tfor i, s := range samples {
+\t\tpeak := stepNudge(st, k3.Tick{Pid: s.Pid, Pages: s.Pages}, mem)
+\t\tif err := appendRec(jnl, m8.Rec{Kind: m8.KindSample, Pid: s.Pid, Pages: s.Pages, Lane: lane}); err != nil {
+\t\t\treturn peak, err
+\t\t}
+\t\tif plan != nil && i == plan.After {
+\t\t\tapplyPatch(mem, plan.Patch)
+\t\t\tk3.Adopt(st, mem)
+\t\t\tif err := appendRec(jnl, m8.Rec{Kind: m8.KindRoster, Lane: lane, Patch: plan.Patch}); err != nil {
+\t\t\t\treturn st.Peak, err
+\t\t\t}
+\t\t}
+\t}
+\treturn st.Peak, nil
+"""
+fixed = """\tst.Lane = lane
+\tfor i, s := range samples {
+\t\tif plan != nil && i == plan.After {
+\t\t\tapplyPatch(mem, plan.Patch)
+\t\t\tk3.Adopt(st, mem)
+\t\t\tif err := appendRec(jnl, m8.Rec{Kind: m8.KindRoster, Lane: lane, Patch: plan.Patch}); err != nil {
+\t\t\t\treturn st.Peak, err
+\t\t\t}
+\t\t}
+\t\tpeak := stepNudge(st, k3.Tick{Pid: s.Pid, Pages: s.Pages}, mem)
+\t\tif err := appendRec(jnl, m8.Rec{Kind: m8.KindSample, Pid: s.Pid, Pages: s.Pages, Lane: lane}); err != nil {
+\t\t\treturn peak, err
+\t\t}
+\t}
+\treturn st.Peak, nil
+"""
+if broken not in drive:
+    raise SystemExit("drive.go roster timing block not found")
+(root / "phase" / "drive.go").write_text(drive.replace(broken, fixed, 1), encoding="utf-8")
+print("oracle writes done")
 PY
+
+bash /app/environment/scripts/prep_run.sh
+cd /app/environment
+go build -o /app/bin/hwm_drive ./cmd/hwm_drive
+/app/bin/hwm_drive --root /app/environment --out /app/output/peak_report.json

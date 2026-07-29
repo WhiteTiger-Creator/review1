@@ -1,19 +1,10 @@
-The electromagnetic cavity solver under `/app/emsolve` produces inconsistent
-physical mode payloads when the same cavity is described with different
-vertex numbering, element ordering, local tetrahedron orientation, or
-boundary-face listing, and checkpoint resume can disagree with a fresh run.
-Repeated or clustered modes must expose deterministic canonical coefficient
-payloads, including after checkpoint resume. Fix the C++ sources under
-`/app/emsolve`, rebuild with `/app/scripts/build.sh`, and invoke the rebuilt
-`/app/bin/emsolve` binary directly so `/output/modes.json` is produced by the
-solver after a normal compile — not by hand-written output or wrapper
-shortcuts.
+On this host the memcg peak controller under `/app/environment` attributes process residency samples to named cgroup slices, journals the stream under the lane unit template `/app/environment/systemd/hwm-unit@.service`, and must keep per-slice high-water isolated across lane reset and systemd-style service reload. The live ops report at `/app/output/peak_report.json` is out of policy.
 
-`/app/docs/solver-contract.md` and `/app/docs/checkpoint-format.md` are
-authoritative for the finite-element model, mode ordering, repeated-eigenspace
-canonicalization, checkpoint binary layout, and resume validation. The public
-CLI (`--mesh`, `--modes`, `--output`, `--config`, checkpoint flags, `--help`)
-and `/output/modes.json` schema are unchanged. Do not modify shipped fixtures
-under `/app/data`. Any mesh or checkpoint the contracts mark invalid must make
-`/app/bin/emsolve` exit nonzero without a successful mode payload and must leave
-an existing `--output` file untouched.
+Observed failures (the interim file `/app/environment/fixtures/q9/haze.json` can look locally fine):
+
+1. Reported peaks disagree with journal-plus-membership recomputation for the same residency samples.
+2. Some path_mode rows disagree for the same cgroup slice on recover.
+3. A slice reload handoff leaves sticky prior-lane high-water on the next slice.
+4. Holdout slices and the wide budget arm break invariants required under the same memcg attribution rules.
+
+`/app/environment/docs/pact_n4.md` is the authoritative normative specification for the graded report schema, path_mode coverage, budget arms, membership maps (including `/app/environment/fixtures/members/map_a.json` and `/app/environment/fixtures/members/map_b.json`), journal kind strings, roster patch timing, fence/reload isolation, checkpoint-hint vs journal-reconstruct authority, and reconstruct invariants. Operator tooling is in `/app/environment/docs/operators.md`, including `/app/environment/scripts/prep_run.sh`, `/app/environment/scripts/drive_matrix.sh` (with `--wide`), and `/app/environment/migrations/mig9.sh`. Live journal and checkpoint bytes land under `/app/output/scratch/` (including `/app/output/scratch/hwm.jnl` and `/app/output/scratch/hwm.ckpt`). Fix the memcg peak service implementation under `/app/environment` so the normal unit path regenerates `/app/output/peak_report.json`. Static or hand-written JSON writes are not enough.
