@@ -1,10 +1,20 @@
-On this host, cgroup memory.peak accounting for named slice lanes is driven by the systemd oneshot unit `/app/environment/systemd/hwm-unit@.service` (`MemoryAccounting=yes`). Per-slice high-water must stay isolated across lane reset and systemd-style service reload. The live ops report at `/app/output/peak_report.json` is out of policy for the cgroup memcg service path.
+# RTS skirmish map weathering
 
-Observed ops failures (the interim file `/app/environment/fixtures/q9/haze.json` can look locally fine):
+The RTS skirmish map kiln under `/app/environment` weathers battlefield tiles
+under a resident working-set budget and regenerates
+`/app/output/field_report.json` from the bundled map inputs.
+`/app/environment/scripts/build_and_run.sh` is the normal entrypoint; the
+verifier rebuilds from source and deletes prior output, so a hand-written
+report, stale artifact, wrapper-only change, or verifier edit is not
+sufficient.
 
-1. Reported memory.peak values disagree with journal-plus-membership recomputation for the same residency samples.
-2. Some path_mode rows disagree for the same cgroup slice on recover.
-3. A slice reload handoff leaves sticky prior-lane high-water on the next slice.
-4. Holdout slices and the wide budget arm break invariants required under the same memcg attribution rules.
+Budgets, tile streaming, rain profiles, report `runs` fields, mud-ledger
+tolerance, and digest rules are in
+`/app/environment/docs/skirmish_contract.md`. Keep the resident cell working
+set inside the budget and report `peak_cells` from that resident set. Both the
+default profile and the alternate profile selected through the build script
+must work. Reruns of the same profile must be byte-identical.
 
-`/app/environment/docs/pact_n4.md` is the authoritative normative specification for the graded report schema, path_mode coverage, budget arms, membership maps (including `/app/environment/fixtures/members/map_a.json` and `/app/environment/fixtures/members/map_b.json`), journal kind strings, roster patch timing, fence/reload isolation, checkpoint-hint vs journal-reconstruct authority, and reconstruct invariants. Operator tooling is in `/app/environment/docs/operators.md`, including `/app/environment/scripts/prep_run.sh`, `/app/environment/scripts/drive_matrix.sh` (with `--wide`), and `/app/environment/migrations/mig9.sh`. Live journal and checkpoint bytes land under `/app/output/scratch/` (including `/app/output/scratch/hwm.jnl` and `/app/output/scratch/hwm.ckpt`). Restore correct cgroup memory.peak accounting under `/app/environment` so the normal systemd unit path regenerates `/app/output/peak_report.json`. Static or hand-written JSON writes are not enough.
+Fix the game sources under `/app/environment` and let the normal commands
+regenerate the report. Signal completion after the source and regenerated
+report satisfy these requirements.

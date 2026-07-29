@@ -3,39 +3,22 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "medium"
-category = "system-administration"
-subcategories = []
-number_of_milestones = 0
+difficulty = "hard"
+category = "games"
+category_profile = "floating_point_numeric_policy"
+tags = ["games", "rts", "skirmish-map", "java", "memory-budget", "repair"]
+languages = ["java"]
 codebase_size = "small"
-languages = ["go", "bash"]
-tags = [
-    "system-administration",
-    "systemd",
-    "cgroup",
-    "memcg",
-    "memory.peak",
-    "MemoryAccounting",
-    "service-reload",
-    "ops-restore",
-]
-expert_time_estimate_min = 90
-junior_time_estimate_min = 240
-
-[category_profile]
-challenge_family = "cgroup memcg peak accounting under systemd lane units"
-profile_name = "filesystem_state_reconstruction"
-allowed_instruction_disclosures = "Unit path, pact schema, budget arms, membership maps, journal/checkpoint paths, roster timing, fence/reload isolation, checkpoint vs journal authority"
-forbidden_instruction_leaks = "Exact broken package sites, oracle transcript, which single file flips each check"
-category_specific_hardness_bar = "Live attributed memory.peak sums, mid-window roster migrations, fence/reload isolation, and checkpoint vs journal reconstruct must all align for systemd lane units"
-category_specific_verifier_risks = "False greens from static peak_report.json or placeholder journals that ignore sealed cgroup fixtures"
-coverage_role = "System-administration memcg/cgroup service accounting with systemd unit ExecStart and reload isolation"
+number_of_milestones = 0
+subcategories = []
+expert_time_estimate_min = 120
+junior_time_estimate_min = 300
 
 [agent]
-timeout_sec = 1200
+timeout_sec = 1500
 
 [verifier]
-timeout_sec = 600
+timeout_sec = 700
 
 [environment]
 allow_internet = false

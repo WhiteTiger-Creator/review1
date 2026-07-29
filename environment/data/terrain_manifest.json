@@ -1,0 +1,6 @@
+{
+  "heightmap": "heightmap.csv",
+  "rainfall_profiles": ["rainfall.csv", "rainfall_alt.csv"],
+  "encoding": "UTF-8",
+  "domain": [128, 96]
+}
