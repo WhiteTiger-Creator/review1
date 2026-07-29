@@ -1,27 +1,27 @@
-#!/bin/bash
-sed -i 's/\r$//' "$0" 2>/dev/null || true
-set -u
+#!/usr/bin/env bash
+set -uo pipefail
 
-mkdir -p /logs/verifier
-echo 0 > /logs/verifier/reward.txt
-
-export PYTHONDONTWRITEBYTECODE=1
+rc=1
+trap 'exit "$rc"' EXIT
 
 if [ "$PWD" = "/" ]; then
-  echo "Error: No WORKDIR set in Dockerfile." >&2
-  exit 1
-fi
-
-if [ -x /opt/venv/bin/python ]; then
-  PY=/opt/venv/bin/python
+    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile before running this script." >&2
+    mkdir -p /logs/verifier
+    echo 0 > /logs/verifier/reward.txt
+    false
 else
-  PY=python3
-fi
+    mkdir -p /logs/verifier
+    echo 0 > /logs/verifier/reward.txt
 
-cd /app || exit 1
-"${PY}" -m pytest -p no:cacheprovider -o cache_dir=/tmp/pytest_cache \
-  --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
-if [ $? -eq 0 ]; then
+    export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    unset PYTHONPATH PYTHONHOME
+    export PYTHONSAFEPATH=1
+    cd /tests
+
+    /usr/bin/python3 -m pytest -c /dev/null --confcutdir=/tests /tests/test_outputs.py /tests/test_hard.py /tests/test_harder.py -rA
+fi
+rc=$?
+if [ "$rc" -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt

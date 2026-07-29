@@ -1,4 +1,0 @@
-severity	color	priority	bell_name	tie_rule
-HIGH	amber	8	LOUD	-
-MED	amber	5	CHIME	-
-LOW	amber	1	SOFT	-

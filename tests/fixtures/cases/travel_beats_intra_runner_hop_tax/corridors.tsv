@@ -1,4 +1,0 @@
-runner_id	from_node	to_node	travel_minutes
-R1	NOC	MID	1
-R1	MID	CELL-X	1
-R1	NOC	CELL-X	5

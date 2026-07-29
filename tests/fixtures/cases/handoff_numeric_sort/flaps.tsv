@@ -1,3 +1,0 @@
-flap_id	lamp_id	first_minute	last_minute	severity	raw_text	clock_id
-F9	L9	40	60	HIGH	alpha	CLK-A
-F8	L8	40	60	MED	beta	CLK-A

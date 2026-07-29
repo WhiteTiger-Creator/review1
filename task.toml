@@ -2,33 +2,33 @@ version = "2.0"
 
 [metadata]
 author_name = "anonymous"
-author_email = "ochre-panel-lamp-dispatch@invalid.example"
-difficulty = "medium"
-category = "data-processing"
-subcategories = []
+author_email = "anonymous"
+difficulty = "hard"
+category = "scientific-computing"
+subcategories = ["tool_specific"]
 number_of_milestones = 0
 codebase_size = "small"
-languages = ["perl", "make"]
+languages = ["cpp", "bash"]
 tags = [
-  "perl",
-  "noc-operations",
-  "alarm-dispatch",
-  "runner-routing",
-  "fixed-width-output",
-  "data-processing"
+  "finite-elements",
+  "maxwell",
+  "eigensolver",
+  "mesh-orientation",
+  "checkpoint-restart",
+  "reproducibility"
 ]
 expert_time_estimate_min = 240
-junior_time_estimate_min = 480
+junior_time_estimate_min = 600
 
 [agent]
-timeout_sec = 1200.0
+timeout_sec = 1800
 
 [verifier]
-timeout_sec = 460.0
+timeout_sec = 900
 
 [environment]
-build_timeout_sec = 900.0
+build_timeout_sec = 900
 cpus = 2
 memory_mb = 4096
-storage_mb = 10240
+storage_mb = 8192
 allow_internet = false

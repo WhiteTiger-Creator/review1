@@ -1,3 +1,0 @@
-severity	color	priority	bell_name	tie_rule
-HIGH	amber	2	KLING	lex-bell
-HIGH	amber	2	CLANG	lex-bell

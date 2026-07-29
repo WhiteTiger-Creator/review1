@@ -1,0 +1,10 @@
+[max_iterations]
+value = 200
+
+[tolerances]
+algebraic = 1e-10
+boundary_trace = 1e-8
+divergence = 1e-7
+
+[solver]
+subspace_size_factor = 2
