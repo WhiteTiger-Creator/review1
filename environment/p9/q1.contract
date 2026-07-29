@@ -1,0 +1,88 @@
+# q1.contract — public tick lineage rules for lane play outputs
+
+## match tick replay order
+Lane play walks each level manifest `[[step]]` row in file order. For that row, build an expanded frame list: the primary frame, then `depth mod 3` additional synthetic frames with the same seq and fields but label suffixed `_r`. Process every expanded frame in list order through the stages below. Each expanded frame appends exactly one tick_trace.jsonl row; nothing in the gate stage may skip gameplay state updates, resume, bearing fold, or trace append for the frame currently being processed.
+
+Per expanded frame, in order:
+1. Gate buffer — append the frame, then apply replay gate trimming to the buffer only (see replay gate).
+2. Level segment — update segment index and HUD entity table per segment load rules.
+3. Resume shard — on even seq steps, record a journal shard; when the current frame's shard is live, apply serial-offset carry to Baseline and all eight HUD slots before slot deltas.
+4. Slot delta — add slot_delta to entity_rows[seq mod 8] modulo 1000003 on the live table after resume carry.
+5. Bearing fold — accumulate bearing_delta plus label weight into modular bearing.
+6. Trace row — record seq, label, folded bearing, slot_idx, seg_crc for this frame.
+
+line_count in lineage_bundle equals the number of tick_trace rows emitted (all primaries and `_r` synthetics retained in the trace).
+
+## replay gate
+The gate keeps a dedup buffer across the lane. After appending the current frame, if the buffer holds at least two entries and the last two entries share both seq and label, remove only the newest buffer entry. The gate never removes the current frame from play processing and never drops a frame merely because an earlier buffered frame shared the same seq. Synthetic `_r` labels are distinct from their primary label for gate purposes. Seq-only window checks are not part of this contract.
+
+## level manifest (.lane files)
+Under `/app/w8/d7/`, each `[[step]]` block carries:
+- seq (int, 1-based step index)
+- label (string)
+- bearing_delta (int, signed view delta before fold)
+- slot_delta (int, increment for entity_rows[seq mod 8])
+- boundary (bool, true marks map-change / intermission)
+- depth (int, replay pulse count; each step also emits depth mod 3 synthetic re-sent frames with the same seq)
+
+Synthetic replay frames append `_r` to the original label and still contribute normal trace rows, digest material, bearing fold, and HUD slot totals. Journal shards attach on even seq steps (seq mod 2 equals 0) using depth as the serial offset.
+
+## tick_trace.jsonl schema
+Each JSONL line contains:
+- seq (int, 1-based step index)
+- label (string)
+- bearing (int, stored view angle after fold, 0..modular_span-1)
+- slot_idx (int, HUD slot index derived from entity row for this step)
+- seg_crc (int, entity table checksum after the step)
+
+## modular_span
+Bearing fold uses modular_span = 65536. Fold accumulates signed bearing_delta plus label weight into a 16-bit modular field (values wrap with modular_span).
+
+## label weight
+Label weight is sum over characters of (index+1)*codepoint, taken modulo 97, added to bearing_delta before fold.
+
+## segment load
+On boundary=true: reset Baseline to 0; keep all eight HUD slot values (normalize each slot modulo 1000003 only); do not add Baseline into slots on that frame.
+On boundary=false: set Baseline to (Baseline + seq) modulo 1000003, then add Baseline to every HUD slot modulo 1000003.
+
+## resume shard
+When step seq is even, append a journal shard with SerialOffset = step depth. For each expanded frame, if that frame's shard is live (nonzero SerialOffset, not yet applied), add SerialOffset to Baseline and to every HUD slot modulo 1000003 before slot deltas run. Journal recording happens only on even seq manifest rows; carry still runs on every expanded frame using that frame's depth as SerialOffset.
+
+## slot delta (play order)
+After segment load and resume carry, add slot_delta to entity_rows[seq mod 8] modulo 1000003. This mutation must remain on the live HUD table used for slot_idx and seg_crc on the same frame (do not apply slot_delta before resume carry).
+
+## bearing fold
+Convert stored bearing to signed 16-bit, add (bearing_delta + label weight), reduce modulo modular_span into range 0..modular_span-1, store as the new bearing.
+
+## lineage_bundle summary
+The play command writes `/app/output/lineage_bundle.json`. Field lane_id identifies the manifest stem. Field line_count counts emitted tick_trace rows, including retained synthetic `_r` rows. Field tick_digest fingerprints sorted trace lines. Field entity_rows holds eight final slot totals.
+seg_crc on a line is the sum of entity_rows slots modulo 1000003 after that step (same as internal table CRC).
+
+## tick_digest
+Let L be canonical strings per line:
+  `{seq}|{label}|{bearing}|{slot_idx}|{seg_crc}`
+Sort L lexicographically, join with newline, then:
+  mask64 = (1<<64)-1
+  total = 0
+  for i, ch in enumerate(joined):
+    total = (total + ((i+1) * ord(ch))) & mask64
+tick_digest = lowercase hex of (total & 0xffffffff), width 8.
+A correct engine must not yield tick_digest 00000000 on non-empty lanes.
+
+## opening segment
+Steps before the first boundary=true step form the opening segment. Shallow lanes (z1) have no boundary step. A boundary step resets the rolling baseline before later non-boundary spreads, but it does not zero the live eight-slot HUD table.
+
+## manifest line count check (m3)
+The bundled m3 lane has five manifest rows (including the repeated seq-3 row after the boundary). With depth mod 3 synthetics, correct play emits 13 tick_trace lines. Agents can recompute this from `/app/w8/d7/m3.lane` without hidden fixtures.
+
+## scan subcommand
+`qd scan` only validates shallow z1 lanes. It prints one stdout line `{lane_basename}:{exit_digit}` where exit_digit is 0 when the lane is shallow-ok and 2 otherwise. Full lineage invariants require play on tick_trace and lineage_bundle from `qd play`.
+
+## held-out depth rule
+Lanes with id prefix x4 use depth to add extra replay pulses: each step emits depth mod 3 additional synthetic replays of the same seq as `_r`-labeled re-sent frames. Digest rules match m3; depth changes how many frames are offered to the gate and how much serial-offset resume work is applied on even seq steps. Two held-out lanes ship as x4_01.lane and x4_02.lane.
+
+## gameplay modules (in-tree)
+Match play scoring is implemented under `/app/environment` in gameplay modules dm7 (level segment), pk3 (replay gate), an8 (bearing fold), and rs5 (resume). Edits there must change play scoring output; static JSON under `/app/output` is not a substitute.
+
+## slot_idx rule
+slot_idx on a line equals entity_rows[seq mod 8] after processing that frame (segment load, resume carry, then slot_delta), modulo 1000003. On non-boundary segment loads, Baseline includes the step seq and is added to every HUD slot before resume carry and slot_delta. Even-seq resume shards add depth to Baseline and all eight slots before slot_delta.

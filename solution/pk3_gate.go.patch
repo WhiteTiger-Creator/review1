@@ -1,0 +1,16 @@
+--- pk3/gate.go
++++ pk3/gate.go
+@@ -24,8 +24,11 @@
+ 		return a, nil
+ 	}
+ 	last := a.Frames[len(a.Frames)-1]
+-	if windowHasSeq(a, b, last.Seq) && last.Seq <= c.Last {
+-		a.Frames = a.Frames[:len(a.Frames)-1]
++	if len(a.Frames) >= 2 {
++		prev := a.Frames[len(a.Frames)-2]
++		if prev.Seq == last.Seq && prev.Label == last.Label && last.Seq <= c.Last {
++			a.Frames = a.Frames[:len(a.Frames)-1]
++		}
+ 	}
+ 	return a, nil
+ }

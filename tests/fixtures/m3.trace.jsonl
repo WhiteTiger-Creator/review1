@@ -1,0 +1,13 @@
+{"seq":1,"label":"open","bearing":51,"slot_idx":4,"seg_crc":25}
+{"seq":1,"label":"open_r","bearing":97,"slot_idx":11,"seg_crc":74}
+{"seq":1,"label":"open_r","bearing":143,"slot_idx":21,"seg_crc":147}
+{"seq":2,"label":"move","bearing":215,"slot_idx":32,"seg_crc":252}
+{"seq":2,"label":"move_r","bearing":282,"slot_idx":50,"seg_crc":389}
+{"seq":2,"label":"move_r","bearing":349,"slot_idx":72,"seg_crc":558}
+{"seq":3,"label":"xload","bearing":474,"slot_idx":76,"seg_crc":600}
+{"seq":3,"label":"xload_r","bearing":609,"slot_idx":83,"seg_crc":642}
+{"seq":3,"label":"xload_r","bearing":744,"slot_idx":90,"seg_crc":684}
+{"seq":3,"label":"xload","bearing":869,"slot_idx":105,"seg_crc":790}
+{"seq":3,"label":"xload_r","bearing":1004,"slot_idx":128,"seg_crc":960}
+{"seq":3,"label":"xload_r","bearing":1139,"slot_idx":159,"seg_crc":1194}
+{"seq":4,"label":"fight","bearing":1219,"slot_idx":184,"seg_crc":1483}

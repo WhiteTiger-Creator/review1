@@ -1,5 +1,4 @@
 #!/bin/bash
-
 if [ "$PWD" = "/" ]; then
     echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile."
     exit 1

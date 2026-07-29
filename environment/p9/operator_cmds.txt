@@ -1,0 +1,2 @@
+qd play --lane <path>
+qd scan --lane <path>

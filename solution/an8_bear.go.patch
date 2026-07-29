@@ -1,0 +1,23 @@
+--- an8/bear.go
++++ an8/bear.go
+@@ -11,11 +11,15 @@
+ 
+ // FoldB folds view deltas into stored bearing for tick records.
+ func FoldB(a internal.View, b internal.Delta, c internal.Span) (internal.View, error) {
+-	a.Bearing += foldScale(b, c)
+-	if c.Mod > 0 {
+-		for a.Bearing >= float64(c.Mod) {
+-			a.Bearing -= float64(c.Mod)
+-		}
++	mod := c.Mod
++	if mod <= 0 {
++		mod = 65536
+ 	}
++	cur := int(int16(a.Bearing))
++	cur = (cur + b.B) % mod
++	if cur < 0 {
++		cur += mod
++	}
++	a.Bearing = float64(cur)
+ 	return a, nil
+ }

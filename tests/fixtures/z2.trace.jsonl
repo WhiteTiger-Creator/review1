@@ -1,0 +1,10 @@
+{"seq":1,"label":"alpha","bearing":125,"slot_idx":4,"seg_crc":25}
+{"seq":1,"label":"alpha_r","bearing":163,"slot_idx":11,"seg_crc":74}
+{"seq":1,"label":"alpha_r","bearing":201,"slot_idx":21,"seg_crc":147}
+{"seq":2,"label":"beta","bearing":327,"slot_idx":33,"seg_crc":253}
+{"seq":2,"label":"beta_r","bearing":448,"slot_idx":52,"seg_crc":391}
+{"seq":2,"label":"beta_r","bearing":569,"slot_idx":75,"seg_crc":561}
+{"seq":2,"label":"beta","bearing":695,"slot_idx":102,"seg_crc":763}
+{"seq":2,"label":"beta_r","bearing":816,"slot_idx":133,"seg_crc":997}
+{"seq":2,"label":"beta_r","bearing":937,"slot_idx":168,"seg_crc":1263}
+{"seq":3,"label":"gamma","bearing":1117,"slot_idx":196,"seg_crc":1576}

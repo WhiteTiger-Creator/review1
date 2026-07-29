@@ -1,0 +1,6 @@
+{"seq":1,"label":"open","bearing":33,"slot_idx":6,"seg_crc":41}
+{"seq":1,"label":"open_r","bearing":61,"slot_idx":17,"seg_crc":122}
+{"seq":2,"label":"bridge","bearing":133,"slot_idx":22,"seg_crc":171}
+{"seq":3,"label":"after","bearing":215,"slot_idx":37,"seg_crc":285}
+{"seq":3,"label":"after_r","bearing":307,"slot_idx":61,"seg_crc":463}
+{"seq":3,"label":"after_r","bearing":399,"slot_idx":93,"seg_crc":705}
