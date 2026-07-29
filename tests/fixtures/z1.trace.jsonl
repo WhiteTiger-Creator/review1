@@ -1,4 +1,0 @@
-{"seq":1,"label":"open","bearing":21,"slot_idx":3,"seg_crc":17}
-{"seq":1,"label":"open_r","bearing":37,"slot_idx":8,"seg_crc":50}
-{"seq":2,"label":"done","bearing":128,"slot_idx":13,"seg_crc":106}
-{"seq":2,"label":"done_r","bearing":214,"slot_idx":23,"seg_crc":186}
