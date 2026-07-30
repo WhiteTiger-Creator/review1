@@ -1,19 +1,5 @@
-# Datacenter certification replay drift
+Round resolve under /app/environment is broken. /app/environment/exec/tacts build then /app/environment/exec/tacts play --all must regenerate /app/output/turn_trace.json and /app/output/field_state.json that match /app/environment/docs/desk_guide.md and the worked packs under /app/environment/data/kips/. You can replay one pack with /app/environment/exec/tacts play --kip <pack_stem> (artifacts land under /app/environment/data/.warm/<pack_stem>/). Support /app/environment/exec/tacts play --resume so a truncated /app/environment/data/.warm/journal.jsonl continues to the same pair of artifacts as a clean play.
 
-The programme office signs a certification pack off snapshots, and those snapshots no
-longer agree with live replays of the same bundles. Published halls disagree on which
-racks come out certified, how many were held back on the way through, what the
-readiness index adds up to, and whether the sealed attestations still line up with the
-counters printed beside them.
+Trace rows must carry id, kind, actor, target, pid, and slot. Delayed fires use the `#fire` id suffix. field_state must report an actors map (each id maps to hp and pos), a tiles map (each id maps to a mod), and a checksum: lowercase hex SHA-256 of the UTF-8 payload `wave|id1,id2,...` where ids are transcript row ids in emit order (always 64 hex characters). Forms sit in /app/environment/forms/. Packs and ladder.toml sit in /app/environment/data/. play --all also writes each ladder arm under /app/environment/data/.warm/arm_<name>/ (for example /app/environment/data/.warm/arm_nest_chain/turn_trace.json).
 
-Fix whatever is wrong under `/app/environment` so the controller can again produce
-`/app/output/certification_report.json` and `/tests/test.sh` passes. Static or manually
-written output is insufficient; every published number has to come from replaying the
-bundled inputs through the rebuilt pipeline, and output that cannot be reproduced by
-rerunning the controller does not count.
-
-Certification here is multi-authority, and no single subsystem owns the verdict.
-Compute, storage, network, approvals, service history, regional eligibility, and hall
-capacity each contribute, in the sequence the controller applies them. Every hall
-listed in the published site index must replay cleanly against the contract under
-`/app/environment/docs`.
+Hand-written JSON under /app/output is not enough; rebuild and replay via source edits. Repair the Ruby sources so rebuild and replay satisfy the desk and every worked pack, including every ladder arm. Driver-only edits are not enough; library behavior under the desk must be correct.

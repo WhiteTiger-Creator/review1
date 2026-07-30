@@ -1,0 +1,51 @@
+{
+  "blurb": "Nested reaction pack sample.",
+  "scn": {
+    "wave": 2,
+    "tiles": {
+      "p1": {
+        "mod": 0
+      },
+      "p2": {
+        "mod": 0
+      }
+    },
+    "actors": [
+      {
+        "id": "n1",
+        "init": 7,
+        "hp": 10,
+        "pos": "p1",
+        "side": "x"
+      },
+      {
+        "id": "n2",
+        "init": 4,
+        "hp": 10,
+        "pos": "p2",
+        "side": "y"
+      }
+    ],
+    "jobs": [
+      {
+        "id": "ns",
+        "actor": "n1",
+        "kind": "strike",
+        "target": "n2",
+        "dmg": 2
+      }
+    ],
+    "hooks": [
+      {
+        "id": "nh",
+        "owner": "n2",
+        "when": "on_strike",
+        "vs": "n2",
+        "kind": "strike",
+        "target": "n1",
+        "dmg": 1,
+        "void": false
+      }
+    ]
+  }
+}

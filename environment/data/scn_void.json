@@ -1,0 +1,48 @@
+{
+  "wave": 7,
+  "tiles": {
+    "p1": {
+      "mod": 0
+    },
+    "p2": {
+      "mod": 0
+    }
+  },
+  "actors": [
+    {
+      "id": "c1",
+      "init": 5,
+      "hp": 10,
+      "pos": "p1",
+      "side": "x"
+    },
+    {
+      "id": "c2",
+      "init": 3,
+      "hp": 10,
+      "pos": "p2",
+      "side": "y"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "vj1",
+      "actor": "c1",
+      "kind": "strike",
+      "target": "c2",
+      "dmg": 2
+    }
+  ],
+  "hooks": [
+    {
+      "id": "vh1",
+      "owner": "c2",
+      "when": "on_strike",
+      "vs": "c2",
+      "kind": "strike",
+      "target": "c1",
+      "dmg": 4,
+      "void": true
+    }
+  ]
+}

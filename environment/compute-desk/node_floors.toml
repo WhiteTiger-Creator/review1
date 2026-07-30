@@ -1,3 +1,0 @@
-default_min_nodes = 8
-warn_min_nodes = 10
-socket_family = zen4

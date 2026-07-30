@@ -1,0 +1,25 @@
+{
+  "wave": 3,
+  "tiles": {
+    "p1": {"mod": 0},
+    "p2": {"mod": 1},
+    "p3": {"mod": 0},
+    "p4": {"mod": 0}
+  },
+  "actors": [
+    {"id": "a1", "init": 8, "hp": 12, "pos": "p1", "side": "x"},
+    {"id": "a2", "init": 8, "hp": 10, "pos": "p2", "side": "y"},
+    {"id": "a3", "init": 4, "hp": 14, "pos": "p3", "side": "y"}
+  ],
+  "jobs": [
+    {"id": "j1", "actor": "a1", "kind": "strike", "target": "a3", "dmg": 3},
+    {"id": "j2", "actor": "a2", "kind": "delay", "slot": 1, "target": "a1", "dmg": 2},
+    {"id": "j3", "actor": "a3", "kind": "move", "to": "p2"},
+    {"id": "j4", "actor": "a1", "kind": "strike", "target": "a2", "dmg": 1, "void": true}
+  ],
+  "hooks": [
+    {"id": "h1", "owner": "a3", "when": "on_strike", "vs": "a3", "kind": "strike", "target": "a1", "dmg": 1, "void": false},
+    {"id": "h2", "owner": "a2", "when": "on_strike", "vs": "a1", "kind": "strike", "target": "a3", "dmg": 1, "void": true},
+    {"id": "h3", "owner": "a3", "when": "on_strike", "vs": "a3", "kind": "paint", "tile": "p1", "mod": 4, "void": false}
+  ]
+}

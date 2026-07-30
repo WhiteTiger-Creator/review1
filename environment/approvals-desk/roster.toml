@@ -1,2 +1,0 @@
-roles = ["facilities", "security", "network_eng", "capacity_plan"]
-default_min_roles = 2

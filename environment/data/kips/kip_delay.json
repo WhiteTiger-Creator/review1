@@ -1,0 +1,47 @@
+{
+  "blurb": "Delayed fire pack sample.",
+  "scn": {
+    "wave": 4,
+    "tiles": {
+      "p1": {
+        "mod": 0
+      },
+      "p2": {
+        "mod": 0
+      }
+    },
+    "actors": [
+      {
+        "id": "d1",
+        "init": 8,
+        "hp": 10,
+        "pos": "p1",
+        "side": "x"
+      },
+      {
+        "id": "d2",
+        "init": 5,
+        "hp": 10,
+        "pos": "p2",
+        "side": "y"
+      }
+    ],
+    "jobs": [
+      {
+        "id": "dd",
+        "actor": "d1",
+        "kind": "delay",
+        "slot": 0,
+        "target": "d2",
+        "dmg": 2
+      },
+      {
+        "id": "dm",
+        "actor": "d2",
+        "kind": "move",
+        "to": "p1"
+      }
+    ],
+    "hooks": []
+  }
+}

@@ -1,7 +1,0 @@
-# Desk-side defaults retained from the pre-merge tooling. Published hall
-# policy carries its own [region_weights] table and takes precedence.
-[region_weights]
-us-east = 1
-us-west = 1
-eu-central = 2
-ap-south = 2

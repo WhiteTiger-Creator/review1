@@ -1,7 +1,0 @@
-DC-4411  facilities  monday pack does not match our friday tally for two halls
-DC-4418  storage     our shelf review and the published pack disagree again
-DC-4423  security    cannot reproduce last week's sealed values from a fresh replay
-DC-4431  network     asked to re-review cabinet posture after a pack dispute
-DC-4437  approvals   endorsement ledger export requested for the disputed halls
-DC-4440  region      pack roster disagreement, awaiting programme office reply
-DC-4444  programme   rerun requested once the controller discrepancy is understood

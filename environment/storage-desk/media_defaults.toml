@@ -1,3 +1,0 @@
-default_min_usable_tb = 200
-default_min_replicas = 3
-scrub_interval_days = 14

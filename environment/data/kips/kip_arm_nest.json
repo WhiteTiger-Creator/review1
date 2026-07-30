@@ -1,0 +1,71 @@
+{
+  "blurb": "Ladder nest mirror.",
+  "scn": {
+    "wave": 5,
+    "tiles": {
+      "p1": {
+        "mod": 0
+      },
+      "p2": {
+        "mod": 0
+      },
+      "p3": {
+        "mod": 0
+      }
+    },
+    "actors": [
+      {
+        "id": "b1",
+        "init": 9,
+        "hp": 20,
+        "pos": "p1",
+        "side": "x"
+      },
+      {
+        "id": "b2",
+        "init": 6,
+        "hp": 20,
+        "pos": "p2",
+        "side": "y"
+      },
+      {
+        "id": "b3",
+        "init": 6,
+        "hp": 20,
+        "pos": "p3",
+        "side": "y"
+      }
+    ],
+    "jobs": [
+      {
+        "id": "n1",
+        "actor": "b1",
+        "kind": "strike",
+        "target": "b2",
+        "dmg": 2
+      }
+    ],
+    "hooks": [
+      {
+        "id": "nh1",
+        "owner": "b2",
+        "when": "on_strike",
+        "vs": "b2",
+        "kind": "strike",
+        "target": "b1",
+        "dmg": 1,
+        "void": false
+      },
+      {
+        "id": "nh2",
+        "owner": "b3",
+        "when": "on_strike",
+        "vs": "b1",
+        "kind": "strike",
+        "target": "b3",
+        "dmg": 1,
+        "void": false
+      }
+    ]
+  }
+}

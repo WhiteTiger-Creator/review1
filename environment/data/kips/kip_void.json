@@ -1,0 +1,51 @@
+{
+  "blurb": "Void-marked pack sample.",
+  "scn": {
+    "wave": 3,
+    "tiles": {
+      "p1": {
+        "mod": 0
+      },
+      "p2": {
+        "mod": 0
+      }
+    },
+    "actors": [
+      {
+        "id": "v1",
+        "init": 6,
+        "hp": 9,
+        "pos": "p1",
+        "side": "x"
+      },
+      {
+        "id": "v2",
+        "init": 3,
+        "hp": 9,
+        "pos": "p2",
+        "side": "y"
+      }
+    ],
+    "jobs": [
+      {
+        "id": "vs",
+        "actor": "v1",
+        "kind": "strike",
+        "target": "v2",
+        "dmg": 1
+      }
+    ],
+    "hooks": [
+      {
+        "id": "vh",
+        "owner": "v2",
+        "when": "on_strike",
+        "vs": "v2",
+        "kind": "strike",
+        "target": "v1",
+        "dmg": 4,
+        "void": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "blurb": "Ladder lethal mirror.",
+  "scn": {
+    "wave": 13,
+    "tiles": {
+      "p1": {
+        "mod": 0
+      },
+      "p2": {
+        "mod": 0
+      },
+      "p3": {
+        "mod": 0
+      }
+    },
+    "actors": [
+      {
+        "id": "l1",
+        "init": 9,
+        "hp": 20,
+        "pos": "p1",
+        "side": "x"
+      },
+      {
+        "id": "l2",
+        "init": 4,
+        "hp": 3,
+        "pos": "p2",
+        "side": "y"
+      },
+      {
+        "id": "l3",
+        "init": 10,
+        "hp": 20,
+        "pos": "p3",
+        "side": "y"
+      }
+    ],
+    "jobs": [
+      {
+        "id": "m2",
+        "actor": "l3",
+        "kind": "delay",
+        "slot": 0,
+        "target": "l1",
+        "dmg": 1
+      },
+      {
+        "id": "m1",
+        "actor": "l1",
+        "kind": "strike",
+        "target": "l2",
+        "dmg": 8
+      }
+    ],
+    "hooks": [
+      {
+        "id": "lh1",
+        "owner": "l3",
+        "when": "on_strike",
+        "vs": "l2",
+        "kind": "strike",
+        "target": "l2",
+        "dmg": 5,
+        "void": false
+      }
+    ]
+  }
+}

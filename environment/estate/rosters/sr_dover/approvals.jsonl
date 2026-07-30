@@ -1,8 +1,0 @@
-{"expires_epoch": 9000, "role": "facilities", "unit": "rk-do01"}
-{"expires_epoch": 9000, "role": "security", "unit": "rk-do01"}
-{"expires_epoch": 9000, "role": "facilities", "unit": "rk-do02"}
-{"expires_epoch": 8000, "role": "facilities", "unit": "rk-do02"}
-{"expires_epoch": 9000, "role": "facilities", "unit": "rk-do03"}
-{"expires_epoch": 150, "role": "security", "unit": "rk-do03"}
-{"expires_epoch": 9000, "role": "facilities", "unit": "rk-do04"}
-{"expires_epoch": 9000, "role": "network_eng", "unit": "rk-do04"}

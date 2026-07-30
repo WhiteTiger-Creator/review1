@@ -1,3 +1,0 @@
-{"class": "gp2", "degraded_tb": 0, "draw_kw": 7, "firmware": "fw-2401", "id": "rk-ar01", "raw_tb": 480, "ready_nodes": 12, "region": "us-east", "replicas": 3, "tier": 40, "uplinks": [{"gbps": 100, "healthy": true}, {"gbps": 100, "healthy": true}]}
-{"class": "gp2", "degraded_tb": 0, "draw_kw": 7, "firmware": "fw-2401", "id": "rk-ar02", "raw_tb": 480, "ready_nodes": 6, "region": "us-east", "replicas": 3, "tier": 38, "uplinks": [{"gbps": 100, "healthy": true}, {"gbps": 100, "healthy": true}]}
-{"class": "gp2", "degraded_tb": 0, "draw_kw": 7, "firmware": "fw-2309", "id": "rk-ar03", "raw_tb": 480, "ready_nodes": 12, "region": "us-east", "replicas": 3, "tier": 36, "uplinks": [{"gbps": 100, "healthy": true}, {"gbps": 100, "healthy": true}]}

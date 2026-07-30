@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["wave", "rows"],
+  "properties": {
+    "wave": { "type": "integer" },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "actor", "target", "pid", "slot"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string" },
+          "actor": { "type": "string" },
+          "target": { "type": ["string", "null"] },
+          "pid": { "type": ["string", "null"] },
+          "slot": { "type": "integer" }
+        }
+      }
+    }
+  }
+}

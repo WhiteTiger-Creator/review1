@@ -1,0 +1,124 @@
+{
+  "wave": 41,
+  "tiles": {
+    "p1": {
+      "mod": 3
+    },
+    "p2": {
+      "mod": 0
+    },
+    "p3": {
+      "mod": 1
+    }
+  },
+  "actors": [
+    {
+      "id": "x1",
+      "init": 7,
+      "hp": 18,
+      "pos": "p1",
+      "side": "x"
+    },
+    {
+      "id": "x2",
+      "init": 7,
+      "hp": 6,
+      "pos": "p2",
+      "side": "y"
+    },
+    {
+      "id": "x3",
+      "init": 5,
+      "hp": 16,
+      "pos": "p3",
+      "side": "y"
+    },
+    {
+      "id": "x4",
+      "init": 9,
+      "hp": 14,
+      "pos": "p1",
+      "side": "x"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "c1",
+      "actor": "x4",
+      "kind": "strike",
+      "target": "x2",
+      "dmg": 2
+    },
+    {
+      "id": "c2",
+      "actor": "x1",
+      "kind": "delay",
+      "slot": 1,
+      "target": "x3",
+      "dmg": 3
+    },
+    {
+      "id": "c3",
+      "actor": "x1",
+      "kind": "strike",
+      "target": "x3",
+      "dmg": 1,
+      "void": true
+    },
+    {
+      "id": "c4",
+      "actor": "x3",
+      "kind": "move",
+      "to": "p1"
+    },
+    {
+      "id": "c5",
+      "actor": "x2",
+      "kind": "strike",
+      "target": "x1",
+      "dmg": 2
+    }
+  ],
+  "hooks": [
+    {
+      "id": "ch1",
+      "owner": "x3",
+      "when": "on_strike",
+      "vs": "x2",
+      "kind": "paint",
+      "tile": "p1",
+      "mod": 8,
+      "void": false
+    },
+    {
+      "id": "ch2",
+      "owner": "x2",
+      "when": "on_strike",
+      "vs": "x2",
+      "kind": "strike",
+      "target": "x4",
+      "dmg": 4,
+      "void": false
+    },
+    {
+      "id": "ch3",
+      "owner": "x1",
+      "when": "on_strike",
+      "vs": "x2",
+      "kind": "strike",
+      "target": "x3",
+      "dmg": 1,
+      "void": true
+    },
+    {
+      "id": "ch4",
+      "owner": "x1",
+      "when": "on_strike",
+      "vs": "x1",
+      "kind": "paint",
+      "tile": "p2",
+      "mod": 5,
+      "void": false
+    }
+  ]
+}
