@@ -1,0 +1,7 @@
+{
+  "pinned": "2026-procurement-v3",
+  "checkpoint_branch": "procurement-main",
+  "checkpoint_seq": 12,
+  "review": ["ord-1001", "ord-1005", "ord-1002", "ord-1004", "ord-1006", "ord-1008", "ord-1009", "ord-1010"],
+  "holdout": ["ord-1003", "ord-1007", "ord-1011"]
+}

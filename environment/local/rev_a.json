@@ -1,0 +1,37 @@
+{
+  "name": "rev_a",
+  "rows": [
+    {
+      "principal": "courier",
+      "claim": "live_location_eta",
+      "authority_source": "legacy-location-stream",
+      "decision": "allow",
+      "freshness": "fresh",
+      "support": "supported"
+    },
+    {
+      "principal": "customer",
+      "claim": "home_history_eta",
+      "authority_source": "legacy-address-history",
+      "decision": "allow",
+      "freshness": "fresh",
+      "support": "supported"
+    },
+    {
+      "principal": "merchant",
+      "claim": "prep_eta",
+      "authority_source": "legacy-kitchen-clock",
+      "decision": "allow",
+      "freshness": "fresh",
+      "support": "supported"
+    },
+    {
+      "principal": "courier",
+      "claim": "precise_route_eta",
+      "authority_source": "legacy-route-replay",
+      "decision": "allow",
+      "freshness": "fresh",
+      "support": "supported"
+    }
+  ]
+}

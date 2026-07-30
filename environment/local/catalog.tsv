@@ -1,0 +1,16 @@
+id	label	owner	status	sequence
+ord-1001	R1	procurement	active	1
+ord-1002	R2-old	procurement	retired	1
+ord-1002	R2	procurement	active	2
+ord-1003	R3	procurement	active	1
+ord-1004	R4	procurement	active	1
+ord-1005	R5-analytics	analytics	active	1
+ord-1005	R5-old	procurement	retired	1
+ord-1005	R5	procurement	active	2
+ord-1006	R6	procurement	active	1
+ord-1007	R7	procurement	active	1
+ord-1008	R8-old	procurement	retired	1
+ord-1008	R8	procurement	active	2
+ord-1009	R9	procurement	active	1
+ord-1010	R10	procurement	active	1
+ord-1011	R11	procurement	active	1

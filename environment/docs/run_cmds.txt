@@ -1,5 +1,0 @@
-# build and play
-/app/environment/exec/tacts build
-/app/environment/exec/tacts play --all
-/app/environment/exec/tacts play --kip kip_rank
-/app/environment/exec/tacts play --resume

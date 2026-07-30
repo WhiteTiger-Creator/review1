@@ -4,24 +4,27 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "games"
-tags = ["games", "ruby", "turn-resolution", "determinism", "replay"]
-languages = ["ruby"]
+category = "security"
+tags = ["rust", "security", "privacy", "provenance", "policy"]
+languages = ["rust"]
 codebase_size = "small"
 number_of_milestones = 0
-subcategories = []
-expert_time_estimate_min = 150
-junior_time_estimate_min = 540
-
-[agent]
-timeout_sec = 1800
-
-[verifier]
-timeout_sec = 900
+subcategories = ["tool_specific"]
+expert_time_estimate_min = 180
+junior_time_estimate_min = 720
 
 [environment]
+allow_internet = false
 build_timeout_sec = 600
 cpus = 2
-memory_mb = 4096
+memory_mb = 8192
 storage_mb = 10240
-allow_internet = false
+
+[agent]
+timeout_sec = 1200
+
+[verifier]
+timeout_sec = 600
+
+[reference_pattern]
+justification_if_none = "`agent_brief.py --mode task-author` reported no promoted reference task ids for this run, and no promoted reference fits this Rust privacy authority provenance shape"

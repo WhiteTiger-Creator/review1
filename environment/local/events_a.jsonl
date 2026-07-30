@@ -1,0 +1,2 @@
+{"id":"ord-0001","principal":"courier","claim":"live_location_eta","bucket":"review","evidence_id":"gps-a1","consent_state":"active","observed_at":"2026-02-10T10:00:00Z"}
+{"id":"ord-0002","principal":"customer","claim":"home_history_eta","bucket":"review","evidence_id":"addr-a2","consent_state":"active","observed_at":"2026-02-10T10:04:00Z"}

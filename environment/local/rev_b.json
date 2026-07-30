@@ -1,0 +1,37 @@
+{
+  "name": "rev_b",
+  "rows": [
+    {
+      "principal": "courier",
+      "claim": "live_location_eta",
+      "authority_source": "rev-b-active-courier-gps",
+      "decision": "allow",
+      "freshness": "fresh",
+      "support": "supported"
+    },
+    {
+      "principal": "customer",
+      "claim": "home_history_eta",
+      "authority_source": "rev-b-revoked-customer-history",
+      "decision": "deny",
+      "freshness": "revoked",
+      "support": "unsupported"
+    },
+    {
+      "principal": "merchant",
+      "claim": "prep_eta",
+      "authority_source": "rev-b-merchant-prep-window",
+      "decision": "allow",
+      "freshness": "fresh",
+      "support": "supported"
+    },
+    {
+      "principal": "courier",
+      "claim": "precise_route_eta",
+      "authority_source": "rev-b-stale-route-cache",
+      "decision": "deny",
+      "freshness": "stale",
+      "support": "unsupported"
+    }
+  ]
+}

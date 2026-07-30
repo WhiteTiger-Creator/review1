@@ -1,0 +1,16 @@
+{
+  "principal_aliases": {
+    "consumer": "customer",
+    "driver": "courier",
+    "eater": "customer",
+    "restaurant": "merchant",
+    "storefront": "merchant"
+  },
+  "claim_aliases": {
+    "address_eta": "home_history_eta",
+    "gps_eta": "live_location_eta",
+    "kitchen_eta": "prep_eta",
+    "prep_window": "prep_eta",
+    "route_eta_precise": "precise_route_eta"
+  }
+}

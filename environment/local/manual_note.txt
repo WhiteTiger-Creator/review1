@@ -1,0 +1,41 @@
+Procurement review context:
+
+The desk wants one generated packet for the pinned vendor evaluation. The packet should be useful to a human reviewer without exposing held-out evidence, replay rows outside the packet close, suppressed replay evidence, alias-only names, provisional checkpoint rows, or stale authority as support for the residual risk statement. Vendor claims about ETA precision are acceptable only when the active local authority record remains fresh for the canonical principal and claim after replay, alias, consent, expiry, and checkpoint reconstruction.
+
+Runtime reconstruction rules:
+- The active review uses the policy named by `replay_manifest.json` `active_revision`; for this packet that means `rev_b.json`.
+- `events_b.jsonl` is an append-style replay log. A replay row is eligible only when its `evidence_id` is not listed in `replay_manifest.json` `suppressed_evidence_ids` and its `observed_at` value is not later than `replay_manifest.json` `closed_at`.
+- If the same order id has more than one eligible replay row, choose the row with the highest tuple: generation rank from `replay_manifest.json` `generation_rank`, then `replay_seq`, then `observed_at`, then `evidence_id`. Preserve that selected row's `generation`, `evidence_id`, `observed_at`, original principal, original claim, `consent_state`, and `replay_seq` in the generated record.
+- Preserve the order of `holdout_map.json` `review` ids in generated `records`; do not use raw log order, and do not let held-out ids or late replay rows create reviewed records.
+- Normalize principals and claims before joining to the policy revision, grouping principal transitions, or writing public `principal` and `claim` fields. Use `alias_map.json` as the candidate mapping, then validate the mapping against `alias_scopes.json`: the matching scope row must name the same alias and canonical value, include the selected replay generation in `valid_generations`, and have `confidence` greater than or equal to `minimum_confidence`. If no candidate mapping exists, the value is already canonical. If a candidate mapping exists but no matching scope qualifies, keep the source value. Preserve the pre-normalized values in `source_principal` and `source_claim`.
+- Join the selected canonical principal and claim to the active revision row. If no active policy row matches, use `authority_overrides.json` `default_if_unmatched`.
+- After the policy join, apply `authority_overrides.json` gates in this order. First apply any `consent_gates` entry for the canonical principal and claim when the selected replay row's `consent_state` differs from `required_state`. Then apply any `expiry_windows` entry for the canonical principal and claim when the selected replay row's `observed_at` is later than `stale_after`. The override's `when_not_met` or `when_expired` object replaces `authority_source`, `decision`, `freshness`, and `support`.
+- `checkpoint.json` contains closed and provisional rows from multiple branches. For each reviewed order id, use the row whose `branch` equals `holdout_map.json` `checkpoint_branch`, whose `closed` value is true, and whose `closed_seq` is less than or equal to `holdout_map.json` `checkpoint_seq`. If more than one row qualifies for the same id, use the highest `closed_seq`.
+- Each generated reviewed record reports the checkpoint revision and prior decision, freshness, and support for that order id. Mark `recovery_action` as `changed` when the active selected replay disagrees with the chosen checkpoint row on evidence id, decision, freshness, or support; otherwise mark it `unchanged`.
+- `catalog.tsv` can contain retired labels and non-procurement owners. For `statement_evidence` `claim_id`, use the row whose `owner` is `procurement` and whose `status` is `active`, choosing the highest numeric `sequence` for that record id.
+
+Residual risk note language:
+- Local principals in the packet are customer, courier, and merchant after qualified alias normalization.
+- Separate sections or passages for supported uncertainty and unsupported ETA certainty.
+- For each reviewed record whose final policy state is unsupported, non-fresh, or deny, cite that record's freshness label (fresh, stale, or revoked) in the note.
+- For each reviewed record, cite the record id, current evidence id, canonical principal, freshness label, generation, and recovery action in the note.
+- Do not cite held-out record ids, held-out evidence ids, suppressed replay evidence ids, or replay evidence that arrived after the packet close in the note.
+- Do not present unsupported precise ETA certainty as supported, and do not call stale, revoked, denied, held-out, suppressed, or after-close evidence fresh authority. Truthful descriptions of fresh supported reviewed evidence are acceptable.
+
+Packet schema notes:
+
+- Normal run from `/app/environment`: `cargo run --quiet -- --out /app/output`.
+- Alternate validation command: `cargo run --quiet --manifest-path /app/environment/Cargo.toml -- --out /app/output`.
+- `risk_trace.json` is a single JSON object with exactly these five top-level keys and no additional fields: `runs`, `records`, `principal_transitions`, `holdout_summary`, and `statement_evidence`.
+- `risk_trace.json` reports the generated structured audit trace; `residual_risk.md` reports the human-readable residual risk statement derived from that trace.
+- `runs` has length 1 and contains the single generated packet run entry.
+- Each `runs` entry keeps a non-empty `tool` string, its `revision` field is a plain string equal to the active policy file's `name` value rather than an embedded policy object, and its `record_count` reports the number of reviewed records emitted in `records`.
+- In the policy revision, `rows` means rule rows keyed by principal and claim.
+- `records` contains exactly and only the pinned split entries listed under `review` in `holdout_map.json`. It must not contain held-out entries.
+- In reviewed `records`, `id` means the local order record id, `authority_source` reports the final policy authority source after overrides, `freshness` reports whether the final authority is fresh, stale, or revoked, `decision` reports the final policy decision, `uncertainty_support` copies the final `support` value exactly, and `evidence_id` reports the selected local evidence identifier.
+- Reviewed `records` also report `principal`, `claim`, `source_principal`, `source_claim`, `generation`, `observed_at`, `replay_seq`, `checkpoint_revision`, `prior_decision`, `prior_freshness`, `prior_support`, and `recovery_action`. The `observed_at` field reports the timestamp from the selected replay row. The `checkpoint_revision` field reports the chosen previous closed packet revision for the same order id, while `prior_decision`, `prior_freshness`, and `prior_support` report that checkpoint row's prior values.
+- `decision` values include `allow` and `deny`.
+- `principal_transitions` lists only principals that have at least one qualifying affected reviewed record. Omit any principal whose affected set would be empty. Do not emit placeholder entries with empty `affected_records`.
+- In `principal_transitions`, `affected_records` reports exactly the reviewed records for that principal whose final policy state has `support` equal to `unsupported`, `freshness` not equal to `fresh`, or `decision` equal to `deny`.
+- In `holdout_summary`, `pinned_split` reports the pinned evaluation split label, `review_count` reports reviewed record count, `held_out_count` reports held-out record count, and `held_out_records` reports the held-out record ids.
+- In `statement_evidence`, each reviewed record has exactly one matching entry and held-out records have none. `claim_id` reports the active procurement markdown claim identifier, `record_id` reports the reviewed record that supports the claim, `evidence_id` reports the linked evidence identifier, `principal` reports the canonical reviewed principal, `freshness` matches the reviewed record, `generation` matches the reviewed record, `recovery_action` matches the reviewed record, and `support` matches that reviewed record's `uncertainty_support` exactly. Its `phrase` describes the record as either supported uncertainty or unsupported ETA certainty without making a false freshness claim.
