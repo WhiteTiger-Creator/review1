@@ -1,8 +1,5 @@
-"""Semantic checks for the streaming terrain simulation."""
-from __future__ import annotations
+"""Verifier for the hall certification replay report."""
 
-import csv
-import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -10,182 +7,147 @@ from pathlib import Path
 import pytest
 
 APP = Path("/app")
-REPORT = APP / "output" / "field_report.json"
-RUNNER = APP / "environment" / "scripts" / "build_and_run.sh"
-ENV = APP / "environment"
-TOLERANCE = 2.0e-12
+OUT = APP / "output" / "certification_report.json"
+ONE_OUT = APP / "output" / "one_site.json"
+SITE_NAMES = ["sr_arden", "sr_bryce", "sr_cinder", "sr_dover", "sr_elgin", "sr_gale", "sr_fenwick", "sr_composite"]
+EXPECTED = json.loads((Path(__file__).with_name("rows.json")).read_text())
+EXPECTED_ROWS = EXPECTED["sites"]
+EXPECTED_PROGRAM = EXPECTED["program_attestation"]
+STAT_KEYS = [
+    "approval_blocks",
+    "capacity_trims",
+    "certified_count",
+    "compute_blocks",
+    "maintenance_blocks",
+    "network_blocks",
+    "rack_count",
+    "readiness_index",
+    "region_rejections",
+    "storage_blocks",
+]
 
 
-def run_profile(flag: str = "") -> dict:
-    if REPORT.exists():
-        REPORT.unlink()
-    command = ["bash", str(RUNNER)]
-    if flag:
-        command.append(flag)
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    assert result.returncode == 0, result.stderr
-    return json.loads(REPORT.read_text(encoding="utf-8"))
+def replay_all():
+    subprocess.run(["make", "-C", "/app/environment", "all"], check=True)
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    if OUT.exists():
+        OUT.unlink()
+    subprocess.run(
+        [
+            "/app/environment/bin/certctl",
+            "--all",
+            "--out",
+            "/app/output/certification_report.json",
+        ],
+        check=True,
+    )
 
 
-def _height(x: int, y: int) -> float:
-    band = (x * 13 + y * 7 + (x // 16) * 5) % 29
-    return 0.25 + band * 0.01
+@pytest.fixture(scope="session", autouse=True)
+def rebuild_and_replay():
+    """Rebuild the controller and regenerate the certification report."""
+    replay_all()
 
 
-def _load_rain(path: Path) -> list[float]:
-    rows = list(csv.DictReader(path.open(encoding="utf-8")))
-    return [float(row["rainfall"]) for row in rows]
+def load_report():
+    assert OUT.is_file(), "certification_report.json missing"
+    return json.loads(OUT.read_text())
 
 
-def _simulate(rain_path: Path) -> dict:
-    width, height, steps = 128, 96, 4
-    tile_w, tile_h = 16, 8
-    rains = _load_rain(rain_path)
-    sediment = 1.0
-    records: list[str] = []
-    peak = 0
-    tiles_x = (width + tile_w - 1) // tile_w
-    tiles_y = (height + tile_h - 1) // tile_h
-    runs = []
+def row_by_name(report, name):
+    for row in report.get("sites", []):
+        if row.get("name") == name:
+            return row
+    return None
 
-    for step in range(steps):
-        rainfall = rains[step]
-        terrain = 0.0
-        water = 0.0
-        edge = 0.0
-        running = 0.0
-        for ty in range(tiles_y):
-            for tx in range(tiles_x):
-                filled = 0
-                x0, y0 = tx * tile_w, ty * tile_h
-                x1, y1 = min(width, x0 + tile_w), min(height, y0 + tile_h)
-                for y in range(y0, y1):
-                    for x in range(x0, x1):
-                        h = _height(x, y)
-                        slope = 0.0001 * ((x + 3 * y) % 11)
-                        incoming = rainfall * (1.0 + slope) + running * 0.00001
-                        running += incoming
-                        terrain += h
-                        water += incoming
-                        border = x in (0, width - 1) or y in (0, height - 1)
-                        if border:
-                            edge += incoming * 0.000001
-                        filled += 1
-                        peak = max(peak, filled)
-        line = (
-            f"{step}|{terrain:.12f}|{water:.12f}|{sediment:.12f}|{edge:.12f};"
+
+def test_schema_version():
+    """The published document declares schema_version 1."""
+    assert load_report().get("schema_version") == 1
+
+
+def test_every_hall_listed():
+    """Every hall in the published index appears exactly once."""
+    names = [r.get("name") for r in load_report().get("sites", [])]
+    assert sorted(names) == sorted(SITE_NAMES)
+
+
+@pytest.mark.parametrize("spec", EXPECTED_ROWS, ids=lambda s: s["name"])
+def test_hall_row_counters(spec):
+    """Each hall row reports the counters the certification contract requires."""
+    row = row_by_name(load_report(), spec["name"])
+    assert row is not None, f"missing row for {spec['name']}"
+    actual = {k: row.get(k) for k in STAT_KEYS}
+    assert actual == {k: spec[k] for k in STAT_KEYS}
+
+
+@pytest.mark.parametrize("spec", EXPECTED_ROWS, ids=lambda s: s["name"])
+def test_hall_row_attestation(spec):
+    """Each hall row seals the attestation over its own published counters."""
+    row = row_by_name(load_report(), spec["name"])
+    assert row is not None, f"missing row for {spec['name']}"
+    mark = row.get("attestation", "")
+    assert isinstance(mark, str) and len(mark) == 64 and mark == mark.lower()
+    assert mark == spec["attestation"]
+
+
+def test_counters_account_for_every_rack():
+    """Certified racks plus stage removals account for the full hall inventory."""
+    for row in load_report().get("sites", []):
+        removed = (
+            row["compute_blocks"]
+            + row["storage_blocks"]
+            + row["network_blocks"]
+            + row["approval_blocks"]
+            + row["maintenance_blocks"]
+            + row["region_rejections"]
+            + row["capacity_trims"]
         )
-        records.append(line)
-        runs.append(
-            {
-                "step": step,
-                "terrain_sum": float(f"{terrain:.12f}"),
-                "water_sum": float(f"{water:.12f}"),
-                "sediment_sum": float(f"{sediment:.12f}"),
-                "edge_export": float(f"{edge:.12f}"),
-            }
-        )
-
-    digest = hashlib.sha256("".join(records).encode("utf-8")).hexdigest()
-    return {
-        "grid_width": width,
-        "grid_height": height,
-        "steps": steps,
-        "budget_cells": 4096,
-        "peak_cells": peak,
-        "initial_sediment": 1.0,
-        "final_sediment": sediment,
-        "sediment_error": abs(sediment - 1.0),
-        "tile_count": tiles_x * tiles_y,
-        "reduction_digest": digest,
-        "runs": runs,
-    }
+        assert row["certified_count"] + removed == row["rack_count"], row["name"]
 
 
-@pytest.fixture(scope="module")
-def primary() -> dict:
-    return run_profile()
+def test_program_attestation():
+    """The programme attestation seals the sorted per-hall attestations."""
+    report = load_report()
+    mark = report.get("program_attestation", "")
+    assert isinstance(mark, str) and len(mark) == 64 and mark == mark.lower()
+    assert mark == EXPECTED_PROGRAM
 
 
-@pytest.fixture(scope="module")
-def expected_primary() -> dict:
-    return _simulate(ENV / "data" / "rainfall.csv")
+def test_replay_is_reproducible():
+    """Deleting the document and replaying reproduces identical sealed values."""
+    before = {r["name"]: r["attestation"] for r in load_report()["sites"]}
+    OUT.unlink()
+    subprocess.run(
+        [
+            "/app/environment/bin/certctl",
+            "--all",
+            "--out",
+            "/app/output/certification_report.json",
+        ],
+        check=True,
+    )
+    after = load_report()
+    for row in after["sites"]:
+        assert row["attestation"] == before[row["name"]], row["name"]
 
 
-def test_domain_and_tile_coverage(primary: dict, expected_primary: dict) -> None:
-    """Published domain dimensions and complete tile coverage stay intact."""
-    assert primary["grid_width"] == expected_primary["grid_width"]
-    assert primary["grid_height"] == expected_primary["grid_height"]
-    assert primary["steps"] == expected_primary["steps"]
-    assert primary["budget_cells"] == expected_primary["budget_cells"]
-    assert primary["tile_count"] == expected_primary["tile_count"]
-    assert primary["tile_count"] == (128 // 16) * (96 // 8)
-
-
-def test_peak_matches_single_tile_resident_set(
-    primary: dict,
-    expected_primary: dict,
-) -> None:
-    """Peak working set equals one full tile, not the whole domain."""
-    assert primary["peak_cells"] == expected_primary["peak_cells"] == 128
-    assert primary["peak_cells"] <= primary["budget_cells"]
-
-
-def test_sediment_conserved_across_tile_commits(primary: dict) -> None:
-    """Sediment mass survives tile-local observation and commit."""
-    assert abs(primary["final_sediment"] - primary["initial_sediment"]) <= TOLERANCE
-    assert primary["sediment_error"] <= TOLERANCE
-    for row in primary["runs"]:
-        assert abs(row["sediment_sum"] - primary["initial_sediment"]) <= TOLERANCE
-
-
-def test_step_observations_match_independent_stream(
-    primary: dict,
-    expected_primary: dict,
-) -> None:
-    """Ordered step totals match the independent tiled stream model."""
-    assert [row["step"] for row in primary["runs"]] == [0, 1, 2, 3]
-    for actual, expected in zip(primary["runs"], expected_primary["runs"], strict=True):
-        assert actual["step"] == expected["step"]
-        assert abs(actual["terrain_sum"] - expected["terrain_sum"]) <= TOLERANCE
-        assert abs(actual["water_sum"] - expected["water_sum"]) <= 1.0e-9
-        assert abs(actual["edge_export"] - expected["edge_export"]) <= 1.0e-9
-        assert actual["terrain_sum"] > 0.0
-        assert actual["water_sum"] > 0.0
-        assert actual["edge_export"] > 0.0
-
-
-def test_reduction_digest_matches_canonical_records(
-    primary: dict,
-    expected_primary: dict,
-) -> None:
-    """Digest is SHA-256 over forward canonical run-record text."""
-    assert primary["reduction_digest"] == expected_primary["reduction_digest"]
-    assert len(primary["reduction_digest"]) == 64
-    assert primary["reduction_digest"] == primary["reduction_digest"].lower()
-
-
-def test_rainfall_csv_drives_alternate_profile(
-    expected_primary: dict,
-) -> None:
-    """Alternate CSV rainfall changes water while preserving the domain."""
-    alternate = run_profile("--alternate")
-    expected_alt = _simulate(ENV / "data" / "rainfall_alt.csv")
-    assert alternate["grid_width"] == expected_alt["grid_width"]
-    assert alternate["tile_count"] == expected_alt["tile_count"]
-    assert alternate["peak_cells"] == expected_alt["peak_cells"]
-    primary_water = [row["water_sum"] for row in expected_primary["runs"]]
-    alternate_water = [row["water_sum"] for row in alternate["runs"]]
-    assert alternate_water != primary_water
-    for actual, expected in zip(alternate["runs"], expected_alt["runs"], strict=True):
-        assert abs(actual["water_sum"] - expected["water_sum"]) <= 1.0e-9
-    assert alternate["reduction_digest"] == expected_alt["reduction_digest"]
-
-
-def test_repeat_identity_is_byte_identical() -> None:
-    """Clean rebuilds reproduce identical report bytes."""
-    first = run_profile()
-    first_bytes = REPORT.read_bytes()
-    second = run_profile()
-    assert second == first
-    assert REPORT.read_bytes() == first_bytes
+@pytest.mark.parametrize("spec", [EXPECTED_ROWS[0], EXPECTED_ROWS[-1]], ids=lambda s: s["name"])
+def test_single_hall_matches_full_replay(spec):
+    """A single-hall replay produces the same row as the full replay."""
+    if ONE_OUT.exists():
+        ONE_OUT.unlink()
+    subprocess.run(
+        [
+            "/app/environment/bin/certctl",
+            "--site",
+            spec["name"],
+            "--out",
+            "/app/output/one_site.json",
+        ],
+        check=True,
+    )
+    data = json.loads(ONE_OUT.read_text())
+    row = data["sites"][0]
+    assert {k: row.get(k) for k in STAT_KEYS} == {k: spec[k] for k in STAT_KEYS}
+    assert row["attestation"] == spec["attestation"]

@@ -1,15 +1,22 @@
 #!/bin/bash
+set -uo pipefail
 
+# Check if we're in a valid working directory
 if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile."
-    exit 1
+    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile before running this script."
+    mkdir -p /logs/verifier
+    echo 0 > /logs/verifier/reward.txt
+    exit 0
 fi
 
-# Don't change anything below this line except the test file path or pytest flags.
-pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+mkdir -p /logs/verifier
+
+# pytest and pytest-json-ctrf must be pre-installed in the Docker image.
+python3 -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 
 # Produce reward file (REQUIRED)
-if [ $? -eq 0 ]; then
+rc=$?
+if [ "$rc" -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt

@@ -1,0 +1,6 @@
+{"expires_epoch": 9000, "role": "facilities", "unit": "rk-ci01"}
+{"expires_epoch": 9000, "role": "security", "unit": "rk-ci01"}
+{"expires_epoch": 9000, "role": "facilities", "unit": "rk-ci02"}
+{"expires_epoch": 9000, "role": "security", "unit": "rk-ci02"}
+{"expires_epoch": 9000, "role": "facilities", "unit": "rk-ci03"}
+{"expires_epoch": 9000, "role": "security", "unit": "rk-ci03"}

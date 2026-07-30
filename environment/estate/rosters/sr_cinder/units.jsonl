@@ -1,0 +1,3 @@
+{"class": "gp2", "degraded_tb": 0, "draw_kw": 7, "firmware": "fw-2401", "id": "rk-ci01", "raw_tb": 480, "ready_nodes": 12, "region": "us-east", "replicas": 3, "tier": 46, "uplinks": [{"gbps": 100, "healthy": true}, {"gbps": 100, "healthy": true}]}
+{"class": "gp2", "degraded_tb": 0, "draw_kw": 7, "firmware": "fw-2401", "id": "rk-ci02", "raw_tb": 480, "ready_nodes": 12, "region": "us-east", "replicas": 3, "tier": 44, "uplinks": [{"gbps": 100, "healthy": true}, {"gbps": 100, "healthy": false}]}
+{"class": "gp2", "degraded_tb": 0, "draw_kw": 7, "firmware": "fw-2401", "id": "rk-ci03", "raw_tb": 480, "ready_nodes": 12, "region": "us-east", "replicas": 3, "tier": 42, "uplinks": [{"gbps": 25, "healthy": true}, {"gbps": 25, "healthy": true}]}

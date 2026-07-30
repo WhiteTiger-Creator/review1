@@ -1,0 +1,3 @@
+default_min_gbps = 40
+default_min_healthy_links = 2
+fabric = clos3

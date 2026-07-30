@@ -4,25 +4,24 @@ version = "2.0"
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "games"
-category_profile = "floating_point_numeric_policy"
-tags = ["games", "rts", "skirmish-map", "java", "memory-budget", "repair"]
-languages = ["java"]
+category = "system-administration"
+subcategories = []
+tags = ["datacenter", "fleet-ops", "capacity-planning", "attestation", "policy-precedence"]
+languages = ["go", "bash"]
 codebase_size = "small"
 number_of_milestones = 0
-subcategories = []
 expert_time_estimate_min = 120
-junior_time_estimate_min = 300
+junior_time_estimate_min = 360
 
 [agent]
-timeout_sec = 1500
+timeout_sec = 1800
 
 [verifier]
-timeout_sec = 700
+timeout_sec = 900
 
 [environment]
 allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 900
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240

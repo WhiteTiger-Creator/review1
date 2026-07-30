@@ -1,0 +1,3 @@
+hall_default_kw = 900
+constrained_hall_kw = 30
+headroom_pct = 10

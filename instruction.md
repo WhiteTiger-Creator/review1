@@ -1,20 +1,19 @@
-# RTS skirmish map weathering
+# Datacenter certification replay drift
 
-The RTS skirmish map kiln under `/app/environment` weathers battlefield tiles
-under a resident working-set budget and regenerates
-`/app/output/field_report.json` from the bundled map inputs.
-`/app/environment/scripts/build_and_run.sh` is the normal entrypoint; the
-verifier rebuilds from source and deletes prior output, so a hand-written
-report, stale artifact, wrapper-only change, or verifier edit is not
-sufficient.
+The programme office signs a certification pack off snapshots, and those snapshots no
+longer agree with live replays of the same bundles. Published halls disagree on which
+racks come out certified, how many were held back on the way through, what the
+readiness index adds up to, and whether the sealed attestations still line up with the
+counters printed beside them.
 
-Budgets, tile streaming, rain profiles, report `runs` fields, mud-ledger
-tolerance, and digest rules are in
-`/app/environment/docs/skirmish_contract.md`. Keep the resident cell working
-set inside the budget and report `peak_cells` from that resident set. Both the
-default profile and the alternate profile selected through the build script
-must work. Reruns of the same profile must be byte-identical.
+Fix whatever is wrong under `/app/environment` so the controller can again produce
+`/app/output/certification_report.json` and `/tests/test.sh` passes. Static or manually
+written output is insufficient; every published number has to come from replaying the
+bundled inputs through the rebuilt pipeline, and output that cannot be reproduced by
+rerunning the controller does not count.
 
-Fix the game sources under `/app/environment` and let the normal commands
-regenerate the report. Signal completion after the source and regenerated
-report satisfy these requirements.
+Certification here is multi-authority, and no single subsystem owns the verdict.
+Compute, storage, network, approvals, service history, regional eligibility, and hall
+capacity each contribute, in the sequence the controller applies them. Every hall
+listed in the published site index must replay cleanly against the contract under
+`/app/environment/docs`.

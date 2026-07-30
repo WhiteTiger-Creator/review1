@@ -1,0 +1,18 @@
+eval_epoch = 240
+min_nodes = 8
+allowed_firmware = ["fw-2401", "fw-2402"]
+min_usable_tb = 200
+min_replicas = 3
+min_gbps = 40
+min_healthy_links = 2
+min_roles = 2
+required_roles = ["facilities", "security"]
+cool_epochs = 30
+budget_kw = 30
+allowed_classes = []
+
+[region_weights]
+us-east = 3
+us-west = 2
+eu-central = 4
+ap-south = 5

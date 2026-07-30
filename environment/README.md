@@ -1,9 +1,19 @@
-# RTS skirmish map weathering
+# Hall certification controller
 
-This workspace holds a deterministic Java skirmish-map weathering pass for
-battlefield tiles. The build entrypoint is under `scripts/`; game sources are
-under the package tree; profiles, map data, and public contracts live beside
-them.
+`certctl` replays every hall listed in `programme/site_index.toml` through the
+certification stages and writes one JSON document.
 
-Public contracts are in `docs/skirmish_contract.md`. The normal entrypoint is
-`scripts/build_and_run.sh`, which regenerates `/app/output/field_report.json`.
+```
+make all
+./bin/certctl --all --out /app/output/certification_report.json
+```
+
+Layout:
+
+- `estate/` published hall bundles and the site index
+- `cmd/certctl/` controller entry point
+- `internal/run/` stage wiring and report writing
+- `ingest/` bundle loading and normalisation
+- `q4/` shared record types
+- `docs/` published contract, bundle layout, attestation rules
+- `*-desk/` desk reference material carried over from the pre-merge tools
