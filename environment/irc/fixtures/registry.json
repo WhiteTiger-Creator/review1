@@ -1,0 +1,45 @@
+{
+  "checkpoints": [
+    {
+      "id": "ckpt_root",
+      "parent": null,
+      "feature_epoch": 2,
+      "tokenizer_id": "tok_v2",
+      "adapter_id": "adp_none",
+      "sha": "rootsha"
+    },
+    {
+      "id": "ckpt_mid",
+      "parent": "ckpt_root",
+      "feature_epoch": 3,
+      "tokenizer_id": "tok_v2",
+      "adapter_id": "adp_none",
+      "sha": "midsha"
+    },
+    {
+      "id": "ckpt_tip",
+      "parent": "ckpt_mid",
+      "feature_epoch": 4,
+      "tokenizer_id": "tok_v2",
+      "adapter_id": "adp_none",
+      "sha": "tipsha"
+    },
+    {
+      "id": "ckpt_badtok",
+      "parent": "ckpt_root",
+      "feature_epoch": 4,
+      "tokenizer_id": "tok_v1",
+      "adapter_id": "adp_none",
+      "sha": "badtok"
+    },
+    {
+      "id": "ckpt_badadp",
+      "parent": "ckpt_mid",
+      "feature_epoch": 4,
+      "tokenizer_id": "tok_v2",
+      "adapter_id": "adp_x",
+      "sha": "badadp"
+    }
+  ],
+  "active": "ckpt_root"
+}

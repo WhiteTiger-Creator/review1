@@ -1,0 +1,77 @@
+#!/usr/bin/env node
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { loadState, saveJson } from "../lib/io_k1.js";
+import { lastComplete, reconcileActive } from "../lib/auth_m2.js";
+import { promoteCkpt } from "../lib/promo_p3.js";
+import { rollbackGen } from "../lib/roll_r4.js";
+import { recoverState } from "../lib/recv_s5.js";
+import { buildEvalBinding } from "../lib/bind_e6.js";
+import { rebuildRouter } from "../lib/route_t7.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(__dirname, "..");
+const outDir = "/app/output";
+
+function parse(argv) {
+  const cmd = argv[2];
+  const opts = {};
+  for (let i = 3; i < argv.length; i++) {
+    if (argv[i] === "--ckpt") opts.ckpt = argv[++i];
+    else if (argv[i] === "--generation") opts.generation = Number(argv[++i]);
+  }
+  return { cmd, opts };
+}
+
+const { cmd, opts } = parse(process.argv);
+fs.mkdirSync(outDir, { recursive: true });
+
+try {
+  if (cmd === "status") {
+    const st = loadState(root);
+    const tip = lastComplete(st.journal);
+    const active = reconcileActive(st);
+    saveJson(path.join(outDir, "status.json"), {
+      active_checkpoint: active,
+      generation: tip ? tip.generation : 0,
+      journal_tip_seq: tip ? tip.seq : 0,
+      feature_valid: st.feature.valid,
+      feature_epoch: st.feature.feature_epoch,
+      materialization_fresh: st.materialization.fresh,
+    });
+    process.exit(0);
+  }
+  if (cmd === "promote") {
+    if (!opts.ckpt) {
+      process.stderr.write("missing --ckpt\n");
+      process.exit(2);
+    }
+    const code = promoteCkpt(root, opts.ckpt);
+    process.exit(code);
+  }
+  if (cmd === "rollback") {
+    if (!Number.isFinite(opts.generation)) {
+      process.stderr.write("missing --generation\n");
+      process.exit(2);
+    }
+    const code = rollbackGen(root, opts.generation);
+    process.exit(code);
+  }
+  if (cmd === "recover") {
+    recoverState(root);
+    process.exit(0);
+  }
+  if (cmd === "eval-bind") {
+    const st = loadState(root);
+    rebuildRouter(root, st);
+    const binding = buildEvalBinding(root);
+    saveJson(path.join(outDir, "eval_binding.json"), binding);
+    process.exit(0);
+  }
+  process.stderr.write("usage: irc status|promote|rollback|recover|eval-bind\n");
+  process.exit(2);
+} catch (err) {
+  process.stderr.write(String(err && err.stack ? err.stack : err) + "\n");
+  process.exit(1);
+}
