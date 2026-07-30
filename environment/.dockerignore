@@ -1,5 +1,3 @@
-tests
-solution
 .git
 .gitignore
 **/__pycache__/
@@ -8,3 +6,6 @@ solution
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
+.env
+solution/
+tests/

@@ -1,9 +1,20 @@
-Our quantum-chemistry workflow needs a reliable native Go executable implementing a deterministic parallel Boys orbital-localization sweep. It must compute an exact K-best frontier of compatible Jacobi-rotation plans under per-sweep work limits, scale to dense 20-orbital planning cases, update the three dipole matrices from the winning plan, and retain an auditable convergence and optimality trace.
+# RTS skirmish map weathering
 
-The executable must be located at `/app/bin/boys-localization-sweep` and accept exactly two positional arguments: an input JSON path and an output JSON path. For example:
+The RTS skirmish map kiln under `/app/environment` weathers battlefield tiles
+under a resident working-set budget and regenerates
+`/app/output/field_report.json` from the bundled map inputs.
+`/app/environment/scripts/build_and_run.sh` is the normal entrypoint; the
+verifier rebuilds from source and deletes prior output, so a hand-written
+report, stale artifact, wrapper-only change, or verifier edit is not
+sufficient.
 
-```bash
-/app/bin/boys-localization-sweep /app/fixtures/public.json /app/out/public_result.json
-```
+Budgets, tile streaming, rain profiles, report `runs` fields, mud-ledger
+tolerance, and digest rules are in
+`/app/environment/docs/skirmish_contract.md`. Keep the resident cell working
+set inside the budget and report `peak_cells` from that resident set. Both the
+default profile and the alternate profile selected through the build script
+must work. Reruns of the same profile must be byte-identical.
 
-The executable must handle every compatible fixture described by `/app/docs/numerical_spec.md`; the public fixture is only an example. That document is the complete input schema, rotation and plan-selection contract, validation and failure behavior, output schema, numerical tolerance, ordering, and tie-break contract. Relative paths are not involved. The executable must not alter its input, and any invalid input or numerical failure must exit nonzero without creating or replacing a successful output.
+Fix the game sources under `/app/environment` and let the normal commands
+regenerate the report. Signal completion after the source and regenerated
+report satisfy these requirements.

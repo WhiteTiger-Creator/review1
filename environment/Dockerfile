@@ -1,14 +1,27 @@
-FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
-RUN ln -s /usr/local/go/bin/go /usr/local/bin/go \
-    && ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
-    && bash -lc 'command -v go >/dev/null && command -v gofmt >/dev/null'
-RUN apt-get update -qq \
-    && apt-get install -y -qq --no-install-recommends python3 python3-venv ca-certificates tmux asciinema \
-    && rm -rf /var/lib/apt/lists/*
-COPY requirements.lock /tmp/requirements.lock
-RUN python3 -m venv /opt/verifier-venv \
-    && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock \
-    && rm /tmp/requirements.lock
+FROM public.ecr.aws/docker/library/maven:3.9.9-eclipse-temurin-21@sha256:3a4ab3276a087bf276f79cae96b1af04f53731bec53fb2e651aca79e4b10211e
+
 WORKDIR /app
-COPY task_file/ /app/
-RUN mkdir -p /app/bin /app/out /app/src
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3=3.12.3-0ubuntu2.1 \
+        python3-pip=24.0+dfsg-1ubuntu1.3 \
+        python3-venv=3.12.3-0ubuntu2.1 \
+        tmux=3.4-1ubuntu0.1 \
+        asciinema=2.4.0-1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.lock /opt/verifier/requirements.txt
+RUN python3 -m venv /opt/verifier \
+    && /opt/verifier/bin/pip install --no-cache-dir --require-hashes \
+        -r /opt/verifier/requirements.txt
+
+ENV PATH=/opt/verifier/bin:/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+RUN mkdir -p /app/output /app/build /logs/verifier
+
+COPY . /app
+
+RUN ln -sfn /app /app/environment
+
+CMD ["python3", "-c", "print('Environment ready')"]
