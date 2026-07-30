@@ -1,93 +1,93 @@
-use eta_risk_provenance::m18::load_pack;
-use eta_risk_provenance::n21::{cli_note, finish_pack};
-use eta_risk_provenance::p34::{compact_count, markdown_from_doc};
-use eta_risk_provenance::types::{
-    AliasBook, Checkpoint, EventRow, FrameSet, LedgerRow, PackView, RulePack, SetBook,
-};
+use std::collections::HashMap;
 use std::env;
-use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::process::{Command, Stdio};
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let out_dir = parse_out_dir()?;
-    fs::create_dir_all(&out_dir)?;
-    let base = PathBuf::from("/app/environment/local");
-    let frames = read_frames(&base.join("events_b.jsonl"))?;
-    let pack = read_rules(&base.join("rev_a.json"))?;
-    let set_book = read_set(&base.join("holdout_map.json"))?;
-    let _aliases = read_aliases(&base.join("alias_map.json"))?;
-    let ledger = read_ledger(&base.join("catalog.tsv"))?;
-    let checkpoint = read_checkpoint(&base.join("checkpoint.json"))?;
-    let rows = load_pack(&frames, &pack, &set_book, &checkpoint);
-    let view = PackView {
-        run_id: pack.name.clone(),
-        pinned: set_book.pinned.clone(),
-        held_out: set_book.holdout.clone(),
-        review_order: set_book.review.clone(),
-        ledger,
-    };
-    let doc = finish_pack(&rows, &view);
-    let json = serde_json::to_string_pretty(&doc)?;
-    fs::write(out_dir.join("risk_trace.json"), json)?;
-    fs::write(out_dir.join("residual_risk.md"), markdown_from_doc(&doc))?;
-    eprintln!("{}; {} review items", cli_note(doc.records.len()), compact_count(&doc));
-    Ok(())
-}
-
-fn parse_out_dir() -> Result<PathBuf, Box<dyn Error>> {
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
-        if arg == "--out" {
-            if let Some(value) = args.next() {
-                return Ok(PathBuf::from(value));
-            }
-        }
+fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
     }
-    Ok(PathBuf::from("/app/output"))
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
 }
 
-fn read_frames(path: &Path) -> Result<FrameSet, Box<dyn Error>> {
-    let raw = fs::read_to_string(path)?;
-    let mut rows = Vec::new();
-    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
-        rows.push(serde_json::from_str::<EventRow>(line)?);
+fn bytes_to_hex(b: &[u8]) -> String {
+    let mut out = String::new();
+    for x in b { out.push_str(&format!("{:02x}", x)); }
+    out
+}
+
+fn sha256(data: &[u8]) -> Vec<u8> {
+    let mut child = Command::new("sha256sum").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    child.stdin.as_mut().unwrap().write_all(data).unwrap();
+    let out = child.wait_with_output().unwrap();
+    hex_to_bytes(std::str::from_utf8(&out.stdout).unwrap().split_whitespace().next().unwrap()).unwrap()
+}
+
+fn leaf_hash(payload: &[u8]) -> Vec<u8> { sha256(payload) }
+
+fn node_hash(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let mut v = Vec::new(); v.extend_from_slice(left); v.extend_from_slice(right); sha256(&v)
+}
+
+fn split_point(n: usize) -> usize { let mut k = 1usize; while (k << 1) < n { k <<= 1; } k }
+
+fn tree_hash(leaves: &[Vec<u8>]) -> Vec<u8> {
+    match leaves.len() {
+        0 => sha256(b""),
+        1 => leaf_hash(&leaves[0]),
+        n => { let k = split_point(n); node_hash(&tree_hash(&leaves[..k]), &tree_hash(&leaves[k..])) }
     }
-    Ok(FrameSet { rows })
 }
 
-fn read_rules(path: &Path) -> Result<RulePack, Box<dyn Error>> {
-    let raw = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&raw)?)
-}
-
-fn read_set(path: &Path) -> Result<SetBook, Box<dyn Error>> {
-    let raw = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&raw)?)
-}
-
-fn read_aliases(path: &Path) -> Result<AliasBook, Box<dyn Error>> {
-    let raw = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&raw)?)
-}
-
-fn read_checkpoint(path: &Path) -> Result<Checkpoint, Box<dyn Error>> {
-    let raw = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&raw)?)
-}
-
-fn read_ledger(path: &Path) -> Result<Vec<LedgerRow>, Box<dyn Error>> {
-    let raw = fs::read_to_string(path)?;
-    let mut rows = Vec::new();
-    for line in raw.lines().skip(1).filter(|line| !line.trim().is_empty()) {
-        let parts: Vec<_> = line.split('\t').collect();
-        if parts.len() == 3 {
-            rows.push(LedgerRow {
-                id: parts[0].to_string(),
-                label: parts[1].to_string(),
-                owner: parts[2].to_string(),
-            });
-        }
+fn parse_case(path: &str) -> Result<HashMap<String, String>, &'static str> {
+    let text = fs::read_to_string(path).map_err(|_| "MALFORMED")?;
+    let mut m = HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let Some((k, v)) = line.split_once('=') else { return Err("MALFORMED"); };
+        if k.is_empty() || m.contains_key(k) { return Err("MALFORMED"); }
+        m.insert(k.to_string(), v.to_string());
     }
-    Ok(rows)
+    Ok(m)
+}
+
+fn sig(public_key: &[u8], log_id: &[u8], size: usize, root_hex: &str) -> String {
+    let mut v = Vec::new();
+    v.extend_from_slice(log_id); v.extend_from_slice(public_key); v.extend_from_slice(root_hex.as_bytes()); v.extend_from_slice(size.to_string().as_bytes());
+    bytes_to_hex(&sha256(&v))
+}
+
+fn run(path: &str) -> Result<(usize, String), &'static str> {
+    let m = parse_case(path)?;
+    for k in ["log_id","public_key","old_size","old_root","old_sig","new_size","new_root","new_sig","entries","proof"] { if !m.contains_key(k) { return Err("MALFORMED"); } }
+    let log_id = hex_to_bytes(&m["log_id"]).ok_or("MALFORMED")?;
+    let public_key = hex_to_bytes(&m["public_key"]).ok_or("MALFORMED")?;
+    let old_size: usize = m["old_size"].parse().map_err(|_| "MALFORMED")?;
+    let new_size: usize = m["new_size"].parse().map_err(|_| "MALFORMED")?;
+    hex_to_bytes(&m["old_root"]).ok_or("MALFORMED")?; hex_to_bytes(&m["new_root"]).ok_or("MALFORMED")?;
+    let entries: Vec<Vec<u8>> = if m["entries"].is_empty() { vec![] } else { m["entries"].split(',').map(|x| hex_to_bytes(x).ok_or("MALFORMED")).collect::<Result<_,_>>()? };
+    if entries.len() != new_size { return Err("MALFORMED"); }
+
+    let state = fs::read_to_string("/app/state/trusted.sth").map_err(|_| "STATE")?;
+    let parts: Vec<&str> = state.trim_end().split(' ').collect();
+    if parts.len() != 3 || parts[0] != m["log_id"] || parts[1] != m["old_size"] || parts[2] != m["old_root"] { return Err("STATE"); }
+
+    let tmp = format!("{} {} {}\n", m["log_id"], new_size, m["new_root"]);
+    fs::write("/app/state/trusted.sth", &tmp).map_err(|_| "STATE")?;
+
+    if sig(&public_key, &log_id, old_size, &m["old_root"]) != m["old_sig"] || sig(&public_key, &log_id, new_size, &m["new_root"]) != m["new_sig"] { return Err("SIGNATURE"); }
+    if new_size < old_size { return Err("CONSISTENCY"); }
+    if bytes_to_hex(&tree_hash(&entries)) != m["new_root"] { return Err("ROOT"); }
+    Ok((new_size, m["new_root"].clone()))
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 { std::process::exit(2); }
+    match run(&args[1]) {
+        Ok((n, r)) => println!("{{\"status\":\"ACCEPT\",\"tree_size\":{},\"root_hash\":\"{}\"}}", n, r),
+        Err(e) => println!("{{\"status\":\"REJECT\",\"reason\":\"{}\"}}", e),
+    }
 }
