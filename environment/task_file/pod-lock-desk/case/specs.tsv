@@ -1,0 +1,27 @@
+source	root	version	subspec	default	platforms	dependencies	checksum	trust	size	status	license	vendored	swift	checksum_present
+corp	CryptoBox	1.5.1	Core	true	ios>=11.0	-	cb-core-151	91	180	release	MIT	false	true	true
+corp	CryptoBox	1.5.1	TLS	false	ios>=11.0	CryptoBox/Core|1.5.1|-|true	cb-tls-151	91	210	release	MIT	false	true	true
+cdn	CryptoBox	1.6.0	Core	true	ios>=11.0	-	cb-core-160	91	200	release	GPL-3.0	false	true	true
+cdn	CryptoBox	1.6.0	TLS	false	ios>=11.0	CryptoBox/Core|1.6.0|-|true	cb-tls-160	91	230	release	GPL-3.0	false	true	true
+corp	ImageFlow	1.5.2	Core	true	ios>=12.0	-	if-core-152	86	260	release	Apache-2.0	false	true	true
+corp	ImageFlow	1.5.2	Filters	true	ios>=12.0	ImageFlow/Core|1.5.2|-|true	if-filters-152	86	280	release	Apache-2.0	false	true	true
+corp	ImageFlow	1.6.0	Core	true	ios>=12.0	-	if-core-160	88	270	release	Apache-2.0	false	true	true
+corp	ImageFlow	1.6.0	Filters	true	ios>=12.0	ImageFlow/Core|1.6.0|-|true;NetStack/TLS|~> 2.1|-|true	if-filters-160	88	310	release	Apache-2.0	false	true	true
+trunk	ImageFlow	1.7.0	Core	true	ios>=12.0	-	if-core-170	65	280	release	Apache-2.0	false	true	true
+trunk	ImageFlow	1.7.0	Filters	true	ios>=12.0	ImageFlow/Core|1.7.0|-|true;NetStack/TLS|~> 2.1|-|true	if-filters-170	65	320	release	Apache-2.0	false	true	false
+cdn	MetricsKit	3.0.0	Crash	true	ios>=13.0	NetStack/Core|~> 2.1|-|true	mk-crash-300	90	240	release	Proprietary	true	false	true
+cdn	MetricsKit	3.1.0	Crash	true	ios>=13.0	NetStack/Core|~> 2.2|-|true	mk-crash-310	90	245	release	Proprietary	true	false	true
+cdn	NetStack	2.0.9	Core	true	ios>=11.0	CryptoBox/Core|~> 1.5|-|true	ns-core-209	92	300	release	MIT	false	true	true
+cdn	NetStack	2.0.9	Reachability	false	ios>=11.0	NetStack/Core|2.0.9|-|true	ns-reach-209	92	110	release	MIT	false	true	true
+cdn	NetStack	2.1.4	Core	true	ios>=12.0	CryptoBox/Core|~> 1.5|-|true	ns-core-214	94	320	release	MIT	false	true	true
+cdn	NetStack	2.1.4	Reachability	false	ios>=12.0	NetStack/Core|2.1.4|-|true	ns-reach-214	94	120	release	MIT	false	true	true
+cdn	NetStack	2.1.4	TLS	false	ios>=12.0	NetStack/Core|2.1.4|-|true;CryptoBox/TLS|~> 1.5|-|true	ns-tls-214	94	160	release	MIT	false	true	true
+trunk	NetStack	2.1.5	Core	true	ios>=12.0	CryptoBox/Core|~> 1.5|-|true	ns-core-215	94	310	release	MIT	false	true	true
+trunk	NetStack	2.1.5	Reachability	false	ios>=12.0	NetStack/Core|2.1.5|-|true	ns-reach-215	94	115	release	MIT	false	true	true
+trunk	NetStack	2.1.5	TLS	false	ios>=12.0	NetStack/Core|2.1.5|-|true;CryptoBox/TLS|~> 1.5|-|true	ns-tls-215	94	155	release	MIT	false	true	true
+cdn	NetStack	2.2.0	Core	true	ios>=12.0	CryptoBox/Core|~> 1.5|-|true	ns-core-220	94	330	prerelease	MIT	false	true	true
+cdn	NetStack	2.2.0	Reachability	false	ios>=12.0	NetStack/Core|2.2.0|-|true	ns-reach-220	94	130	prerelease	MIT	false	true	true
+trunk	TestHarness	1.2.3	XCTest	true	ios>=13.0	MetricsKit/Crash|~> 3.0|-|true	th-xctest-123	80	190	release	BSD-3-Clause	false	true	true
+trunk	TestHarness	1.3.0	XCTest	true	ios>=13.0	MetricsKit/Crash|~> 3.1|-|true	th-xctest-130	80	200	release	BSD-3-Clause	false	true	true
+corp	WidgetBridge	1.0.1	Core	true	ios>=15.0	NetStack/Reachability|~> 2.1|-|true	wb-core-101	83	210	release	MIT	false	true	true
+corp	WidgetBridge	1.1.0	Core	true	ios>=16.0	NetStack/Reachability|~> 2.1|-|true	wb-core-110	83	220	release	MIT	false	true	true

@@ -1,18 +1,5 @@
-Averaged-perceptron training under `/app/environment` drifts across feature-pack
-merge, margin-gated updates, last-versus-average scoring, generation cut, torn
-dual-slot model pages, and resume rehydrate. Operators see ledgers that already
-name features and generation bumps, yet inactive-pack survivors, skipped updates
-that still move weights, predictions that disagree with the averaged plane,
-digest/fence lineage that ignores generation, and recoveries that keep a torn
-`active.page` instead of standby material.
+The CocoaPods lock desk under `/opt/pod-lock-desk` needs a deterministic offline source lock compiler. Implement `/opt/pod-lock-desk/pod-source-lock` so it reads the immutable case directory `/opt/pod-lock-desk/case`, replaces `/opt/pod-lock-desk/out`, and writes the five artifacts defined in `/opt/pod-lock-desk/POD_LOCK_AUTHORITY.txt`.
 
-Fix sources under `/app/environment` so
-`/bin/bash /app/environment/ci/rebuild.sh` regenerates
-`/app/output/perc_ledger.json` through `/app/bin/percctl` from the live
-pipeline. Hand-written JSON, test edits, wrapper-only changes, and harness
-patches are insufficient. Field rules, digest and fence formulas, margin skip
-reasons, dual-slot recovery, and resume behavior are in
-`/app/environment/docs/perc_contract.md`. Output shape notes are in
-`/app/environment/docs/output_shape.md`. Toolchain notes are in
-`/app/environment/docs/toolchain.md`. The verifier deletes the emit path,
-rebuilds from source, and reruns the cycle plus resume probe.
+Use the specification file as the source of truth for the input TSV schemas, resolution semantics, and output formats. The command must work when `/opt/pod-lock-desk/case` is replaced by another compatible case with the same TSV schemas, and it must not modify `/opt/pod-lock-desk/case` or the specification file.
+
+Pay particular attention to audit attribution: platform rejection detail is the requesting target platform comparator, such as `ios>=15.0`, not the candidate spec row's declared minimum. Transitive dependencies inherit the target/configuration/linkage that caused them, so selected audit rows and `pods-plan.tsv` target lists use those inherited target names rather than the word `dependency`. A requested subspec that does not exist makes the root `no_eligible:<root>` and the lock `unsatisfied`.

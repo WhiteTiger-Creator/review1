@@ -1,300 +1,514 @@
-#!/bin/bash
-set -euo pipefail
-root=/app/environment
+#!/usr/bin/env sh
+set -eu
 
-cat >"$root/v3/fold.c" <<'EOF'
-#include "fold.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+cat > /opt/pod-lock-desk/pod-source-lock <<'PERL'
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use Digest::SHA qw(sha256_hex);
+use File::Path qw(remove_tree make_path);
 
-static void clear_feats(struct model *m) {
-	m->nfeats = 0;
-	memset(m->feats, 0, sizeof(m->feats));
-	memset(m->w, 0, sizeof(m->w));
-	memset(m->u, 0, sizeof(m->u));
-	m->bias = 0;
-	m->ubias = 0;
-	m->updates = 0;
+my $ROOT = "/opt/pod-lock-desk";
+my $CASE = "$ROOT/case";
+my $OUT = "$ROOT/out";
+
+sub read_tsv {
+    my ($path) = @_;
+    open my $fh, "<", $path or die "cannot read $path: $!";
+    chomp(my $header = <$fh>);
+    my @cols = split /\t/, $header, -1;
+    my @rows;
+    while (defined(my $line = <$fh>)) {
+        chomp $line;
+        next if $line eq "";
+        my @vals = split /\t/, $line, -1;
+        my %row;
+        for my $i (0 .. $#cols) {
+            $row{$cols[$i]} = defined $vals[$i] ? $vals[$i] : "";
+        }
+        push @rows, \%row;
+    }
+    close $fh;
+    return @rows;
 }
 
-static int find_feat(struct model *m, const char *name) {
-	for (int i = 0; i < m->nfeats; i++) {
-		if (strcmp(m->feats[i].name, name) == 0) return i;
-	}
-	return -1;
+sub list_values {
+    my ($cell, $sep) = @_;
+    return () if !defined($cell) || $cell eq "" || $cell eq "-";
+    return grep { $_ ne "" } split /\Q$sep\E/, $cell;
 }
 
-static void add_feat(struct model *m, const char *name, int active) {
-	int i = find_feat(m, name);
-	if (i < 0) {
-		if (m->nfeats >= MAX_FEATS) return;
-		i = m->nfeats++;
-		snprintf(m->feats[i].name, sizeof(m->feats[i].name), "%s", name);
-		m->w[i] = 0;
-		m->u[i] = 0;
-	}
-	m->feats[i].active = active;
+sub vparts {
+    my ($v) = @_;
+    my @p = split /\./, $v;
+    push @p, 0 while @p < 3;
+    return map { int($_ || 0) } @p[0..2];
 }
 
-static int load_pack(struct model *m, const char *path) {
-	FILE *f = fopen(path, "r");
-	if (!f) return -1;
-	char line[256];
-	while (fgets(line, sizeof(line), f)) {
-		char name[48];
-		int active = 1;
-		if (sscanf(line, "%47s %d", name, &active) >= 1) {
-			if (name[0] == '#' || name[0] == '\0') continue;
-			add_feat(m, name, active);
-		}
-	}
-	fclose(f);
-	return 0;
+sub vcmp {
+    my ($a, $b) = @_;
+    my @a = vparts($a);
+    my @b = vparts($b);
+    for my $i (0..2) {
+        return $a[$i] <=> $b[$i] if $a[$i] != $b[$i];
+    }
+    return 0;
 }
 
-int fold_manifest(struct desk *d, const char *manifest_path) {
-	FILE *f = fopen(manifest_path, "r");
-	if (!f) return -1;
-	char *buf = NULL; size_t cap = 0, n = 0; int c;
-	while ((c = fgetc(f)) != EOF) {
-		if (n + 1 >= cap) { cap = cap ? cap * 2 : 4096; buf = realloc(buf, cap); }
-		buf[n++] = (char)c;
-	}
-	fclose(f);
-	if (!buf) return -1;
-	buf[n] = 0;
-	clear_feats(&d->m);
-	d->nincludes = 0;
-	d->m.persist_id = BOOT_PERSIST;
-	if (d->m.generation == 0) d->m.generation = 1;
-
-	char *paths[16];
-	int np = 0;
-	char *inc = strstr(buf, "\"packs\"");
-	if (!inc) { free(buf); return -1; }
-	inc = strchr(inc, '[');
-	if (!inc) { free(buf); return -1; }
-	inc++;
-	while (*inc && *inc != ']' && np < 16) {
-		while (*inc && (*inc==' '||*inc==','||*inc=='\n'||*inc=='\t')) inc++;
-		if (*inc == '"') {
-			inc++;
-			char *e = strchr(inc, '"');
-			if (!e) break;
-			size_t len = (size_t)(e - inc);
-			paths[np] = malloc(len + 1);
-			memcpy(paths[np], inc, len);
-			paths[np][len] = 0;
-			snprintf(d->include_order[d->nincludes], sizeof(d->include_order[0]), "%s", paths[np]);
-			d->nincludes++;
-			np++;
-			inc = e + 1;
-		} else break;
-	}
-	for (int i = 0; i < np; i++) {
-		char full[512];
-		int rc;
-		if (paths[i][0] == '/') snprintf(full, sizeof(full), "%s", paths[i]);
-		else snprintf(full, sizeof(full), "/app/environment/%s", paths[i]);
-		rc = load_pack(&d->m, full);
-		free(paths[i]);
-		paths[i] = NULL;
-		if (rc != 0) {
-			for (int j = i + 1; j < np; j++) free(paths[j]);
-			free(buf);
-			return -1;
-		}
-	}
-	free(buf);
-	return 0;
-}
-EOF
-
-cat >"$root/w6/score.c" <<'EOF'
-#include "score.h"
-#include "fnv.h"
-#include <stdio.h>
-#include <string.h>
-
-static int feat_index(const struct model *m, const char *name) {
-	for (int i = 0; i < m->nfeats; i++) {
-		if (m->feats[i].active && strcmp(m->feats[i].name, name) == 0) return i;
-	}
-	return -1;
+sub satisfies {
+    my ($version, $req) = @_;
+    return 1 if !defined($req) || $req eq "" || $req eq "*" || $req eq "-";
+    if ($req =~ /^~> (\d+)\.(\d+)\.(\d+)$/) {
+        my $lo = "$1.$2.$3";
+        my $hi = "$1." . ($2 + 1) . ".0";
+        return vcmp($version, $lo) >= 0 && vcmp($version, $hi) < 0;
+    }
+    if ($req =~ /^~> (\d+)\.(\d+)$/) {
+        my $lo = "$1.$2.0";
+        my $hi = ($1 + 1) . ".0.0";
+        return vcmp($version, $lo) >= 0 && vcmp($version, $hi) < 0;
+    }
+    if ($req =~ /^>=(\d+(?:\.\d+){0,2}) <(\d+(?:\.\d+){0,2})$/) {
+        return vcmp($version, $1) >= 0 && vcmp($version, $2) < 0;
+    }
+    if ($req =~ /^>=(\d+(?:\.\d+){0,2})$/) {
+        return vcmp($version, $1) >= 0;
+    }
+    if ($req =~ /^(\d+(?:\.\d+){0,2})$/) {
+        return vcmp($version, $1) == 0;
+    }
+    return 0;
 }
 
-static double avg_w(const struct model *m, int i) {
-	if (m->updates == 0) return m->w[i];
-	return m->u[i] / (double)m->updates;
+sub version_ge {
+    my ($actual, $minimum) = @_;
+    return vcmp($actual, $minimum) >= 0;
 }
 
-static double avg_bias(const struct model *m) {
-	if (m->updates == 0) return m->bias;
-	return m->ubias / (double)m->updates;
+my %policy;
+for my $r (read_tsv("$CASE/policy.tsv")) {
+    $policy{$r->{key}} = $r->{value};
+}
+my @source_order = list_values($policy{source_order}, ",");
+my %source_rank;
+for my $i (0..$#source_order) {
+    $source_rank{$source_order[$i]} = $i;
 }
 
-double score_margin(const struct model *m, const struct example *ex) {
-	double s = m->bias;
-	for (int i = 0; i < ex->nfeats; i++) {
-		int idx = feat_index(m, ex->feats[i]);
-		if (idx >= 0) s += m->w[idx];
-	}
-	return s * (double)ex->label;
+my @targets = read_tsv("$CASE/targets.tsv");
+my @spec_rows = read_tsv("$CASE/specs.tsv");
+my @rule_rows = read_tsv("$CASE/rules.tsv");
+
+my %spec;
+my %tuples;
+for my $s (@spec_rows) {
+    my $tk = join("|", $s->{source}, $s->{root}, $s->{version});
+    $spec{$tk}{$s->{subspec}} = $s;
+    $tuples{$s->{root}}{$tk} = { source => $s->{source}, root => $s->{root}, version => $s->{version} };
 }
 
-int score_predict(const struct model *m, const struct example *ex) {
-	double s = avg_bias(m);
-	for (int i = 0; i < ex->nfeats; i++) {
-		int idx = feat_index(m, ex->feats[i]);
-		if (idx >= 0) s += avg_w(m, idx);
-	}
-	return s >= 0.0 ? 1 : -1;
+my %override;
+my %source_block;
+my %license_allow;
+for my $r (@rule_rows) {
+    if ($r->{kind} eq "override") {
+        $override{$r->{root}} = $r->{value};
+    } elsif ($r->{kind} eq "source_block") {
+        $source_block{$r->{root}}{$r->{subspec}}{$r->{value}} = 1;
+    } elsif ($r->{kind} eq "license_allow") {
+        $license_allow{$_} = 1 for list_values($r->{value}, ",");
+    }
 }
 
-void score_digest(const struct model *m, char out[16]) {
-	char buf[1024];
-	size_t n = 0;
-	n += (size_t)snprintf(buf + n, sizeof(buf) - n, "g=%llu|u=%llu|",
-		(unsigned long long)m->generation, (unsigned long long)m->updates);
-	for (int i = 0; i < m->nfeats; i++) {
-		if (!m->feats[i].active) continue;
-		n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%s:%.6f,", m->feats[i].name, avg_w(m, i));
-	}
-	n += (size_t)snprintf(buf + n, sizeof(buf) - n, "b=%.6f", avg_bias(m));
-	fnv32_hex(buf, out);
+sub tuple_key {
+    my ($t) = @_;
+    return join("|", $t->{source}, $t->{root}, $t->{version});
 }
 
-void score_fence(const struct model *m, char out[16]) {
-	char dig[16];
-	char buf[128];
-	score_digest(m, dig);
-	snprintf(buf, sizeof(buf), "%s|%llu|%llu", dig,
-		(unsigned long long)m->generation, (unsigned long long)m->updates);
-	fnv32_hex(buf, out);
-}
-EOF
-
-cat >"$root/x1/step.c" <<'EOF'
-#include "step.h"
-#include "score.h"
-#include <string.h>
-
-static int feat_index(struct model *m, const char *name) {
-	for (int i = 0; i < m->nfeats; i++) {
-		if (m->feats[i].active && strcmp(m->feats[i].name, name) == 0) return i;
-	}
-	return -1;
+sub default_subspecs {
+    my ($t) = @_;
+    my $tk = tuple_key($t);
+    my @subs = sort grep { $spec{$tk}{$_}{default} eq "true" } keys %{ $spec{$tk} || {} };
+    return @subs;
 }
 
-int step_train_one(struct model *m, const struct example *ex) {
-	double margin = score_margin(m, ex);
-	if (margin > 0.0) return 0;
-	m->updates += 1;
-	for (int i = 0; i < ex->nfeats; i++) {
-		int idx = feat_index(m, ex->feats[i]);
-		if (idx < 0) continue;
-		m->w[idx] += (double)ex->label;
-		m->u[idx] += m->w[idx];
-	}
-	m->bias += (double)ex->label;
-	m->ubias += m->bias;
-	return 1;
-}
-EOF
-
-cat >"$root/y8/page.c" <<'EOF'
-#include "page.h"
-#include <stdio.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-static void write_page(const char *path, const struct model *m) {
-	FILE *f = fopen(path, "w");
-	if (!f) return;
-	fprintf(f, "generation %llu\n", (unsigned long long)m->generation);
-	fprintf(f, "updates %llu\n", (unsigned long long)m->updates);
-	fprintf(f, "persist %llu\n", (unsigned long long)m->persist_id);
-	fprintf(f, "bias %.10g\n", m->bias);
-	fprintf(f, "ubias %.10g\n", m->ubias);
-	fprintf(f, "nfeats %d\n", m->nfeats);
-	for (int i = 0; i < m->nfeats; i++) {
-		fprintf(f, "F %s %d %.10g %.10g\n", m->feats[i].name, m->feats[i].active, m->w[i], m->u[i]);
-	}
-	fclose(f);
+sub parse_dep {
+    my ($dep) = @_;
+    my @p = split /\|/, $dep, -1;
+    my ($root, $subs) = split /\//, $p[0], 2;
+    return {
+        root => $root,
+        subspecs => defined($subs) && $subs ne "" ? $subs : "-",
+        requirement => $p[1],
+        source_pin => $p[2],
+        checksum_required => $p[3],
+    };
 }
 
-static int read_page(const char *path, struct model *m) {
-	FILE *f = fopen(path, "r");
-	if (!f) return -1;
-	unsigned long long gen=0, upd=0, pers=0;
-	int nfeats=0;
-	if (fscanf(f, "generation %llu\n", &gen) != 1) { fclose(f); return -1; }
-	if (fscanf(f, "updates %llu\n", &upd) != 1) { fclose(f); return -1; }
-	if (fscanf(f, "persist %llu\n", &pers) != 1) { fclose(f); return -1; }
-	if (fscanf(f, "bias %lf\n", &m->bias) != 1) { fclose(f); return -1; }
-	if (fscanf(f, "ubias %lf\n", &m->ubias) != 1) { fclose(f); return -1; }
-	if (fscanf(f, "nfeats %d\n", &nfeats) != 1) { fclose(f); return -1; }
-	m->generation = gen; m->updates = upd; m->persist_id = pers; m->nfeats = 0;
-	for (int i = 0; i < nfeats && i < MAX_FEATS; i++) {
-		char name[48]; int active; double w, u;
-		if (fscanf(f, "F %47s %d %lf %lf\n", name, &active, &w, &u) != 4) break;
-		snprintf(m->feats[m->nfeats].name, sizeof(m->feats[0].name), "%s", name);
-		m->feats[m->nfeats].active = active;
-		m->w[m->nfeats] = w;
-		m->u[m->nfeats] = u;
-		m->nfeats++;
-	}
-	fclose(f);
-	return 0;
+sub platform_ok {
+    my ($row, $platform, $version) = @_;
+    for my $p (list_values($row->{platforms}, ",")) {
+        if ($p =~ /^([a-z]+)>=(\d+(?:\.\d+){0,2})$/) {
+            return 1 if $1 eq $platform && version_ge($version, $2);
+        }
+    }
+    return 0;
 }
 
-int page_publish(struct desk *d) {
-	mkdir(MODEL_DIR, 0755);
-	write_page(STANDBY_PAGE, &d->m);
-	write_page(ACTIVE_PAGE, &d->m);
-	unlink(PARTIAL_MARK);
-	return 0;
+my @audit;
+my @edges;
+my %unsat;
+
+sub add_audit {
+    my (@fields) = @_;
+    push @audit, [map { defined($_) ? "$_" : "" } @fields];
 }
 
-int page_tear(struct desk *d) {
-	mkdir(MODEL_DIR, 0755);
-	write_page(STANDBY_PAGE, &d->m);
-	FILE *f = fopen(ACTIVE_PAGE, "w");
-	if (f) { fprintf(f, "generation 0\nupdates 0\npersist 0\nbias 0\nubias 0\nnfeats 0\n"); fclose(f); }
-	f = fopen(PARTIAL_MARK, "w");
-	if (f) { fputs("torn\n", f); fclose(f); }
-	return 0;
+sub expand_subspecs {
+    my ($t, $subspec_cell) = @_;
+    return sort { $a cmp $b } default_subspecs($t) if !defined($subspec_cell) || $subspec_cell eq "" || $subspec_cell eq "-";
+    return sort { $a cmp $b } list_values($subspec_cell, ",");
 }
 
-int page_recover(struct desk *d) {
-	int had = access(PARTIAL_MARK, F_OK) == 0;
-	int rc = -1;
-	if (had) {
-		rc = read_page(STANDBY_PAGE, &d->m);
-		if (rc == 0) write_page(ACTIVE_PAGE, &d->m);
-	} else {
-		rc = read_page(ACTIVE_PAGE, &d->m);
-		if (rc != 0) rc = read_page(STANDBY_PAGE, &d->m);
-	}
-	unlink(PARTIAL_MARK);
-	if (d->nruns < MAX_RUNS) {
-		struct run_row *r = &d->runs[d->nruns++];
-		memset(r, 0, sizeof(*r));
-		snprintf(r->action, sizeof(r->action), "recover");
-		snprintf(r->outcome, sizeof(r->outcome), rc == 0 ? "ok" : "deny");
-		r->epoch = d->m.generation;
-		r->persist_id = d->m.persist_id;
-		r->lineage_skew = 0;
-		snprintf(r->notes, sizeof(r->notes), "%s", had ? "had_partial" : "clean");
-	}
-	return rc;
+sub candidate_size {
+    my ($t, $subs) = @_;
+    my $tk = tuple_key($t);
+    my $sum = 0;
+    for my $sub (@$subs) {
+        $sum += int($spec{$tk}{$sub}{size} || 0);
+    }
+    return $sum;
 }
 
-int page_load_model(struct desk *d) {
-	return read_page(ACTIVE_PAGE, &d->m);
+sub reject_tuple {
+    my ($t, $version, $subspec, $reason, $detail) = @_;
+    add_audit("rejected", $t->{root}, $t->{source}, $version, $subspec, "rejected", $reason, $detail);
 }
-EOF
 
-/bin/bash "$root/ci/rebuild.sh"
+sub evaluate_tuple {
+    my ($t, $req) = @_;
+    my $tk = tuple_key($t);
+    return (0, [], "source", $t->{source}) if !exists $source_rank{$t->{source}};
+    return (0, [], "source_pin", $req->{source_pin}) if $req->{source_pin} ne "-" && $req->{source_pin} ne $t->{source};
+    return (0, [], "range", $req->{requirement}) if !satisfies($t->{version}, $req->{requirement});
+    return (0, [], "source_block", $t->{source}) if $source_block{$t->{root}}{"*"}{$t->{source}};
+    my @subs = expand_subspecs($t, $req->{subspecs});
+    for my $sub (@subs) {
+        return (0, \@subs, "source_block", $t->{source}) if $source_block{$t->{root}}{$sub}{$t->{source}};
+    }
+    for my $sub (@subs) {
+        my $row = $spec{$tk}{$sub};
+        return (0, \@subs, "missing_subspec", $sub) if !$row;
+        return (0, \@subs, "platform", $req->{platform} . ">=" . $req->{platform_version}) if !platform_ok($row, $req->{platform}, $req->{platform_version});
+        return (0, \@subs, "status", $row->{status}) if $row->{status} eq "deprecated";
+        return (0, \@subs, "status", $row->{status}) if $row->{status} eq "prerelease" && $policy{allow_prerelease} ne "true";
+        return (0, \@subs, "trust", $row->{trust}) if int($row->{trust}) < int($policy{min_trust});
+        return (0, \@subs, "license", $row->{license}) if !exists $license_allow{$row->{license}};
+        return (0, \@subs, "checksum", $sub) if $req->{checksum_required} eq "true" && $row->{checksum_present} ne "true";
+    }
+    return (1, \@subs, "", "");
+}
+
+sub candidate_cmp {
+    my ($a, $b) = @_;
+    my $vc = vcmp($b->{tuple}{version}, $a->{tuple}{version});
+    return $vc if $vc;
+    my $sr = ($source_rank{$a->{tuple}{source}} // 999) <=> ($source_rank{$b->{tuple}{source}} // 999);
+    return $sr if $sr;
+    return $a->{size} <=> $b->{size} if $a->{size} != $b->{size};
+    return tuple_key($a->{tuple}) cmp tuple_key($b->{tuple});
+}
+
+sub normalize_target_request {
+    my ($r) = @_;
+    my $platform = $r->{platform} eq "-" ? $policy{platform} : $r->{platform};
+    my $platform_version = $r->{platform_version} eq "-" ? $policy{platform_version} : $r->{platform_version};
+    return {
+        target => $r->{target},
+        direct => 1,
+        from => "target:$r->{target}",
+        root => $r->{pod},
+        requirement => $r->{requirement},
+        original_requirement => $r->{requirement},
+        subspecs => $r->{subspecs},
+        configurations => $r->{configurations},
+        linkage => $r->{linkage},
+        source_pin => $r->{source_pin},
+        checksum_required => $r->{checksum_required},
+        platform => $platform,
+        platform_version => $platform_version,
+        reason => "target",
+    };
+}
+
+my @queue = map { normalize_target_request($_) } @targets;
+my @root_requests = @queue;
+my %seen_req;
+my %selected;
+my %enabled;
+my %target_by_sub;
+my %config_by_root;
+my %linkage_by_root;
+
+while (@queue) {
+    my $req = shift @queue;
+    my $root = $req->{root};
+    if (exists $override{$root} && $override{$root} ne $req->{requirement}) {
+        add_audit("override", $root, "-", $override{$root}, "*", "selected", "override", "from=$req->{requirement};to=$override{$root}");
+        $req->{requirement} = $override{$root};
+    }
+    my $sig = join("|", $req->{from}, $root, $req->{requirement}, $req->{subspecs}, $req->{source_pin}, $req->{checksum_required}, $req->{platform}, $req->{platform_version});
+    next if $seen_req{$sig}++;
+    my @eligible;
+    for my $tk (keys %{ $tuples{$root} || {} }) {
+        my $t = $tuples{$root}{$tk};
+        my ($ok, $subs, $reason, $detail) = evaluate_tuple($t, $req);
+        if (!$ok) {
+            my $sub = @$subs ? join(",", @$subs) : "-";
+            reject_tuple($t, $t->{version}, $sub, $reason, $detail);
+            next;
+        }
+        push @eligible, { tuple => $t, subs => $subs, size => candidate_size($t, $subs) };
+    }
+    if (!@eligible) {
+        $unsat{"no_eligible:$root"} = 1;
+        next;
+    }
+    @eligible = sort { candidate_cmp($a, $b) } @eligible;
+    my $winner = $eligible[0];
+    my $old = $selected{$root};
+    if (!$old || candidate_cmp($winner, { tuple => $old, size => candidate_size($old, $winner->{subs}) }) < 0) {
+        $selected{$root} = $winner->{tuple};
+    }
+    my $current = $selected{$root};
+    my $current_tk = tuple_key($current);
+    my @subs = expand_subspecs($current, $req->{subspecs});
+    my $to_subs = join(",", @subs);
+    push @edges, [$req->{from}, "pod:$root/$to_subs\@$current->{version}", $req->{requirement}, $req->{reason}];
+    for my $sub (@subs) {
+        $enabled{$root}{$sub} = 1;
+        $target_by_sub{$root}{$sub}{$req->{target}} = 1 if $req->{target};
+        $config_by_root{$root}{$_} = 1 for list_values($req->{configurations}, ",");
+        $linkage_by_root{$root}{$req->{linkage}} = 1 if $req->{linkage} ne "-";
+    }
+    for my $sub (@subs) {
+        my $row = $spec{$current_tk}{$sub};
+        next if !$row;
+        for my $dep_cell (list_values($row->{dependencies}, ";")) {
+            my $dep = parse_dep($dep_cell);
+            my $dep_req = {
+                target => $req->{target},
+                direct => 0,
+                from => "pod:$root/$sub\@$current->{version}",
+                root => $dep->{root},
+                requirement => $dep->{requirement},
+                original_requirement => $dep->{requirement},
+                subspecs => $dep->{subspecs},
+                configurations => $req->{configurations},
+                linkage => $req->{linkage},
+                source_pin => $dep->{source_pin},
+                checksum_required => $dep->{checksum_required},
+                platform => $req->{platform},
+                platform_version => $req->{platform_version},
+                reason => "dependency",
+            };
+            push @queue, $dep_req;
+        }
+    }
+}
+
+@edges = ();
+%enabled = ();
+%target_by_sub = ();
+%config_by_root = ();
+%linkage_by_root = ();
+my @rebuild_queue = @root_requests;
+my %rebuilt_req;
+while (@rebuild_queue) {
+    my $req = shift @rebuild_queue;
+    my $root = $req->{root};
+    if (exists $override{$root} && $override{$root} ne $req->{requirement}) {
+        $req = { %$req, requirement => $override{$root} };
+    }
+    next if !$selected{$root};
+    my $t = $selected{$root};
+    my $tk = tuple_key($t);
+    my @subs = expand_subspecs($t, $req->{subspecs});
+    my $sig = join("|", $req->{from}, $root, $t->{source}, $t->{version}, $req->{requirement}, join(",", @subs), $req->{target});
+    next if $rebuilt_req{$sig}++;
+    my $to_subs = join(",", @subs);
+    push @edges, [$req->{from}, "pod:$root/$to_subs\@$t->{version}", $req->{requirement}, $req->{reason}];
+    for my $sub (@subs) {
+        $enabled{$root}{$sub} = 1;
+        $target_by_sub{$root}{$sub}{$req->{target}} = 1 if $req->{target};
+        $config_by_root{$root}{$_} = 1 for list_values($req->{configurations}, ",");
+        $linkage_by_root{$root}{$req->{linkage}} = 1 if $req->{linkage} ne "-";
+    }
+    for my $sub (@subs) {
+        my $row = $spec{$tk}{$sub};
+        next if !$row;
+        for my $dep_cell (list_values($row->{dependencies}, ";")) {
+            my $dep = parse_dep($dep_cell);
+            push @rebuild_queue, {
+                target => $req->{target},
+                direct => 0,
+                from => "pod:$root/$sub\@$t->{version}",
+                root => $dep->{root},
+                requirement => $dep->{requirement},
+                original_requirement => $dep->{requirement},
+                subspecs => $dep->{subspecs},
+                configurations => $req->{configurations},
+                linkage => $req->{linkage},
+                source_pin => $dep->{source_pin},
+                checksum_required => $dep->{checksum_required},
+                platform => $req->{platform},
+                platform_version => $req->{platform_version},
+                reason => "dependency",
+            };
+        }
+    }
+}
+
+for my $root (keys %selected) {
+    next if $enabled{$root};
+    delete $selected{$root};
+}
+
+my %selected_audit_seen;
+my $total_size = 0;
+for my $root (sort keys %selected) {
+    my $t = $selected{$root};
+    my $tk = tuple_key($t);
+    for my $sub (sort keys %{ $enabled{$root} || {} }) {
+        my $row = $spec{$tk}{$sub};
+        next if !$row;
+        $total_size += int($row->{size});
+        my $targets = join(",", sort keys %{ $target_by_sub{$root}{$sub} || {} });
+        $targets = "dependency" if $targets eq "";
+        my $sig = join("\t", $root, $t->{source}, $t->{version}, $sub);
+        next if $selected_audit_seen{$sig}++;
+        add_audit("selected", $root, $t->{source}, $t->{version}, $sub, "selected", "selected", $targets);
+    }
+}
+
+my $rejected_count = scalar grep { $_->[0] eq "rejected" } @audit;
+if ($total_size > int($policy{max_binary_size})) {
+    $unsat{"no_valid_complete_plan"} = 1;
+    add_audit("limit", "-", "-", "-", "-", "unsatisfied", "max_binary_size", "$total_size/$policy{max_binary_size}");
+}
+if ($rejected_count > int($policy{max_warnings})) {
+    $unsat{"no_valid_complete_plan"} = 1;
+    add_audit("limit", "-", "-", "-", "-", "unsatisfied", "max_warnings", "$rejected_count/$policy{max_warnings}");
+}
+
+remove_tree($OUT) if -d $OUT;
+make_path($OUT);
+
+sub pod_lock_lines {
+    my @lines;
+    push @lines, "PODS:";
+    for my $root (sort keys %selected) {
+        my $t = $selected{$root};
+        my $tk = tuple_key($t);
+        for my $sub (sort keys %{ $enabled{$root} || {} }) {
+            push @lines, "  - $root/$sub ($t->{version})";
+            my @deps;
+            for my $dep_cell (list_values($spec{$tk}{$sub}{dependencies}, ";")) {
+                my $dep = parse_dep($dep_cell);
+                my $dep_subs = $dep->{subspecs};
+                if ($dep_subs eq "-" && $selected{$dep->{root}}) {
+                    $dep_subs = join(",", default_subspecs($selected{$dep->{root}}));
+                }
+                push @deps, "$dep->{root}/$dep_subs ($dep->{requirement})";
+            }
+            push @lines, map { "    - $_" } sort @deps;
+        }
+    }
+    push @lines, "DEPENDENCIES:";
+    for my $r (sort { "$a->{target}:$a->{pod}" cmp "$b->{target}:$b->{pod}" } @targets) {
+        my $name = $r->{subspecs} eq "-" ? $r->{pod} : "$r->{pod}/$r->{subspecs}";
+        push @lines, "  - $name ($r->{requirement}) [$r->{target};$r->{configurations};$r->{linkage}]";
+    }
+    push @lines, "SPEC REPOS:";
+    for my $src (@source_order) {
+        my @roots = sort grep { $selected{$_}{source} eq $src } keys %selected;
+        next unless @roots;
+        push @lines, "  $src:";
+        push @lines, map { "    - $_" } @roots;
+    }
+    push @lines, "SPEC CHECKSUMS:";
+    for my $root (sort keys %selected) {
+        my $t = $selected{$root};
+        my $tk = tuple_key($t);
+        for my $sub (sort keys %{ $enabled{$root} || {} }) {
+            push @lines, "  $root/$sub: $spec{$tk}{$sub}{checksum}";
+        }
+    }
+    push @lines, "COCOAPODS: $policy{cocoapods_version}";
+    my $status = keys(%unsat) ? "unsatisfied" : "ok";
+    push @lines, "STATUS: $status";
+    my $unsat = keys(%unsat) ? join(",", sort keys %unsat) : "-";
+    push @lines, "UNSATISFIED: $unsat";
+    return @lines;
+}
+
+open my $pl, ">", "$OUT/Podfile.lock" or die $!;
+print {$pl} join("\n", pod_lock_lines()), "\n";
+close $pl;
+
+open my $pp, ">", "$OUT/pods-plan.tsv" or die $!;
+print {$pp} "root\tsource\tversion\tsubspecs\tsize\ttargets\tconfigurations\tlinkage\tchecksums\n";
+for my $root (sort keys %selected) {
+    my $t = $selected{$root};
+    my $tk = tuple_key($t);
+    my @subs = sort keys %{ $enabled{$root} || {} };
+    my $size = 0;
+    my %checksums;
+    my %targets;
+    for my $sub (@subs) {
+        $size += int($spec{$tk}{$sub}{size});
+        $checksums{$spec{$tk}{$sub}{checksum}} = 1;
+        $targets{$_} = 1 for keys %{ $target_by_sub{$root}{$sub} || {} };
+    }
+    print {$pp} join("\t",
+        $root,
+        $t->{source},
+        $t->{version},
+        @subs ? join(",", @subs) : "-",
+        $size,
+        keys(%targets) ? join(",", sort keys %targets) : "-",
+        keys(%{ $config_by_root{$root} || {} }) ? join(",", sort keys %{ $config_by_root{$root} }) : "-",
+        keys(%{ $linkage_by_root{$root} || {} }) ? join(",", sort keys %{ $linkage_by_root{$root} }) : "-",
+        keys(%checksums) ? join(",", sort keys %checksums) : "-",
+    ), "\n";
+}
+close $pp;
+
+my %edge_seen;
+my @edge_rows = sort { join("\t", @$a) cmp join("\t", @$b) } grep { !$edge_seen{join("\t", @$_)}++ } @edges;
+open my $sg, ">", "$OUT/subspec-graph.tsv" or die $!;
+print {$sg} "from\tto\trequirement\treason\n";
+print {$sg} join("\t", @$_), "\n" for @edge_rows;
+close $sg;
+
+my %audit_seen;
+my @audit_rows = sort { join("\t", @$a) cmp join("\t", @$b) } grep { !$audit_seen{join("\t", @$_)}++ } @audit;
+open my $sa, ">", "$OUT/source-audit.tsv" or die $!;
+print {$sa} "kind\troot\tsource\tversion\tsubspec\tstatus\treason\tdetail\n";
+print {$sa} join("\t", @$_), "\n" for @audit_rows;
+close $sa;
+
+my $seal_input = "";
+for my $f (qw(Podfile.lock pods-plan.tsv subspec-graph.tsv source-audit.tsv)) {
+    open my $fh, "<", "$OUT/$f" or die $!;
+    local $/;
+    $seal_input .= <$fh>;
+    close $fh;
+}
+open my $seal, ">", "$OUT/seal.txt" or die $!;
+print {$seal} sha256_hex($seal_input), "\n";
+close $seal;
+PERL
+
+chmod +x /opt/pod-lock-desk/pod-source-lock
+/opt/pod-lock-desk/pod-source-lock

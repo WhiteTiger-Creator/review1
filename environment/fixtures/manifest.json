@@ -1,7 +1,0 @@
-{
-  "packs": [
-    "fixtures/packs/zz_site.feats",
-    "fixtures/packs/mm_mid.feats",
-    "fixtures/packs/aa_edge.feats"
-  ]
-}

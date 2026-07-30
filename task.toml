@@ -1,28 +1,30 @@
 version = "2.0"
 
 [metadata]
-author_name = "anonymous"
-author_email = "anonymous"
-difficulty = "hard"
-category = "machine-learning"
+author_name = "Anonymous"
+author_email = "anonymous@example.com"
+difficulty = "medium"
+category = "build-and-dependency-management"
 subcategories = []
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["c", "bash"]
-tags = ["averaged-perceptron", "feature-packs", "model-pages", "digest-fence", "margin-gate"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 300
+codebase_size = "minimal"
+languages = ["perl", "bash"]
+tags = ["cocoapods", "podfile", "dependency-resolution", "subspecs", "lockfile", "source-priority"]
+expert_time_estimate_min = 360
+junior_time_estimate_min = 900
 
 [verifier]
-timeout_sec = 900
+timeout_sec = 900.0
 
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
 
 [environment]
 allow_internet = false
-build_timeout_sec = 600
+build_timeout_sec = 600.0
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-workdir = "/app"
+docker_flags = []
+gpus = 0
+gpu_types = []
