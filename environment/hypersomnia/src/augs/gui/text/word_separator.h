@@ -1,0 +1,36 @@
+#pragma once
+#include "augs/gui/formatted_string.h"
+
+namespace augs {
+	namespace gui {
+		namespace text {
+			struct word_separator {
+				static int default_word_type(utf32_point);
+				static bool default_is_newline(utf32_point);
+
+				int(*word_type)(utf32_point);
+				bool(*is_character_newline)(utf32_point);
+
+				word_separator(int(*is_word)(utf32_point) = 0); /* 0 - default comparator */
+
+				void set_default();
+
+				/* max_left/right are introduced for word wrappers where no newlines are present inside strings;
+				-1 means no boundaries
+
+				versions without "alpha" argument will determine the alphanumeric flag
+				and pass it as an argument to the latter versions, thus always making the offset at least one,
+				unless caret is at 0 or at str.length()
+				*/
+				unsigned get_left_word(const formatted_utf32_string&, int at) const;
+				unsigned get_right_word(const formatted_utf32_string&, int at) const;
+
+				unsigned get_left_word(const formatted_utf32_string&, int at, int max_left) const;
+				unsigned get_right_word(const formatted_utf32_string&, int at, int max_right) const;
+
+				unsigned get_left_word(const formatted_utf32_string&, int at, int max_left, int wordtype) const;
+				unsigned get_right_word(const formatted_utf32_string&, int at, int max_right, int wordtype) const;
+			};
+		}
+	}
+}

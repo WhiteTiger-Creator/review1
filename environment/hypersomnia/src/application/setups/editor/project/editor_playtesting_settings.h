@@ -1,0 +1,28 @@
+#pragma once
+#include "augs/graphics/rgba.h"
+#include "application/setups/editor/resources/editor_typed_resource_id.h"
+
+#include "game/enums/faction_type.h"
+#include "game/modes/difficulty_type.h"
+
+struct editor_game_mode_resource;
+
+struct editor_playtesting_settings {
+	// GEN INTROSPECTOR struct editor_playtesting_settings
+	editor_typed_resource_id<editor_game_mode_resource> mode;
+
+	faction_type starting_faction = faction_type::METROPOLIS;
+
+	bool skip_warmup = true;
+	bool skip_freeze_time = true;
+	bool unlimited_money = true;
+	bool friendly_fire = true;
+	bool spawn_bots = false;
+	bool spawn_only_enemy_bots = false;
+	bool see_enemies_behind_walls = false;
+	bool draw_enemy_crosshairs = false;
+	difficulty_type bot_difficulty = difficulty_type::LEVELLING;
+	// END GEN INTROSPECTOR
+
+	bool operator==(const editor_playtesting_settings&) const = default;
+};

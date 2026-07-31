@@ -1,6 +1,0 @@
-"feature","feature_type","fit_missing_count","validation_missing_count","score_missing_count","fit_center","fit_sample_sd","level_count"
-"native_english_speaker","categorical",0,0,0,0,1,4
-"course_instructor","categorical",0,0,0,0,1,25
-"course_id","categorical",0,0,0,0,1,22
-"summer_or_regular","categorical",0,0,0,0,1,4
-"class_size","numeric",0,0,0,28.86516854,12.95814154,0

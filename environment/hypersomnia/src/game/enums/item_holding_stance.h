@@ -1,0 +1,23 @@
+#pragma once
+
+enum class item_holding_stance {
+	// GEN INTROSPECTOR enum class item_holding_stance
+	BARE_LIKE,
+	FISTS_LIKE,
+	PISTOL_LIKE,
+	RIFLE_LIKE,
+	SNIPER_LIKE,
+	HEAVY_LIKE,
+	KNIFE_LIKE,
+	SWORD_LIKE,
+
+	AKIMBO,
+
+	DEAD_TATTERED,
+	DEAD_TATTERED_NOARM,
+	DEAD_TATTERED_NOARMS,
+
+	COUNT
+	// END GEN INTROSPECTOR
+};
+

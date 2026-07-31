@@ -1,0 +1,127 @@
+#include "augs/templates/container_templates.h"
+
+#include "game/cosmos/cosmos.h"
+#include "game/cosmos/entity_handle.h"
+
+#include "game/components/render_component.h"
+#include "game/components/interpolation_component.h"
+#include "game/components/fixtures_component.h"
+#include "game/components/owner_component.h"
+
+#include "view/viewables/image_in_atlas.h"
+#include "view/viewables/images_in_atlas_map.h"
+
+#include "view/rendering_scripts/draw_entity.h"
+#include "view/rendering_scripts/corpse_head_overlays.h"
+
+#include "view/audiovisual_state/systems/pure_color_highlight_system.h"
+#include "view/audiovisual_state/systems/interpolation_system.h"
+
+#include "augs/math/easing.h"
+
+void pure_color_highlight_system::clear() {
+	highlights.clear();
+}
+
+void pure_color_highlight_system::add(const entity_id target, const pure_color_highlight_input new_in) {
+	auto new_highlight = highlight();
+	new_highlight.in = new_in;
+	new_highlight.time_of_occurence_seconds = global_time_seconds;
+
+	highlights[target] = new_highlight;
+}
+
+void pure_color_highlight_system::advance(const augs::delta dt) {
+	global_time_seconds += dt.in_seconds();
+	
+	erase_if(
+		highlights, 
+		[this](const auto& entry) {
+			const auto& h = entry.second;
+
+			return (global_time_seconds - h.time_of_occurence_seconds) > h.in.maximum_duration_seconds;
+		}
+	);
+}
+
+void pure_color_highlight_system::draw_highlights(
+	const cosmos& cosm,
+	const draw_renderable_input& in
+) const {
+	for (const auto& entry : highlights) {
+		const auto subject = cosm[entry.first];
+		const auto& r = entry.second;
+
+		if (subject.dead()) {
+			continue;
+		}
+
+		if (auto sentience = subject.find<components::sentience>()) {
+			if (sentience->has_exploded) {
+				continue;
+			}
+		}
+
+		float teleport_alpha = 1.0f;
+
+		if (auto rigid_body = subject.find<components::rigid_body>()) {
+			teleport_alpha = rigid_body.get_teleport_alpha();
+		}
+
+		const auto passed = global_time_seconds - r.time_of_occurence_seconds;
+		const auto ratio = std::max(0.f, 1.f - static_cast<float>(passed / r.in.maximum_duration_seconds));
+		
+		auto time_ratio = std::sqrt(std::sqrt(ratio));
+
+		if (!r.in.use_sqrt) {
+			time_ratio = ratio * ratio;
+		}
+
+		const auto target_color = rgba { 
+			r.in.color.rgb(),
+			static_cast<rgba_channel>(255.f * time_ratio * r.in.starting_alpha_ratio * teleport_alpha)
+		};
+
+		const auto passed_ratio = std::clamp(static_cast<float>(passed / r.in.maximum_duration_seconds), 0.0f, 1.0f);
+		const auto current_size_mult = augs::easing(augs::easing_type::SQRT, r.in.size_mult_start, 1.0f, passed_ratio);
+		const auto sm = vec2(current_size_mult, current_size_mult);
+
+		draw_color_highlight(subject, target_color, in, sm);
+
+		/*
+			Also highlight corpse head overlays on lying corpses.
+		*/
+
+		if (const auto* owner_comp = subject.find<components::owner>()) {
+			const auto owner_handle = cosm[owner_comp->owner_body];
+
+			if (owner_handle.alive()) {
+				const auto* owner_sentience = owner_handle.find<components::sentience>();
+
+				if (owner_sentience != nullptr && owner_sentience->has_exploded) {
+					const auto& sentience_def = owner_handle.get<invariants::sentience>();
+					const auto& logicals = cosm.get_logical_assets();
+					const auto viewing = subject.get_viewing_transform(in.interp);
+
+					::for_each_corpse_head_overlay(subject, *owner_sentience, sentience_def, viewing, logicals,
+						[&](const corpse_head_overlay_info& overlay) {
+							invariants::sprite sprite;
+							sprite.set(overlay.image_id, in.manager);
+							sprite.set_color(target_color);
+							sprite.size = vec2(sprite.size) * sm;
+
+							auto draw_input = in.make_input_for<invariants::sprite>();
+							draw_input.renderable_transform = overlay.world_transform;
+
+							if (overlay.flipped) {
+								draw_input.flip.vertically = true;
+							}
+
+							augs::draw(sprite, in.manager, draw_input);
+						}
+					);
+				}
+			}
+		}
+	}
+}

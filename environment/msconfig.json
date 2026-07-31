@@ -1,0 +1,15 @@
+{
+    "server_entry_timeout_secs": 65,
+    "official_hosts": [
+        "arena.hypersomnia.io",
+        "arena-us.hypersomnia.io",
+        "arena-de.hypersomnia.io",
+        "arena-au.hypersomnia.io",
+        "arena-fi.hypersomnia.io",
+        "arena-nl.hypersomnia.io",
+        "arena-ru.hypersomnia.io",
+        "arena-ch.hypersomnia.io"
+    ],
+    "external_arena_files_provider": "https://hypersomnia.io/arenas",
+    "banlist_servers_path": "/app/banlist/servers.txt"
+}

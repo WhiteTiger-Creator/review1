@@ -1,0 +1,114 @@
+#pragma once
+#include "game/modes/ai/behaviors/ai_behavior_variant.hpp"
+#include "game/modes/ai/behaviors/ai_target_tracking.hpp"
+#include "game/enums/faction_type.h"
+
+/*
+	Stateless intent calculations that std::visit the behavior variant.
+	These functions centralize the logic for determining bot intents.
+
+	Note: ai_behavior_push has been merged into ai_behavior_patrol.
+	The patrol's push_waypoint field now indicates push state.
+*/
+
+inline bool should_sprint(const ai_behavior_variant& behavior, const bool nav_can_sprint) {
+	return std::visit([nav_can_sprint](const auto& b) -> bool {
+		using T = std::decay_t<decltype(b)>;
+
+		if constexpr (std::is_same_v<T, ai_behavior_combat>) {
+			return true;
+		}
+		else if constexpr (std::is_same_v<T, ai_behavior_defuse>) {
+			return nav_can_sprint;
+		}
+		else if constexpr (std::is_same_v<T, ai_behavior_patrol>) {
+			return nav_can_sprint && b.is_going_far();
+		}
+		else if constexpr (std::is_same_v<T, ai_behavior_retrieve_bomb>) {
+			return true;
+		}
+		else {
+			return false;
+		}
+	}, behavior);
+}
+
+inline bool is_camping_on_waypoint(const ai_behavior_variant& behavior) {
+	if (const auto* patrol = ::get_behavior_if<ai_behavior_patrol>(behavior)) {
+		return patrol->is_camping();
+	}
+
+	return false;
+}
+
+inline bool should_walk_silently(
+	const ai_behavior_variant& behavior,
+	const faction_type bot_faction,
+	const bool escaping_explosion,
+	const bool bomb_planted
+) {
+	if (::is_camping_on_waypoint(behavior)) {
+		return true;
+	}
+
+	if (const auto* patrol = ::get_behavior_if<ai_behavior_patrol>(behavior)) {
+		if (escaping_explosion) {
+			return false;
+		}
+
+		/*
+			RESISTANCE should always walk silently when patrolling a bombsite
+			after the bomb is planted (to avoid giving away their position).
+		*/
+		if (bot_faction == faction_type::RESISTANCE && bomb_planted) {
+			return true;
+		}
+
+		/* Always walk silently when camping (twitching). */
+		if (patrol->in_motion() && !patrol->is_going_far()) {
+			return patrol->walk_silently_to_next_waypoint;
+		}
+	}
+
+	return false;
+}
+
+inline bool should_dash_for_combat(
+	ai_behavior_variant& behavior,
+	const ai_target_tracking& combat_target,
+	const vec2 bot_pos
+) {
+	auto* combat = ::get_behavior_if<ai_behavior_combat>(behavior);
+
+	if (combat == nullptr) {
+		return false;
+	}
+
+	constexpr float DASH_RADIUS = 100.0f;
+
+	/*
+		Check if we should dash towards last_visual_pos.
+	*/
+	if (!combat->has_dashed_to_visual_pos(combat_target.last_visual_pos)) {
+		const auto dist_to_last_seen = (bot_pos - combat_target.last_visual_pos).length();
+
+		if (dist_to_last_seen < DASH_RADIUS) {
+			combat->mark_dashed_to_visual_pos(combat_target.last_visual_pos);
+			return true;
+		}
+	}
+
+	/*
+		Also check if we should dash towards last_known_pos (from footsteps).
+	*/
+	if (!combat->has_dashed_to_known_pos(combat_target.last_known_pos)) {
+		const auto dist_to_last_known = (bot_pos - combat_target.last_known_pos).length();
+
+		if (dist_to_last_known < DASH_RADIUS) {
+			combat->mark_dashed_to_known_pos(combat_target.last_known_pos);
+			return true;
+		}
+	}
+
+	return false;
+}
