@@ -1,7 +1,3 @@
-#!/bin/bash
-set -euo pipefail
-mkdir -p /app/output /app/environment/tools /app/environment/driver
-cat > /app/environment/tools/nav_core.js <<'ORACLE_NAV_EOF'
 #!/usr/bin/env node
 const { spawn } = require("child_process");
 
@@ -137,8 +133,6 @@ function bfs(mem, st, mode) {
   return explore;
 }
 
-ORACLE_NAV_EOF
-cat > /app/environment/driver/play_core.js <<'ORACLE_PLAY_EOF'
 function choose(st, mem) {
   updateMap(mem, st);
 
@@ -247,80 +241,3 @@ main().catch((err) => {
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
 });
-ORACLE_PLAY_EOF
-cat > /app/environment/driver/bundle_player.py <<'ORACLE_BUNDLE_EOF'
-#!/usr/bin/env python3
-"""Oracle bundler: merge driver parts, stage autoplay, run seeds."""
-
-from __future__ import annotations
-
-import argparse
-import subprocess
-import sys
-from pathlib import Path
-
-
-def merge_driver_parts(nav_path: str, play_path: str, out_path: str) -> None:
-    nav = Path(nav_path).read_text(encoding="utf-8")
-    play = Path(play_path).read_text(encoding="utf-8")
-    Path(out_path).write_text(nav + play, encoding="utf-8")
-
-
-def stage_autoplay(src_path: str, dst_path: str) -> None:
-    data = Path(src_path).read_text(encoding="utf-8")
-    if "function choose" not in data or "async function main" not in data:
-        raise SystemExit("staged autoplay missing required driver symbols")
-    dst = Path(dst_path)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(data, encoding="utf-8")
-    dst.chmod(0o755)
-
-
-def drive_seed(autoplay_path: str, seed: str, out_path: str) -> None:
-    proc = subprocess.run(
-        ["node", autoplay_path, "--seed", seed, "--out", out_path],
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise SystemExit(f"autoplay failed for seed={seed} rc={proc.returncode}")
-
-
-def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["merge", "stage", "run"])
-    parser.add_argument("--seed", default="nominal")
-    parser.add_argument("--out", default="/app/output/vault_state.json")
-    return parser.parse_args(argv)
-
-
-def bundle_cli(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv or sys.argv[1:])
-    if args.command == "merge":
-        merge_driver_parts(
-            "/app/environment/tools/nav_core.js",
-            "/app/environment/driver/play_core.js",
-            "/app/environment/tools/ref_player.js",
-        )
-    elif args.command == "stage":
-        stage_autoplay("/app/environment/tools/ref_player.js", "/app/output/autoplay.js")
-    else:
-        drive_seed("/app/output/autoplay.js", args.seed, args.out)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(bundle_cli())
-ORACLE_BUNDLE_EOF
-python3 /app/environment/driver/bundle_player.py merge
-python3 /app/environment/driver/bundle_player.py stage
-test -s /app/output/autoplay.js
-python3 /app/environment/driver/bundle_player.py run --seed nominal --out /app/output/vault_state.json
-python3 /app/environment/driver/bundle_player.py run --seed holdout --out /app/output/vault_state_holdout.json
-python3 /app/environment/driver/bundle_player.py run --seed mirror --out /app/output/vault_state_mirror.json
-test -s /app/output/autoplay.js
-test -s /app/output/trace_nominal.txt
-test -s /app/output/trace_holdout.txt
-test -s /app/output/trace_mirror.txt
-test -s /app/output/vault_state.json
-test -s /app/output/vault_state_holdout.json
-test -s /app/output/vault_state_mirror.json

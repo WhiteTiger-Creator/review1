@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "vault_state",
+  "type": "object",
+  "required": [
+    "seed",
+    "floors_cleared",
+    "open_flag_epoch",
+    "apex_stage",
+    "turns_used",
+    "used_chain",
+    "exit_seal_digest"
+  ],
+  "properties": {
+    "seed": { "type": "string", "enum": ["nominal", "holdout", "mirror"] },
+    "floors_cleared": { "type": "integer", "minimum": 0 },
+    "open_flag_epoch": { "type": "integer", "minimum": 0 },
+    "apex_stage": { "type": "string", "enum": ["locked", "open", "cleared"] },
+    "turns_used": { "type": "integer", "minimum": 0 },
+    "used_chain": { "type": "string" },
+    "exit_seal_digest": { "type": "string", "minLength": 64, "maxLength": 64 }
+  },
+  "additionalProperties": true
+}

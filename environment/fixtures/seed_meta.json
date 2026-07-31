@@ -1,0 +1,3 @@
+{
+  "note": "Seed layouts live in src/seed_deck.ts. This fixture marks nominal as the default play seed."
+}
