@@ -1,6 +1,0 @@
-{
-  "policy": "/app/polbay/cdn_policy.json",
-  "capture_root": "/app/netyard/public",
-  "labels": "/app/netyard/labels/public_labels.jsonl",
-  "out_dir": "/app/qualitycast"
-}

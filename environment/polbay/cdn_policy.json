@@ -1,6 +1,0 @@
-{
-  "schema": "cdnqual.policy.v1",
-  "ridge_lambda": 3,
-  "feature_dim": 12,
-  "score_threshold_milli": 500
-}
