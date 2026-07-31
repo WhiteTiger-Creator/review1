@@ -1,35 +1,29 @@
-FROM public.ecr.aws/docker/library/node:22-bookworm-slim@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    NPM_CONFIG_FUND=false \
-    NPM_CONFIG_AUDIT=false \
-    NPM_CONFIG_UPDATE_NOTIFIER=false
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux=3.3a-3 \
-    asciinema=2.2.0-1 \
-    python3=3.11.2-1+b1 \
-    python3-venv=3.11.2-1+b1 \
-    ca-certificates=20230311+deb12u1 \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN python3 -m venv /opt/verifier \
-    && /opt/verifier/bin/pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5 \
-        pytest-randomly==3.16.0
-RUN ln -sf /opt/verifier/bin/pytest /usr/local/bin/pytest
-ENV PATH=/opt/verifier/bin:${PATH}
-
-WORKDIR /app/environment
-COPY package.json package-lock.json ./
-RUN npm ci --no-fund --no-audit \
-    && npm cache clean --force
-
-COPY . .
-RUN ./node_modules/.bin/tsc -p tsconfig.json \
-    && mkdir -p /app/output /logs/verifier \
-    && rm -rf /root/.npm /tmp/*
-
+ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
-CMD ["node", "-e", "console.log('vault environment ready')"]
+
+# r-base-core drives the agent-facing analysis; r-cran-jsonlite backs the metrics writer.
+# The apt lines carry the accepted non-fatal advisories for this offline task class
+# (no version pins, root user, single stage) -- do not "fix" them.
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+      tmux asciinema ca-certificates \
+      r-base-core r-cran-jsonlite && \
+    rm -rf /var/lib/apt/lists/*
+
+# This venv carries only pytest and the ctrf reporter: every wheel in the lock is
+# pure Python, so the hash pins are platform-independent.
+COPY requirements.lock /tmp/requirements.lock
+RUN python3 -m venv /opt/verifier-venv && \
+    /opt/verifier-venv/bin/pip install --no-cache-dir --only-binary=:all: \
+      --require-hashes -r /tmp/requirements.lock && \
+    rm -f /tmp/requirements.lock
+
+RUN mkdir -p /app/outputs
+
+COPY data/ /app/data/
+COPY config/ /app/config/
+COPY docs/ /app/docs/
+
+

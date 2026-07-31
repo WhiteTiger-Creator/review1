@@ -1,0 +1,13 @@
+key,value
+task_id,crater-scars-off-the-ecoat-dip
+task_kind,binary
+target_column,cratered
+id_column,panel_id
+split_column,split_role
+group_column,bath_run
+data_file,train.csv
+k_grid,3|5|7|11|15
+threshold_grid,0.20|0.25|0.30|0.35|0.40|0.45|0.50|0.55|0.60|0.65|0.70
+class_order,clean|cratered
+positive_class,cratered
+source_note,"body-shop e-coat quality export: one panel per record, read off the tank ledger after the cathodic dip and cure oven"
