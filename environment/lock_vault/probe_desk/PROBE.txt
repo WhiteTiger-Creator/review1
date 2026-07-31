@@ -1,3 +1,0 @@
-Probe desk for Lock Vault custody trials.
-
-Point LOCK_VAULT_ROOT at /app/lock_vault/probe_desk and run /app/bin/lock-release with the candidate custody sheet on LOCK_POLICY. Match /app/lock_vault/probe_desk/expected/unwrap_log.jsonl and /app/lock_vault/probe_desk/expected/vault_stamp.txt exactly before treating the sheet as final. Do not edit bags, phrases, policy, or expected artifacts under this probe desk.

@@ -1,5 +1,0 @@
-# Harbor static checks run `ruff check` in the task root.
-# Upload/extract pipelines often flip the executable bit on .py files,
-# which oscillates between EXE001 and EXE002. Ignore those only.
-[lint]
-ignore = ["EXE001", "EXE002"]
