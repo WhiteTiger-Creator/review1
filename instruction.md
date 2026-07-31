@@ -1,13 +1,5 @@
-edge-07 dropped power in the middle of an overnight DPX/1 upgrade run and came back up in a
-state nobody trusts. `dpx verify` is unhappy about it and the rest of the rollout is queued
-behind this box. Get it back to consistent, with the interrupted run properly closed out.
+Dung's theory of abstract argumentation asks which sets of claims stay jointly defensible once every objection raised against them has been weighed. This problem lives in the recursive extension of that theory, where an objection may itself be objected to. An objection carries force only while no standing objection undercuts it, so standing is a least fixpoint rather than a property of one edge, and it is relative to the set being evaluated: only objections raised by members of that set bring another objection down, and an undercut that has itself been brought down leaves its target standing after all.
 
-Nineteen more boxes went down with it and I'm not doing this by hand nineteen times, so the
-fix has to be a thing we can ship: put it at /usr/local/sbin/dpx-reconcile, one argument
-which is the root of the install, exit 0 once it's done and that root is consistent. It has
-to be safe to run twice. Then run it here — this box's root is /.
+Decide the extension certificate of every candidate set in the argumentation frameworks held at /app/graph/argumentation.kuzu. A certificate states three quantities, namely the standing objections internal to the set, its undefended members, and the claims of its framework it leaves unopposed, followed by three semantic verdicts: admissible, stable and maximal admissible. Each verdict is a condition on those quantities. Maximality quantifies further over the rival candidate sets of the same framework, each evaluated under its own standing objections rather than under the set being certified.
 
-Worth saying: DPX/1 makes a set of promises about what lives on a machine, and none of them
-stop applying just because a run got cut in half. They're written up at
-/usr/local/share/doc/dpx/dpx-1.md. Whatever you do to tidy this up has to still keep every
-one of them. No network on the box.
+/app/docs/extension_rules.md fixes the exact meaning of all six notions, including the bound that makes the standing fixpoint well founded, and governs over the wider literature. The same directory records how claims, objections and candidate sets are represented and what the pinned engine's dialect does not accept. Express the certificates of every framework as a single Cypher query saved to /app/answer.cypher, under the seven columns /app/docs/output_contract.md fixes.

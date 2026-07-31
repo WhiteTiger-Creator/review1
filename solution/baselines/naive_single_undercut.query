@@ -1,0 +1,34 @@
+MATCH (s:CandidateSet)-[:SET_OF]->(f:Framework)
+WITH s, f,
+  COUNT { MATCH (is0:Argument)-[:RAISES]->(io1:Attack)-[:STRIKES]->(it2:Argument)
+    WHERE EXISTS { MATCH (is0)-[:MEMBER]->(s) } AND EXISTS { MATCH (it2)-[:MEMBER]->(s) } AND NOT EXISTS { MATCH (io1)<-[:UNDERCUTS]-(uc4:Attack)<-[:RAISES]-(ur3:Argument) WHERE EXISTS { MATCH (ur3)-[:MEMBER]->(s) } } } AS live_internal_attacks,
+  COUNT { MATCH (dm5:Argument)-[:MEMBER]->(s)
+    WHERE EXISTS { MATCH (da6:Argument)-[:RAISES]->(do7:Attack)-[:STRIKES]->(dm5)
+                   WHERE NOT EXISTS { MATCH (do7)<-[:UNDERCUTS]-(uc11:Attack)<-[:RAISES]-(ur10:Argument) WHERE EXISTS { MATCH (ur10)-[:MEMBER]->(s) } } AND NOT EXISTS { MATCH (dd8:Argument)-[:RAISES]->(dc9:Attack)-[:STRIKES]->(da6) WHERE EXISTS { MATCH (dd8)-[:MEMBER]->(s) } AND NOT EXISTS { MATCH (dc9)<-[:UNDERCUTS]-(uc13:Attack)<-[:RAISES]-(ur12:Argument) WHERE EXISTS { MATCH (ur12)-[:MEMBER]->(s) } } } } } AS undefended_members,
+  COUNT { MATCH (oa14:Argument)-[:IN_FRAMEWORK]->(f)
+    WHERE NOT EXISTS { MATCH (oa14)-[:MEMBER]->(s) }
+      AND NOT EXISTS { MATCH (om15:Argument)-[:RAISES]->(oo16:Attack)-[:STRIKES]->(oa14)
+                        WHERE EXISTS { MATCH (om15)-[:MEMBER]->(s) } AND NOT EXISTS { MATCH (oo16)<-[:UNDERCUTS]-(uc18:Attack)<-[:RAISES]-(ur17:Argument) WHERE EXISTS { MATCH (ur17)-[:MEMBER]->(s) } } } } AS unattacked_outsiders
+WITH s, f, live_internal_attacks, undefended_members, unattacked_outsiders,
+  ((live_internal_attacks + 0) = 0 AND (undefended_members + 0) = 0) AS adm,
+  ((live_internal_attacks + 0) = 0 AND (unattacked_outsiders + 0) = 0) AS stb
+OPTIONAL MATCH (t:CandidateSet)-[:SET_OF]->(f)
+  WHERE t.id <> s.id
+    AND NOT EXISTS { MATCH (sa19:Argument)-[:MEMBER]->(s)
+                     WHERE NOT EXISTS { MATCH (sa19)-[:MEMBER]->(t) } }
+    AND EXISTS { MATCH (sb20:Argument)-[:MEMBER]->(t)
+                 WHERE NOT EXISTS { MATCH (sb20)-[:MEMBER]->(s) } }
+    AND NOT EXISTS { MATCH (rs21:Argument)-[:RAISES]->(ro22:Attack)-[:STRIKES]->(rt23:Argument)
+                     WHERE EXISTS { MATCH (rs21)-[:MEMBER]->(t) } AND EXISTS { MATCH (rt23)-[:MEMBER]->(t) } AND NOT EXISTS { MATCH (ro22)<-[:UNDERCUTS]-(uc25:Attack)<-[:RAISES]-(ur24:Argument) WHERE EXISTS { MATCH (ur24)-[:MEMBER]->(t) } } }
+    AND NOT EXISTS { MATCH (dm26:Argument)-[:MEMBER]->(t)
+    WHERE EXISTS { MATCH (da27:Argument)-[:RAISES]->(do28:Attack)-[:STRIKES]->(dm26)
+                   WHERE NOT EXISTS { MATCH (do28)<-[:UNDERCUTS]-(uc32:Attack)<-[:RAISES]-(ur31:Argument) WHERE EXISTS { MATCH (ur31)-[:MEMBER]->(t) } } AND NOT EXISTS { MATCH (dd29:Argument)-[:RAISES]->(dc30:Attack)-[:STRIKES]->(da27) WHERE EXISTS { MATCH (dd29)-[:MEMBER]->(t) } AND NOT EXISTS { MATCH (dc30)<-[:UNDERCUTS]-(uc34:Attack)<-[:RAISES]-(ur33:Argument) WHERE EXISTS { MATCH (ur33)-[:MEMBER]->(t) } } } } }
+WITH s, live_internal_attacks, undefended_members, unattacked_outsiders, adm, stb,
+     count(t) AS n_super
+RETURN s.name AS candidate_set,
+       live_internal_attacks AS live_internal_attacks,
+       undefended_members AS undefended_members,
+       unattacked_outsiders AS unattacked_outsiders,
+       adm AS admissible,
+       stb AS stable,
+       (adm AND (n_super + 0) = 0) AS maximal_admissible

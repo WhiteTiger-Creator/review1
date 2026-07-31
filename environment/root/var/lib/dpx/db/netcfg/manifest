@@ -1,8 +1,0 @@
-f 0644 2b296f56d814cfc81898c6d9f5c6aac4dd899e83593794a69977ee6312fb691e c /etc/netcfg/netcfg.conf
-f 0755 b53dc779e5546c84195953ee222d5799e0e10b139527fd74667c867a3fb25cf8 - /usr/bin/netcfg
-f 0644 1001bedbf81d097dfb6535801634a7cc283955b6993b7c31260cfdb0b30b26a7 - /usr/lib/netcfg/libnet.so.1
-f 0644 76c4f0b3393f217a6e2f0ef59dd5270003290969dde7f3301738b299d5fcefd7 - /usr/lib/netcfg/rules.tbl
-f 0644 83b7e9b7b26a03ee21662eeeb565a3f680086a78e096b89c62a107322268d8c2 - /usr/lib/netcfg/shared/geo.dat
-f 0644 b2b1bb92992af31a72a21935711fd8b3bc923cd1c250a700b76286e47e232e79 - /usr/lib/netcfg/shared/zones.idx
-f 0644 7461f1b58be253e4ad6f884ed24234d6cff3b7f17a8e67ebdfaaca25708765e1 - /usr/share/netcfg/legacy.tbl
-f 0644 5206a41a892559a25075e069f0eaebab9102774cf06c126fae0b302494cf6483 - /usr/share/netcfg/tables/old.idx

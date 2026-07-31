@@ -1,4 +1,0 @@
-# rules 1.4.2
-allow lan
-allow vpn
-deny wan
