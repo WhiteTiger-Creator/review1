@@ -1,31 +1,27 @@
-# Task configuration schema version
 version = "2.0"
 
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "games"
+category = "security"
 subcategories = []
 number_of_milestones = 0
-codebase_size = "minimal"
-languages = ["javascript"]
-tags = ["games", "opponent-modeling", "rule-inference", "tournament", "javascript"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 300
+codebase_size = "small"
+languages = ["go"]
+tags = ["pkcs8", "pbes2", "release-authorization", "policy-enforcement", "evidence-validation", "key-protection"]
+expert_time_estimate_min = 90
+junior_time_estimate_min = 240
 
 [verifier]
-timeout_sec = 300.0
+timeout_sec = 900
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 1800
 
 [environment]
 allow_internet = false
-build_timeout_sec = 900.0
-docker_flags = []
+build_timeout_sec = 900
 cpus = 2
-memory_mb = 4096
-storage_mb = 10240
-gpus = 0
-gpu_types = []
+memory_mb = 8192
+storage_mb = 8192

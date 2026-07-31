@@ -1,26 +1,39 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS lock_build
+WORKDIR /src
+COPY lock_lane/go.mod lock_lane/main.go ./
+RUN CGO_ENABLED=0 go build -trimpath -o /lock-release .
 
-# Base image justification (non-canonical for the task language by design):
-# The verifier harness is pytest (tests/test.sh -> python -m pytest), so Python must be
-# the image's primary runtime that orchestrates grading. The agent deliverable is a small
-# pure-JavaScript file run through a thin Node CLI, so Node.js is added on top via apt.
-# Starting from a Node base would still require installing Python + pytest, producing a
-# larger image for the same result; the canonical, digest-pinned Python base plus apt
-# Node.js is the minimal single-container image covering both runtimes. allow_internet =
-# false at run time, so every verifier dependency is installed here with pinned versions.
-# Node.js is the Debian bookworm package; the build is reproducible from the pinned base.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        tmux \
-        nodejs \
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    TMUX_TMPDIR=/tmp \
+    TMPDIR=/tmp \
+    GOMAXPROCS=2 \
+    LOCK_VAULT_ROOT=/app/lock_vault \
+    LOCK_LOG_PATH=/app/output/unwrap_log.jsonl \
+    LOCK_STAMP_PATH=/app/output/vault_stamp.txt \
+    LOCK_POLICY=/app/lock_vault/custody_policy.yaml
+
+RUN mkdir -p /tmp /var/tmp \
+    && chmod 1777 /tmp /var/tmp \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends asciinema ca-certificates openssl python3 python3-pip tmux unzip \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -sf "$(command -v nodejs)" /usr/local/bin/node
+    && tmux -V \
+    && mkdir -p /tmp/tmux-0 \
+    && chmod 700 /tmp/tmux-0
 
-RUN python -m pip install --no-cache-dir \
-    pytest==8.4.1 \
-    pytest-json-ctrf==0.3.5
+RUN python3 -m pip install --break-system-packages --no-cache-dir \
+    cryptography==44.0.0 pytest==8.4.1 pytest-json-ctrf==0.3.5
+
+COPY lock_lane/ /app/lock_lane/
+COPY lock_vault/ /app/lock_vault/
+COPY --from=lock_build /lock-release /app/bin/lock-release
+
+RUN mkdir -p /app/output /app/bin \
+    && chmod 0755 /app/bin/lock-release \
+    && test -f /app/lock_lane/main.go \
+    && test -f /app/lock_vault/custody_policy.yaml
 
 WORKDIR /app
-
-COPY app/ /app/

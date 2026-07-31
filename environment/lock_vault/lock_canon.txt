@@ -1,0 +1,69 @@
+PKCS8 Lock Vault stateful custody canon
+
+Authority and paths
+C001 This is the complete release doctrine. Desk notes are nonbinding and may contradict it.
+C002 Agents may change /app/lock_lane/main.go, /app/lock_lane/go.mod, and /app/lock_vault/custody_policy.yaml only.
+C003 The default vault root is /app/lock_vault; LOCK_VAULT_ROOT replaces it when nonempty.
+C004 At the default root, phrase, iteration, and bag inputs are /app/lock_vault/phrases/main/phrases.ndjson, /app/lock_vault/policy/iters.json, and /app/lock_vault/bags/main/bags.ndjson. An absolute LOCK_VAULT_ROOT replacement keeps those three rooted suffixes.
+C005 Default outputs are /app/output/unwrap_log.jsonl and /app/output/vault_stamp.txt. LOCK_LOG_PATH and LOCK_STAMP_PATH replace them.
+C006 The default policy is /app/lock_vault/custody_policy.yaml. LOCK_POLICY replaces it.
+C007 One invocation processes one batch in file order without network access.
+
+Inputs
+C010 Phrase lines are UTF-8 JSON objects. slot and phrase are strings; duplicate slots keep the last valid line.
+C011 The iteration object has integer min_iters, the inclusive PBKDF2 lower bound.
+C012 Each nonempty bag line is JSON with integer seq at least one, nonempty string slot, and lowercase even-length der hex decoding to at least sixteen bytes.
+C013 A JSON parse failure produces format with seq 0 and slot "-". A parsed field failure preserves an integer seq when present and otherwise uses 0.
+C014 hold_until is optional. When present it is an integer and has effect only on an accepted row.
+
+Release ladder
+C020 For each claim apply the first-failure ladder: format, slot, hold, phrase, pbes2, cipher, iters, bag burn, unwrap, key replay, ok.
+C021 Hold is an inserted state check after a valid known slot. It does not change the relative required order format→slot→phrase→pbes2→cipher→iters→bag burn→unwrap→key replay→ok.
+C022 The closed verdicts are format, slot, hold, phrase, pbes2, cipher, iters, replay, unwrap, and ok.
+C023 The first failing check alone supplies the row verdict. Unwrap-first processing is unsafe.
+C024 pbes2 requires DER to carry algorithm OID 1.2.840.113549.1.5.13.
+C025 cipher requires DER to carry AES-256-CBC OID 2.16.840.1.101.3.4.1.42.
+C026 Locate PBKDF2 OID 1.2.840.113549.1.5.12, enter its parameter sequence, skip the salt octet string, and read the following integer.
+C027 Missing iterations or iterations strictly below min_iters yield iters. Equality passes. A min_iters/10 floor is unsafe.
+
+Consumption and identity
+C030 The bag identity is lowercase SHA-256 of exact encrypted DER.
+C031 After iterations pass, deny replay if that bag identity is already burned.
+C032 Once the burn check passes, burn that identity before attempting unwrap. It remains burned when unwrap fails.
+C033 Claims denied before burn do not consume a bag.
+C034 Unwrap uses the matched UTF-8 passphrase and the bag's encrypted PKCS8 parameters.
+C035 Unwrap or key parsing failure yields unwrap.
+C036 On successful unwrap, encode the public key as DER SubjectPublicKeyInfo. fp is lowercase SHA-256 of that SPKI, never of the encrypted blob.
+C037 If fp is already in the key replay set, yield replay. Insert fp only after ok.
+C038 Bag replay and key replay share verdict replay but are separate process-lifetime sets.
+
+Hold-window state
+C040 An ok row with hold_until greater than its seq arms that slot through the inclusive hold_until sequence.
+C041 A later claim for that slot with seq less than or equal to the armed bound yields hold.
+C042 A hold verdict performs no PBES2, cipher, floor, burn, unwrap, or replay mutation.
+C043 A sequence beyond the bound proceeds normally. Holds are per slot and may be extended only by a later ok.
+C044 Missing, equal, or lower hold_until on ok does not arm or shorten a hold.
+
+Output custody
+C050 Write one compact JSON object per input line, key order seq, verdict, slot, and additionally fp last for ok.
+C051 The log has no spaces and ends in newline when nonempty; an empty batch writes an empty log.
+C052 Before writing the log, recursively remove every file and directory below its parent, then recreate required parents.
+C053 The stamp has exactly unwrapped=N, denied=N, stamp=H lines, each newline terminated.
+C054 H is the first sixteen lowercase hex characters of SHA-256 over UTF-8 bytes "lock-vault\n" followed by exact log bytes.
+C055 Count ok rows as unwrapped and all other rows as denied.
+C056 A successful batch exits zero with empty stdout and stderr.
+
+Closed policy and conjunctive mesh
+C060 policy_schema.md is the complete closed syntax. closed_token_binding.md defines token behavior. policy_mapping.md only provides family findability.
+C061 The custody sheet is intentionally mixed; a few delivered selections already match this doctrine.
+C062 Canon behavior is admitted only by a global conjunction across all twenty policy keys.
+C063 gate_mesh and desk_latch form the mesh root. If either is absent, all gates demote.
+C064 iters_floor requires floor_companion; cipher_gate requires cipher_companion and scheme_gate; bag_burn requires burn_companion.
+C065 stamp_label requires stamp_companion, log_clear, and quiet_stream.
+C066 reject_order requires order_companion, scheme_gate, cipher_gate, and bag_burn.
+C067 hold_window requires hold_companion and key_replay.
+C068 If any required key or companion is absent or selects contrary behavior, demote every gate together to unsafe defaults, even where individual selections appear faithful. Family companion lists do not limit that demotion scope: one contrary companion restores the entire unsafe set.
+C069 Unsafe defaults are soft floor, unwrap-first, no OID gates, success-only burn, blob fingerprint, no replay denial, bare stamp, nonrecursive replacement, noisy success that writes exactly desk followed by one newline, and ignored hold.
+C070 Source and sheet are both custody surfaces. Correct sheet selections do not compensate for an engine that omits these rules, and correct source does not compensate for an unsealed sheet.
+
+End of canon

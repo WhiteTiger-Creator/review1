@@ -1,28 +1,31 @@
 #!/bin/bash
-
-# Verifier dependencies are installed in environment/Dockerfile (allow_internet = false).
+# -e is intentionally omitted so a pytest failure does not exit before the
+# reward file is written.
 set -uo pipefail
 
 mkdir -p /logs/verifier
-# Prewrite a failing reward so a reward file always exists, even if pytest is killed.
 echo 0 > /logs/verifier/reward.txt
 
-if [ "$PWD" = "/" ]; then
-    echo "Error: No working directory set. Set a WORKDIR in the Dockerfile." >&2
-    echo 0 > /logs/verifier/reward.txt
-    exit 1
+# Rebuild happens inside pytest so compile failures still emit CTRF.
+# Cap the whole verifier so a hung agent binary cannot erase the report.
+/usr/bin/timeout --signal=KILL 720s python3 -m pytest \
+    -o cache_dir=/tmp/pytest_cache \
+    --ctrf /logs/verifier/ctrf.json \
+    /tests/test_outputs.py \
+    -rA
+pytest_rc=$?
+
+if [ ! -s /logs/verifier/ctrf.json ]; then
+    cat > /logs/verifier/ctrf.json <<'EOF'
+{"results":{"tool":{"name":"pytest"},"summary":{"tests":1,"passed":0,"failed":1,"skipped":0},"tests":[{"name":"verifier_bootstrap","status":"failed","message":"verifier did not produce pytest CTRF"}]}}
+EOF
+    pytest_rc=1
 fi
 
-TEST_DIR="${TEST_DIR:-/tests}"
-
-# PYTHONSAFEPATH keeps the working directory (/app) off sys.path, so a stray file the agent may
-# have written under /app cannot shadow a stdlib module and crash the verifier.
-PYTHONSAFEPATH=1 python -m pytest -o cache_dir=/tmp/pytest_cache \
-  --ctrf /logs/verifier/ctrf.json "$TEST_DIR/test_outputs.py" -rA
-RC=$?
-
-if [ "$RC" -eq 0 ]; then
-  echo 1 > /logs/verifier/reward.txt
+[ "$pytest_rc" -eq 0 ]
+status=$?
+if [ "$status" -eq 0 ]; then
+    echo 1 > /logs/verifier/reward.txt
 else
-  echo 0 > /logs/verifier/reward.txt
+    echo 0 > /logs/verifier/reward.txt
 fi

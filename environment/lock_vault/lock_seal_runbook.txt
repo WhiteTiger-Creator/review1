@@ -1,0 +1,47 @@
+Lock Vault release runbook
+
+Symptom. The delivered custody engine and mixed policy do not safely authorize
+encrypted PKCS8 release. Both custody surfaces select unsafe behavior in most
+families and must be evaluated against the Canon rather than trusted as examples.
+
+Edit allowed. Change /app/lock_lane/main.go, /app/lock_lane/go.mod, and
+/app/lock_vault/custody_policy.yaml. Both engine and sheet are graded.
+
+Forbidden. Do not change bags, phrases, iteration policy, Canon, schema,
+binding register, mapping, probe desk, sample, or output expectations anywhere
+below /app/lock_vault. Do not change /tests, /solution, or
+/logs/verifier/reward.txt.
+
+Build and run. Rebuild exactly with:
+CGO_ENABLED=0 /usr/local/go/bin/go build -C /app/lock_lane -o /app/bin/lock-release
+Then run /app/bin/lock-release with no arguments. Grading performs the rebuild
+again, so replacing only /app/bin/lock-release is ineffective.
+
+Outputs. Defaults are /app/output/unwrap_log.jsonl and
+/app/output/vault_stamp.txt. A successful complete batch exits zero and writes
+nothing to stdout or stderr. The stamp file is exactly three newline-terminated
+lines unwrapped=N, denied=N, and stamp=H where H is the labeled sixteen-hex
+digest required by the Canon.
+
+Runtime swaps. Nonempty LOCK_VAULT_ROOT, LOCK_LOG_PATH, LOCK_STAMP_PATH, and
+LOCK_POLICY replace the default vault, log, stamp, and policy paths.
+
+Grading fixtures. The main vault and /app/lock_vault/probe_desk are exercised,
+along with generated bags covering low floors, algorithm order, failed unwrap
+burn, repeated encrypted DER, distinct DER for one public key, inclusive hold
+windows that do not consume blocked bags, every companion/root policy flip,
+recursive clearing, and exact stamp bytes. Several properties may occur in one
+generated batch. Probe expected files are immutable observations, not policy
+authority.
+
+Compact JSON. Emit one object per processed nonempty line without spaces.
+Denied key order is seq, verdict, slot. Accepted key order is seq, verdict,
+slot, fp. A nonempty log ends with exactly one newline.
+
+Authority. Read /app/lock_vault/lock_canon.txt, then match its required
+behaviors through /app/lock_vault/closed_token_binding.md and the closed values
+in /app/lock_vault/policy_schema.md. /app/lock_vault/policy_mapping.md helps
+locate families. /app/lock_vault/custody_token_charter.md only restates that
+selectors are opaque and never derived. /app/lock_vault/sample is a non-graded
+walkthrough and never overrides the Canon. Desk notes are deliberately
+unreliable.
