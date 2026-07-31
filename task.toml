@@ -5,27 +5,24 @@ author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
 category = "machine-learning"
-category_profile = "ml_adversarial_robustness"
-tags = ["machine-learning", "inference", "checkpoint-lineage", "feature-store", "rollout", "javascript"]
-languages = ["javascript"]
-codebase_size = "small"
+subcategories = ["tool_specific"]
 number_of_milestones = 0
-subcategories = []
-expert_time_estimate_min = 180
-junior_time_estimate_min = 480
-
-[agent]
-timeout_sec = 1800
+codebase_size = "minimal"
+languages = ["ruby"]
+tags = ["calibration", "isotonic-regression", "model-selection", "risk-model"]
+expert_time_estimate_min = 90
+junior_time_estimate_min = 180
 
 [verifier]
 timeout_sec = 900
 
+[agent]
+timeout_sec = 1800
+
 [environment]
-allow_internet = false
 build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
-
-[reference_pattern]
-justification_if_none = "no promoted reference matches offline inference rollout with journal authority, feature-epoch rebind, compat gates, and crash recovery"
+workdir = "/app"
+allow_internet = false

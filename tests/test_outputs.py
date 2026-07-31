@@ -1,342 +1,421 @@
+from __future__ import annotations
+
+import copy
 import hashlib
+import itertools
 import json
-import shutil
+import math
 import subprocess
 from pathlib import Path
 
+import jsonschema
+import pytest
+
 APP = Path("/app")
-IRC = APP / "environment/irc"
-STATE = IRC / "state"
-FIX = IRC / "fixtures"
-OUT = APP / "output"
-STATUS = OUT / "status.json"
-EVAL = OUT / "eval_binding.json"
-TESTS = Path("/tests")
-THREAT_POLICY = TESTS / "data" / "eval_policy_threat.json"
-IRC_BIN = "/app/environment/irc/cmd/irc"
+CONFIG = APP / "data" / "lattice_config.json"
+OBS = APP / "data" / "observations.json"
+VALID = APP / "data" / "validation_cases.json"
+SCORING = APP / "data" / "scoring_cases.json"
+SCHEMA = APP / "api" / "calibration.schema.json"
+COMMAND = APP / "bin" / "lattice-calibrate"
+OUT = APP / "out" / "calibration.json"
+TSV = APP / "out" / "current_model.tsv"
 
 
-def _run(args, check=True):
-    return subprocess.run(
-        [IRC_BIN, *args],
-        capture_output=True,
-        text=True,
-        check=check,
-    )
+def _load(path: Path) -> object:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _reset(policy_path=None):
-    if STATE.exists():
-        shutil.rmtree(STATE)
-    shutil.copytree(FIX, STATE)
-    if policy_path is not None:
-        shutil.copy2(policy_path, STATE / "eval_policy.json")
-    if OUT.exists():
-        shutil.rmtree(OUT)
-    shutil.copytree(FIX / "staging", OUT)
-    for child in OUT.iterdir():
-        if child.is_file():
-            child.unlink()
+def _write(path: Path, data: object) -> None:
+    path.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
-def _stage_intent(payload: dict):
-    staging = STATE / "staging"
-    if staging.exists():
-        shutil.rmtree(staging)
-    shutil.copytree(FIX / "staging", staging)
-    (staging / "intent.json").write_text(json.dumps(payload))
-    return staging
+def _validate_levels(rows: list[dict], severity: list[str], recency: list[str]) -> None:
+    for row in rows:
+        assert row["severity"] in severity
+        assert row["recency"] in recency
 
 
-def _read_json(path):
-    return json.loads(Path(path).read_text())
+def _rate(block: dict, alpha: float) -> float:
+    denom = block["trials"] + 2.0 * alpha * len(block["cells"])
+    if denom == 0:
+        return 0.5
+    return (block["events"] + alpha * len(block["cells"])) / denom
 
 
-def _journal():
-    text = (STATE / "journal.ndjson").read_text().strip()
-    if not text:
-        return []
-    return [json.loads(line) for line in text.splitlines()]
+def _fit_surface(
+    severity: list[str],
+    recency: list[str],
+    observations: list[dict],
+    alpha: float,
+) -> tuple[dict[tuple[str, str], dict], dict[tuple[str, str], float]]:
+    cells = {(sev, rec): {"events": 0, "trials": 0} for sev in severity for rec in recency}
+    for row in observations:
+        cells[(row["severity"], row["recency"])]["events"] += row["events"]
+        cells[(row["severity"], row["recency"])]["trials"] += row["trials"]
+
+    block_for: dict[tuple[str, str], dict] = {}
+    blocks: list[dict] = []
+    for key, counts in cells.items():
+        block = {"cells": [key], "events": counts["events"], "trials": counts["trials"]}
+        blocks.append(block)
+        block_for[key] = block
+
+    sev_index = {value: idx for idx, value in enumerate(severity)}
+    rec_index = {value: idx for idx, value in enumerate(recency)}
+    changed = True
+    while changed:
+        changed = False
+        for si, sev in enumerate(severity):
+            for ri, rec in enumerate(recency):
+                neighbors = []
+                if si + 1 < len(severity):
+                    neighbors.append((severity[si + 1], rec))
+                if ri + 1 < len(recency):
+                    neighbors.append((sev, recency[ri + 1]))
+                for neighbor in neighbors:
+                    left = block_for[(sev, rec)]
+                    right = block_for[neighbor]
+                    if left is right or _rate(left, alpha) <= _rate(right, alpha):
+                        continue
+                    merged = {
+                        "cells": sorted(
+                            left["cells"] + right["cells"],
+                            key=lambda cell: (sev_index[cell[0]], rec_index[cell[1]]),
+                        ),
+                        "events": left["events"] + right["events"],
+                        "trials": left["trials"] + right["trials"],
+                    }
+                    for cell in merged["cells"]:
+                        block_for[cell] = merged
+                    blocks = [block for block in blocks if block is not left and block is not right]
+                    blocks.append(merged)
+                    changed = True
+    probabilities = {key: _rate(block_for[key], alpha) for key in cells}
+    return cells, probabilities
 
 
-def _router_digest(router):
-    blob = json.dumps(
-        {
-            "generation": router["generation"],
-            "checkpoint_id": router["checkpoint_id"],
-            "routes": router["routes"],
-        },
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+def _nll(probabilities: dict[tuple[str, str], float], validation: list[dict]) -> float:
+    total = 0.0
+    for row in validation:
+        p = min(max(probabilities[(row["severity"], row["recency"])], 1e-15), 1.0 - 1e-15)
+        label = row["label"]
+        weight = float(row.get("weight", 1))
+        total += weight * -(label * math.log(p) + (1 - label) * math.log(1.0 - p))
+    return total
 
 
-def _lineage_proof(tip, feature_epoch, router_digest, mat):
-    fresh = "true" if mat["fresh"] else "false"
-    payload = (
-        f"{tip['seq']}|{tip['ckpt']}|{tip['generation']}|{feature_epoch}|"
-        f"{router_digest}|{mat['epoch']}|{fresh}"
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+def _clip(probability: float) -> float:
+    return min(max(probability, 1e-15), 1.0 - 1e-15)
 
 
-def _assert_eval_consistent():
-    bind = _read_json(EVAL)
-    router = _read_json(STATE / "router.json")
-    mat = _read_json(STATE / "materialized.json")
-    tip = [e for e in _journal() if e["complete"]][-1]
-    digest = _router_digest(router)
-    assert bind["router_digest"] == digest
-    assert bind["checkpoint_id"] == tip["ckpt"]
-    assert bind["generation"] == tip["generation"]
-    assert bind["journal_tip_seq"] == tip["seq"]
-    assert bind["lineage_proof"] == _lineage_proof(
-        tip, bind["feature_epoch"], digest, mat
-    )
-    return bind
+def _logit(probability: float) -> float:
+    safe = _clip(probability)
+    return math.log(safe / (1.0 - safe))
 
 
-def test_q01_baseline_status_and_materialization():
-    """Baseline fixtures: tip ckpt_root with fresh materialization."""
-    _reset()
-    assert _run(["status"]).returncode == 0
-    st = _read_json(STATUS)
-    assert st["generation"] == 1
-    assert st["active_checkpoint"] == "ckpt_root"
-    assert st["materialization_fresh"] is True
-    mat = _read_json(STATE / "materialized.json")
-    assert mat["epoch"] == 2 and mat["fresh"] is True
+def _sigmoid(value: float) -> float:
+    return 1.0 / (1.0 + math.exp(-value))
 
 
-def test_q02_promote_couples_feature_router_materialization():
-    """Promote mid advances generation and refreshes feature + materialization + router."""
-    _reset()
-    assert _run(["promote", "--ckpt", "ckpt_mid"]).returncode == 0
-    assert not (STATE / "staging").exists()
-    feature_bind = _read_json(STATE / "feature_bind.json")
-    materialized = _read_json(STATE / "materialized.json")
-    router = _read_json(STATE / "router.json")
-    assert feature_bind["feature_epoch"] == 3 and feature_bind["valid"] is True
-    assert (
-        materialized["epoch"] == 3
-        and materialized["generation"] == 2
-        and materialized["fresh"] is True
-    )
-    assert router["checkpoint_id"] == "ckpt_mid" and router["generation"] == 2
-    _run(["eval-bind"])
-    bind = _assert_eval_consistent()
-    assert bind["compatible"] is True
-    assert bind["feature_epoch"] == 3
-
-
-def test_q03_compat_and_state_freeze_on_bad_tokenizer():
-    """Bad tokenizer fails without mutating tip, router, feature, or materialization."""
-    _reset()
-    before = {
-        "journal": (STATE / "journal.ndjson").read_bytes(),
-        "router": (STATE / "router.json").read_text(),
-        "feature_bind": (STATE / "feature_bind.json").read_text(),
-        "materialized": (STATE / "materialized.json").read_text(),
+def _shrink_surface(
+    probabilities: dict[tuple[str, str], float],
+    observations: list[dict],
+    alpha: float,
+    shrinkage: float,
+) -> dict[tuple[str, str], float]:
+    total_events = sum(row["events"] for row in observations)
+    total_trials = sum(row["trials"] for row in observations)
+    denom = total_trials + 2.0 * alpha
+    base = 0.5 if denom == 0 else (total_events + alpha) / denom
+    base_logit = _logit(base)
+    return {
+        key: _sigmoid((1.0 - shrinkage) * _logit(probability) + shrinkage * base_logit)
+        for key, probability in probabilities.items()
     }
-    assert _run(["promote", "--ckpt", "ckpt_badtok"], check=False).returncode == 2
-    assert (STATE / "journal.ndjson").read_bytes() == before["journal"]
-    assert (STATE / "router.json").read_text() == before["router"]
-    assert (STATE / "feature_bind.json").read_text() == before["feature_bind"]
-    assert (STATE / "materialized.json").read_text() == before["materialized"]
 
 
-def test_q04_lineage_gate_blocks_tip_without_ancestor():
-    """Promote tip before mid ever tipped must fail lineage gate."""
-    _reset()
-    before = (STATE / "journal.ndjson").read_bytes()
-    assert _run(["promote", "--ckpt", "ckpt_tip"], check=False).returncode == 2
-    assert (STATE / "journal.ndjson").read_bytes() == before
-    _run(["status"])
-    assert _read_json(STATUS)["active_checkpoint"] == "ckpt_root"
+def _fit_calibrator(probabilities: dict[tuple[str, str], float], validation: list[dict]) -> list[dict]:
+    blocks = []
+    for row in sorted(validation, key=lambda item: (probabilities[(item["severity"], item["recency"])], item["case_id"])):
+        raw = probabilities[(row["severity"], row["recency"])]
+        weight = float(row.get("weight", 1))
+        blocks.append(
+            {
+                "min_raw": raw,
+                "max_raw": raw,
+                "weight": weight,
+                "weighted_events": weight * row["label"],
+            }
+        )
+    index = 0
+    while index < len(blocks) - 1:
+        current_rate = blocks[index]["weighted_events"] / blocks[index]["weight"]
+        next_rate = blocks[index + 1]["weighted_events"] / blocks[index + 1]["weight"]
+        if current_rate > next_rate:
+            merged = {
+                "min_raw": min(blocks[index]["min_raw"], blocks[index + 1]["min_raw"]),
+                "max_raw": max(blocks[index]["max_raw"], blocks[index + 1]["max_raw"]),
+                "weight": blocks[index]["weight"] + blocks[index + 1]["weight"],
+                "weighted_events": blocks[index]["weighted_events"] + blocks[index + 1]["weighted_events"],
+            }
+            blocks[index : index + 2] = [merged]
+            index = max(index - 1, 0)
+        else:
+            index += 1
+    return blocks
 
 
-def test_q05_idempotent_promote_preserves_seq():
-    """Re-promoting active tip does not append journal events."""
-    _reset()
-    _run(["promote", "--ckpt", "ckpt_mid"])
-    j1 = _journal()
-    assert _run(["promote", "--ckpt", "ckpt_mid"]).returncode == 0
-    j2 = _journal()
-    assert len(j2) == len(j1)
-    tip_after = j2[len(j2) - 1]
-    assert tip_after["generation"] == 2
+def _calibrate_probability(probability: float, blocks: list[dict]) -> float:
+    if not blocks:
+        return probability
+    for block in blocks:
+        if probability <= block["max_raw"]:
+            return block["weighted_events"] / block["weight"]
+    return blocks[-1]["weighted_events"] / blocks[-1]["weight"]
 
 
-def test_q06_rollback_rebinding_cascade():
-    """Rollback restores feature, materialization, and router together."""
-    _reset()
-    _run(["promote", "--ckpt", "ckpt_mid"])
-    _run(["promote", "--ckpt", "ckpt_tip"])
-    assert _run(["rollback", "--generation", "2"]).returncode == 0
-    feature_bind = _read_json(STATE / "feature_bind.json")
-    materialized = _read_json(STATE / "materialized.json")
-    router = _read_json(STATE / "router.json")
-    assert feature_bind["feature_epoch"] == 3
-    assert (
-        materialized["epoch"] == 3
-        and materialized["generation"] == 2
-        and materialized["fresh"] is True
-    )
-    assert router["checkpoint_id"] == "ckpt_mid" and router["generation"] == 2
-    _run(["eval-bind"])
-    bind = _assert_eval_consistent()
-    assert bind["checkpoint_id"] == "ckpt_mid"
-    assert bind["compatible"] is True
+def _calibrate_surface(probabilities: dict[tuple[str, str], float], blocks: list[dict]) -> dict[tuple[str, str], float]:
+    return {key: _calibrate_probability(probability, blocks) for key, probability in probabilities.items()}
 
 
-def test_q07_recover_authority_and_stale_materialization():
-    """Recover drops incomplete events, clears staging, journal overrides registry.
+def _decision(probability: float, thresholds: dict) -> str:
+    if probability >= float(thresholds["alert"]):
+        return "alert"
+    if probability >= float(thresholds["monitor"]):
+        return "monitor"
+    return "clear"
 
-    If materialization still matches tip after recover it stays fresh; mismatched
-    materialization becomes stale and eval-bind must report compatible false when
-    freshness is required.
-    """
-    _reset()
-    _run(["promote", "--ckpt", "ckpt_mid"])
-    # Force materialization out of sync while journal tip is mid
-    (STATE / "materialized.json").write_text(
-        json.dumps({"epoch": 9, "generation": 9, "fresh": True}, indent=2) + "\n"
-    )
-    with (STATE / "journal.ndjson").open("a") as fh:
-        fh.write(
-            json.dumps(
+
+def _expected() -> dict:
+    config = _load(CONFIG)
+    observations = _load(OBS)
+    validation = _load(VALID)
+    scoring = _load(SCORING)
+    severity = config["severity"]
+    recency = config["recency"]
+    _validate_levels(observations, severity, recency)
+    _validate_levels(validation, severity, recency)
+    _validate_levels(scoring, severity, recency)
+
+    fits = []
+    for alpha_value in config["candidate_alpha"]:
+        alpha = float(alpha_value)
+        _cells, probabilities = _fit_surface(severity, recency, observations, alpha)
+        for shrinkage_value in config["candidate_shrinkage"]:
+            shrinkage = float(shrinkage_value)
+            shrunk = _shrink_surface(probabilities, observations, alpha, shrinkage)
+            blocks = _fit_calibrator(shrunk, validation)
+            calibrated = _calibrate_surface(shrunk, blocks)
+            fits.append(
                 {
-                    "seq": 99,
-                    "op": "promote",
-                    "ckpt": "ckpt_tip",
-                    "generation": 3,
-                    "complete": False,
-                    "feature_epoch": 4,
+                    "alpha": alpha,
+                    "shrinkage": shrinkage,
+                    "probabilities": calibrated,
+                    "calibration_blocks": blocks,
+                    "raw_validation_nll": _nll(shrunk, validation),
+                    "calibrated_validation_nll": _nll(calibrated, validation),
                 }
             )
-            + "\n"
-        )
-    staging = _stage_intent({"ckpt": "ckpt_tip"})
-    reg = _read_json(STATE / "registry.json")
-    reg["active"] = "ckpt_tip"
-    (STATE / "registry.json").write_text(json.dumps(reg, indent=2) + "\n")
-
-    assert _run(["recover"]).returncode == 0
-    assert all(e["complete"] for e in _journal())
-    assert not any(e.get("seq") == 99 for e in _journal())
-    assert not staging.exists()
-    _run(["status"])
-    st = _read_json(STATUS)
-    assert st["active_checkpoint"] == "ckpt_mid"
-    assert st["generation"] == 2
-    assert st["materialization_fresh"] is False
-    _run(["eval-bind"])
-    bind = _assert_eval_consistent()
-    assert bind["checkpoint_id"] == "ckpt_mid"
-    assert bind["compatible"] is False
-
-
-def test_q08_heldout_threat_policy_rejects_under_epoch():
-    """Held-out eval policy with min_feature_epoch=4 rejects mid-only tip."""
-    _reset(policy_path=THREAT_POLICY)
-    _run(["promote", "--ckpt", "ckpt_mid"])
-    _run(["eval-bind"])
-    bind = _assert_eval_consistent()
-    assert bind["feature_epoch"] == 3
-    assert bind["compatible"] is False
-    _run(["promote", "--ckpt", "ckpt_tip"])
-    _run(["eval-bind"])
-    bind2 = _assert_eval_consistent()
-    assert bind2["feature_epoch"] == 4
-    assert bind2["compatible"] is True
-
-
-def test_q09_decisive_overlap_then_lineage_promote():
-    """Incomplete tip staging + desynced registry + recover, then legal tip promote.
-
-    Cascade: status/eval-bind after recover stay on mid; tip promote then couples
-    generation 3, feature epoch 4, fresh materialization, and lineage_proof.
-    """
-    _reset()
-    _run(["promote", "--ckpt", "ckpt_mid"])
-    _stage_intent({"ckpt": "ckpt_tip", "generation": 3, "seq": 50})
-    with (STATE / "journal.ndjson").open("a") as fh:
-        fh.write(
-            json.dumps(
-                {
-                    "seq": 50,
-                    "op": "promote",
-                    "ckpt": "ckpt_tip",
-                    "generation": 3,
-                    "complete": False,
-                    "feature_epoch": 4,
-                }
-            )
-            + "\n"
-        )
-    reg = _read_json(STATE / "registry.json")
-    reg["active"] = "ckpt_tip"
-    (STATE / "registry.json").write_text(json.dumps(reg, indent=2) + "\n")
-
-    _run(["recover"])
-    _run(["eval-bind"])
-    bind = _assert_eval_consistent()
-    assert bind["checkpoint_id"] == "ckpt_mid"
-    assert bind["generation"] == 2
-
-    assert _run(["promote", "--ckpt", "ckpt_tip"]).returncode == 0
-    assert not (STATE / "staging").exists()
-    _run(["eval-bind"])
-    bind2 = _assert_eval_consistent()
-    assert bind2["checkpoint_id"] == "ckpt_tip"
-    assert bind2["generation"] == 3
-    assert bind2["feature_epoch"] == 4
-    assert bind2["compatible"] is True
-    materialized = _read_json(STATE / "materialized.json")
-    assert materialized["fresh"] is True and materialized["epoch"] == 4
+    best = min(fits, key=lambda fit: (fit["calibrated_validation_nll"], fit["alpha"], fit["shrinkage"]))
+    cells, pooled = _fit_surface(severity, recency, observations, best["alpha"])
+    shrunk = _shrink_surface(pooled, observations, best["alpha"], best["shrinkage"])
+    probabilities = _calibrate_surface(shrunk, best["calibration_blocks"])
+    thresholds = config["decision_thresholds"]
+    input_sha = hashlib.sha256(b"".join(path.read_bytes() for path in [CONFIG, OBS, VALID, SCORING])).hexdigest()
+    return {
+        "schema_version": "monotone-lattice/v1",
+        "generated_at": "2026-07-28T00:00:00Z",
+        "selected_alpha": round(best["alpha"], 6),
+        "selected_shrinkage": round(best["shrinkage"], 6),
+        "validation_nll": round(best["calibrated_validation_nll"], 6),
+        "levels": {"severity": severity, "recency": recency},
+        "candidate_scores": [
+            {
+                "alpha": round(fit["alpha"], 6),
+                "shrinkage": round(fit["shrinkage"], 6),
+                "raw_validation_nll": round(fit["raw_validation_nll"], 6),
+                "calibrated_validation_nll": round(fit["calibrated_validation_nll"], 6),
+            }
+            for fit in sorted(fits, key=lambda fit: (fit["alpha"], fit["shrinkage"]))
+        ],
+        "calibration_blocks": [
+            {
+                "min_raw_probability": round(block["min_raw"], 6),
+                "max_raw_probability": round(block["max_raw"], 6),
+                "calibrated_probability": round(block["weighted_events"] / block["weight"], 6),
+                "weight": round(block["weight"], 6),
+            }
+            for block in best["calibration_blocks"]
+        ],
+        "cells": [
+            {
+                "severity": sev,
+                "recency": rec,
+                "events": cells[(sev, rec)]["events"],
+                "trials": cells[(sev, rec)]["trials"],
+                "probability": round(probabilities[(sev, rec)], 6),
+            }
+            for sev in severity
+            for rec in recency
+        ],
+        "scoring": [
+            {
+                "case_id": row["case_id"],
+                "severity": row["severity"],
+                "recency": row["recency"],
+                "probability": round(probabilities[(row["severity"], row["recency"])], 6),
+                "decision": _decision(round(probabilities[(row["severity"], row["recency"])], 6), thresholds),
+            }
+            for row in sorted(scoring, key=lambda item: item["case_id"])
+        ],
+        "input_sha256": input_sha,
+    }
 
 
-def test_q10_adapter_compat_after_mid():
-    """Bad adapter after mid promote must not advance tip or spoil materialization."""
-    _reset()
-    _run(["promote", "--ckpt", "ckpt_mid"])
-    materialized_before = (STATE / "materialized.json").read_text()
-    assert _run(["promote", "--ckpt", "ckpt_badadp"], check=False).returncode == 2
-    assert (STATE / "materialized.json").read_text() == materialized_before
-    _run(["status"])
-    assert _read_json(STATUS)["active_checkpoint"] == "ckpt_mid"
-
-
-def test_q11_determinism_and_proof_stability():
-    """Identical sequences yield identical eval_binding including lineage_proof."""
-    _reset()
-    _run(["promote", "--ckpt", "ckpt_mid"])
-    _run(["promote", "--ckpt", "ckpt_tip"])
-    _run(["eval-bind"])
-    first = EVAL.read_text()
-    first_j = (STATE / "journal.ndjson").read_bytes()
-    _reset()
-    _run(["promote", "--ckpt", "ckpt_mid"])
-    _run(["promote", "--ckpt", "ckpt_tip"])
-    _run(["eval-bind"])
-    assert EVAL.read_text() == first
-    assert (STATE / "journal.ndjson").read_bytes() == first_j
-
-
-def test_q12_rebind_after_stale_recover_via_promote():
-    """After stale materialization recover, promote mid again refreshes and passes eval."""
-    _reset(policy_path=THREAT_POLICY)
-    _run(["promote", "--ckpt", "ckpt_mid"])
-    (STATE / "materialized.json").write_text(
-        json.dumps({"epoch": 1, "generation": 1, "fresh": True}, indent=2) + "\n"
+@pytest.fixture(scope="session")
+def result() -> dict:
+    """Run the submitted calibrator after verifier-only data changes that static answers cannot know."""
+    config = _load(CONFIG)
+    config["candidate_shrinkage"] = [0, 0.2, 0.45, 0.7]
+    _write(CONFIG, config)
+    observations = _load(OBS)
+    observations.extend(
+        [
+            {"severity": "guarded", "recency": "fresh", "events": 8, "trials": 14},
+            {"severity": "critical", "recency": "warm", "events": 7, "trials": 9},
+        ]
     )
-    _run(["recover"])
-    _run(["eval-bind"])
-    assert _assert_eval_consistent()["compatible"] is False
-    # idempotent re-promote mid should refresh materialization
-    assert _run(["promote", "--ckpt", "ckpt_mid"]).returncode == 0
-    materialized = _read_json(STATE / "materialized.json")
-    assert materialized["epoch"] == 3 and materialized["fresh"] is True
-    _run(["promote", "--ckpt", "ckpt_tip"])
-    _run(["eval-bind"])
-    assert _assert_eval_consistent()["compatible"] is True
+    _write(OBS, observations)
+    validation = _load(VALID)
+    validation.extend(
+        [
+            {"case_id": "v-dynamic-a", "severity": "guarded", "recency": "fresh", "label": 1, "weight": 1.7},
+            {"case_id": "v-dynamic-b", "severity": "critical", "recency": "warm", "label": 1, "weight": 1.3},
+        ]
+    )
+    _write(VALID, validation)
+    scoring = _load(SCORING)
+    scoring.append({"case_id": "s-verifier", "severity": "guarded", "recency": "fresh"})
+    _write(SCORING, scoring)
+
+    (APP / "out").mkdir(exist_ok=True)
+    OUT.write_text('{"stale": true}\n', encoding="utf-8")
+    TSV.write_text("stale\tmodel\n", encoding="utf-8")
+    assert COMMAND.exists(), "missing /app/bin/lattice-calibrate"
+    completed = subprocess.run(
+        [str(COMMAND)],
+        cwd=APP,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    assert OUT.exists(), "calibration JSON was not written"
+    assert TSV.exists(), "current model TSV was not written"
+    return json.loads(OUT.read_text(encoding="utf-8"))
+
+
+def test_json_schema_and_exact_report(result: dict) -> None:
+    """The report validates against the visible schema and matches an independent implementation."""
+    jsonschema.validate(result, _load(SCHEMA))
+    assert result == _expected()
+
+
+def test_monotone_surface_and_dynamic_scoring_case(result: dict) -> None:
+    """The fitted lattice is monotone in both configured dimensions and includes verifier-added scoring."""
+    config = _load(CONFIG)
+    probs = {(cell["severity"], cell["recency"]): cell["probability"] for cell in result["cells"]}
+    for si, sev in enumerate(config["severity"]):
+        for ri, rec in enumerate(config["recency"]):
+            if si + 1 < len(config["severity"]):
+                assert probs[(sev, rec)] <= probs[(config["severity"][si + 1], rec)]
+            if ri + 1 < len(config["recency"]):
+                assert probs[(sev, rec)] <= probs[(sev, config["recency"][ri + 1])]
+    scoring_ids = [item["case_id"] for item in result["scoring"]]
+    assert scoring_ids == sorted(scoring_ids)
+    assert "s-verifier" in scoring_ids
+
+
+def test_candidate_selection_uses_unrounded_validation_nll(result: dict) -> None:
+    """The chosen smoothing/shrinkage pair follows validation NLL with documented tie-breaks."""
+    config = _load(CONFIG)
+    scores = result["candidate_scores"]
+    assert len(scores) == len(config["candidate_alpha"]) * len(config["candidate_shrinkage"])
+    assert scores == sorted(scores, key=lambda row: (row["alpha"], row["shrinkage"]))
+    assert any(row["shrinkage"] == 0.7 for row in scores)
+    best = min(scores, key=lambda row: (row["calibrated_validation_nll"], row["alpha"], row["shrinkage"]))
+    assert result["selected_alpha"] == best["alpha"]
+    assert result["selected_shrinkage"] == best["shrinkage"]
+    assert result["validation_nll"] == best["calibrated_validation_nll"]
+
+
+def test_selected_isotonic_calibration_blocks_are_used(result: dict) -> None:
+    """The selected second-stage calibrator is monotone and changes the final lattice probabilities."""
+    blocks = result["calibration_blocks"]
+    assert len(blocks) >= 2
+    assert blocks == sorted(blocks, key=lambda row: (row["min_raw_probability"], row["max_raw_probability"]))
+    for left, right in itertools.pairwise(blocks):
+        assert left["max_raw_probability"] <= right["max_raw_probability"]
+        assert left["calibrated_probability"] <= right["calibrated_probability"]
+    expected = _expected()
+    assert result["calibration_blocks"] == expected["calibration_blocks"]
+
+
+def test_tsv_matches_sorted_cells_and_cell_decisions(result: dict) -> None:
+    """The TSV current model is sorted by lattice order and uses cell-level rounded probabilities."""
+    config = _load(CONFIG)
+    lines = TSV.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "severity\trecency\tprobability\tdecision"
+    expected_lines = ["severity\trecency\tprobability\tdecision"]
+    for cell in result["cells"]:
+        expected_lines.append(
+            "\t".join(
+                [
+                    cell["severity"],
+                    cell["recency"],
+                    f"{cell['probability']:.6f}",
+                    _decision(cell["probability"], config["decision_thresholds"]),
+                ]
+            )
+        )
+    assert lines == expected_lines
+
+
+def test_rerun_replaces_outputs_for_changed_live_data(result: dict) -> None:
+    """A later valid input change recomputes the current artifacts and removes stale bytes."""
+    before = copy.deepcopy(result)
+    original_observations = OBS.read_text(encoding="utf-8")
+    try:
+        OUT.write_text(json.dumps(before, sort_keys=True, indent=2) + "\nSTALE\n", encoding="utf-8")
+        observations = _load(OBS)
+        observations.append({"severity": "high", "recency": "fresh", "events": 6, "trials": 7})
+        _write(OBS, observations)
+        completed = subprocess.run([str(COMMAND)], cwd=APP, text=True, capture_output=True, timeout=60, check=False)
+        assert completed.returncode == 0, completed.stderr + completed.stdout
+        after = json.loads(OUT.read_text(encoding="utf-8"))
+        assert after == _expected()
+        assert after["input_sha256"] != before["input_sha256"]
+        assert "STALE" not in OUT.read_text(encoding="utf-8")
+    finally:
+        OBS.write_text(original_observations, encoding="utf-8")
+        completed = subprocess.run([str(COMMAND)], cwd=APP, text=True, capture_output=True, timeout=60, check=False)
+        assert completed.returncode == 0, completed.stderr + completed.stdout
+
+
+def test_invalid_data_preserves_last_good_outputs(result: dict) -> None:
+    """Invalid live data fails without clobbering the most recent successful model files."""
+    original_observations = OBS.read_text(encoding="utf-8")
+    last_good_json = OUT.read_text(encoding="utf-8")
+    last_good_tsv = TSV.read_text(encoding="utf-8")
+    try:
+        observations = _load(OBS)
+        observations.append({"severity": "critical", "recency": "fresh", "events": 12, "trials": 4})
+        _write(OBS, observations)
+        completed = subprocess.run([str(COMMAND)], cwd=APP, text=True, capture_output=True, timeout=60, check=False)
+        assert completed.returncode != 0
+        assert OUT.read_text(encoding="utf-8") == last_good_json
+        assert TSV.read_text(encoding="utf-8") == last_good_tsv
+    finally:
+        OBS.write_text(original_observations, encoding="utf-8")

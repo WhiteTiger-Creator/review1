@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "selected_alpha",
+    "selected_shrinkage",
+    "validation_nll",
+    "levels",
+    "candidate_scores",
+    "calibration_blocks",
+    "cells",
+    "scoring",
+    "input_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "monotone-lattice/v1" },
+    "generated_at": { "const": "2026-07-28T00:00:00Z" },
+    "selected_alpha": { "type": "number" },
+    "selected_shrinkage": { "type": "number" },
+    "validation_nll": { "type": "number" },
+    "levels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "recency"],
+      "properties": {
+        "severity": { "type": "array", "items": { "type": "string" } },
+        "recency": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "candidate_scores": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["alpha", "shrinkage", "raw_validation_nll", "calibrated_validation_nll"],
+        "properties": {
+          "alpha": { "type": "number" },
+          "shrinkage": { "type": "number", "minimum": 0, "maximum": 1 },
+          "raw_validation_nll": { "type": "number" },
+          "calibrated_validation_nll": { "type": "number" }
+        }
+      }
+    },
+    "calibration_blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["min_raw_probability", "max_raw_probability", "calibrated_probability", "weight"],
+        "properties": {
+          "min_raw_probability": { "type": "number", "minimum": 0, "maximum": 1 },
+          "max_raw_probability": { "type": "number", "minimum": 0, "maximum": 1 },
+          "calibrated_probability": { "type": "number", "minimum": 0, "maximum": 1 },
+          "weight": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    "cells": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "recency", "events", "trials", "probability"],
+        "properties": {
+          "severity": { "type": "string" },
+          "recency": { "type": "string" },
+          "events": { "type": "integer", "minimum": 0 },
+          "trials": { "type": "integer", "minimum": 0 },
+          "probability": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "scoring": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "severity", "recency", "probability", "decision"],
+        "properties": {
+          "case_id": { "type": "string" },
+          "severity": { "type": "string" },
+          "recency": { "type": "string" },
+          "probability": { "type": "number", "minimum": 0, "maximum": 1 },
+          "decision": { "enum": ["clear", "monitor", "alert"] }
+        }
+      }
+    },
+    "input_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

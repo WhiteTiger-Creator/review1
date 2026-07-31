@@ -1,0 +1,7 @@
+[
+  {"case_id": "s-alpha", "severity": "low", "recency": "settled"},
+  {"case_id": "s-bravo", "severity": "guarded", "recency": "fresh"},
+  {"case_id": "s-charlie", "severity": "high", "recency": "warm"},
+  {"case_id": "s-delta", "severity": "critical", "recency": "settled"},
+  {"case_id": "s-echo", "severity": "critical", "recency": "fresh"}
+]
