@@ -1,0 +1,30 @@
+#!/usr/bin/env node
+
+const fs = require("fs");
+
+function parseArgs(argv) {
+  const args = {};
+  for (let i = 2; i < argv.length; i += 2) {
+    args[argv[i]] = argv[i + 1];
+  }
+  return args;
+}
+
+const args = parseArgs(process.argv);
+if (!args["--input"] || !args["--output"]) {
+  console.error("usage: node /app/bin/moonrail-route --input MATCH.json --output RESULT.json");
+  process.exit(2);
+}
+
+const match = JSON.parse(fs.readFileSync(args["--input"], "utf8"));
+const result = {
+  score: null,
+  path: [match.start],
+  claimed: [],
+  contracts: [],
+  final_energy: match.energy,
+  final_heat: match.heat
+};
+
+fs.mkdirSync(require("path").dirname(args["--output"]), { recursive: true });
+fs.writeFileSync(args["--output"], JSON.stringify(result, null, 2) + "\n");

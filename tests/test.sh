@@ -1,17 +1,18 @@
 #!/bin/bash
+set -uo pipefail
+
 mkdir -p /logs/verifier
-echo 0 > /logs/verifier/reward.txt
-rm -f /logs/verifier/ctrf.json
 
-TEST_DIR="${TEST_DIR:-/tests}"
-cd "$TEST_DIR" || exit 0
+if [ "$PWD" = "/" ]; then
+    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile before running this script."
+    echo 0 > /logs/verifier/reward.txt
+    exit 0
+fi
 
-PYTHONSAFEPATH=1 python3 -P -m pytest -p no:cacheprovider -rA \
-    --ctrf /logs/verifier/ctrf.json \
-    "$TEST_DIR/test_outputs.py"
-status=$?
+/opt/verifier-venv/bin/python -m pytest -p no:cacheprovider --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+rc=$?
 
-if [ "$status" -eq 0 ]; then
+if [ "$rc" -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt
