@@ -1,0 +1,117 @@
+60 - THE CLOSING SHEET                            C147 - C160
+==============================================================
+
+C147  --selfcheck. Run with that one flag the referee settles the crown, files the closing sheet,
+      settles it a second time and files it again, and prints nothing at all on standard output or
+      standard error. It proves ONE THING ONLY: that a repeat run agrees with itself. IT NEVER
+      PROVES THAT ANY RULING IS RIGHT. A referee that reads every rung the wrong way round agrees
+      with itself perfectly and files the same wrong sheet twice.
+
+C148  THE SHEET IS FILED AT THE FULL PATH NAMED BY CLOSING_SHEET, and where that names nothing at
+      /app/var/lib/hallowspar/closing-sheet.txt. Any directory on that path that does not exist is
+      made. The sheet is one plain text file and there is no other output of any kind.
+C149  THE HEAD LINE is the first line of the sheet and reads, with exactly one blank between fields:
+        bracket <name> berths <n> houses <n> rounds <n> boards <n> byes <n> concedes <n>
+      <name> is the crown's name from crown.conf. `berths` counts the lines of bracket.table and
+      `houses` the lines of roll.table. `rounds` is THE ROUND THE RECORD STANDS IN WHEN IT ENDS,
+      counting from one and moved on by every close (C124), so a record holding eight closes reads
+      rounds 9. `boards` counts the boards that were WEIGHED, `byes` the byes that were weighed and
+      `concedes` the concessions that were weighed; a step that reached nothing (C034) is counted in
+      none of the three.
+C150  THE BERTH BLOCK HEADER is the second line of the sheet and reads exactly:
+        -- berths --
+C151  THE BERTH LINES follow, ONE FOR EVERY BERTH bracket.table names, no more and no fewer. Each is
+      written with exactly one blank between fields, in this order:
+        the berth's name             padded on the RIGHT to 9
+        the word `house`
+        the house it seats at the close, or a dash where it seats none, padded on the RIGHT to 9
+        the word `boards`
+        the count of boards weighed at that berth, padded on the LEFT to 2
+        the word `hands`
+        the count of hands taken at that berth, padded on the LEFT to 3
+        the berth's state            padded on the RIGHT to 8
+        the berth's rule token       padded on the RIGHT to 15
+      A field longer than its width is written whole and is never cut. Blanks left at the END of a
+      line by this padding are removed, so no line ends in a blank.
+C152  THE BERTH BLOCK IS SORTED ASCENDING BY BERTH NAME, comparing the names byte by byte from the
+      left. IT IS NOT IN BRACKET ORDER: bracket order is the reseat order and nothing else (C005,
+      C006).
+C153  THE HOUSE BLOCK HEADER follows the last berth line and reads exactly:
+        -- houses --
+C154  THE HOUSE LINES follow, ONE FOR EVERY HOUSE roll.table names, no more and no fewer. Each is
+      written with exactly one blank between fields, in this order:
+        the house's name             padded on the RIGHT to 9
+        the word `seed`      then its opening seed,                    padded on the LEFT to 2
+        the word `won`       then its wins,                            padded on the LEFT to 2
+        the word `lost`      then its losses,                          padded on the LEFT to 2
+        the word `met`       then its count of meetings,               padded on the LEFT to 2
+        the word `strength`  then its strength read at the close,      padded on the LEFT to 2
+        the word `for`       then the hands it took,                   padded on the LEFT to 3
+        the word `against`   then the hands it gave,                   padded on the LEFT to 3
+        the word `berth`     then the berth it sits in at the close, or a dash where it sits in
+                             none,                                     padded on the RIGHT to 9
+        the word `place`     then its place,                           padded on the LEFT to 2
+        its place token              padded on the RIGHT to 14
+        its state                    padded on the RIGHT to 8
+        its rule token               padded on the RIGHT to 15
+      A field longer than its width is written whole and is never cut, and blanks left at the end of
+      a line are removed.
+C155  THE HOUSE BLOCK IS IN ROLL ORDER, top line of roll.table first (C012). It is not sorted by
+      seed, by place, by state or by name.
+C156  THE LAST TWO LINES ARE THE TALLIES, each written with exactly one blank between fields:
+        berths CROWNED <n> UPSET <n> RESTED <n> VACATED <n> DARK <n>
+        houses CROWNED <n> BARRED <n> CUT <n> FELLED <n> SEATED <n>
+      The states stand in the order the closed sets are stated in (C127, C136) and EVERY STATE IS
+      PRINTED EVEN WHERE ITS COUNT IS NOTHING. The berth counts add up to the number of berths and
+      the house counts to the number of houses.
+C157  THE SHEET ENDS WITH EXACTLY ONE NEWLINE and carries no blank line anywhere. It carries NO SEAL
+      OF ANY KIND: no digest, no hash, no checksum, no chained line and no count of its own bytes.
+      Its length is fixed by the tables alone at five lines plus one for every berth and one for
+      every house, and no record however long or short moves that count.
+C158  THE RUNNING DISCIPLINE. A run that files a sheet prints NOTHING on standard output and nothing
+      on standard error. The recorded crown under RECORD_ROOT is read and never written to, and so
+      are the laws. Two runs over an unchanged record file the same bytes. The referee reads no
+      network, no clock and no source of chance.
+
+C159  THE AWKWARD CASES OF THE RECORD, gathered again so nothing has to be hunted for:
+        a step naming a berth or a house the tables do not name reaches nothing, takes no line and
+          is counted in no column (C032, C033, C034);
+        a seat naming a house already seated, a house already out, or a berth already seating a
+          house reaches nothing, but the berth is NAMED, so it reads dark.named (C038 to C043);
+        a board or a concession naming a berth that seats nobody, or one whose house is out,
+          reaches nothing (C045, C067);
+        a board or a concession naming the same berth twice reaches nothing (C046, C067);
+        a board on which both took the same hands falls to the WORSE opening seed, and both hands
+          still enter both records (C048);
+        a board of no hands at all on either side is weighed the same way (C049);
+        a bye when no house is seated reaches nothing (C060);
+        a bye may fall on a house that has already drawn one, and both wins count (C061);
+        a strike naming a house already out, or not on the roll, changes nothing (C070);
+        a strike of a house standing in no berth puts it out barred.aside and vacates no berth
+          (C134, C138);
+        a strike after the house has taken the crown leaves it CROWNED (C123, C136).
+
+C160  THE AWKWARD CASES OF THE CLOSE AND THE SHEET, gathered again:
+        a close where the width is at or above the number seated puts nobody out and STILL reseats
+          every survivor into the berths the bracket names first (C104);
+        a close with no house seated at all still advances the round (C105);
+        a close asking for a round past the last width declared holds the last width (C010, C106);
+        a close leaving exactly one house seated crowns it, crown.width where that close put
+          somebody out and crown.sole where it did not (C121, C122);
+        a house put out that stood in no board in the round just closed is cut.idle, unbeaten in
+          that round whatever it lost in earlier ones (C111);
+        a house that lost boards in earlier rounds and won the one board of the round just closed
+          is cut.width and NOT felled (C112);
+        a house that both gave a board up and lost another in the round just closed is felled.given
+          (C109);
+        a house the record never seats is SEATED with stand.unseated, and no close reaches it
+          (C090, C141);
+        a house struck at its peak keeps the place its frozen standing earns, so it can place above
+          houses that survived four more rounds (C094, C143);
+        a berth whose house a reseating moved on, and which nothing seated again, is VACATED with
+          void.reseated (C118, C134);
+        a berth still seating a house at the close, holding neither crown nor upset nor bye, is
+          VACATED with void.standing (C134), which is what a record ending in mid round leaves;
+        a record with no steps at all leaves every berth DARK with dark.silent, every house SEATED
+          with stand.unseated, places settled on the opening seeds with the WORSE seed placed
+          first, and every tally row printed at its zero (C127, C136, C143, C156).

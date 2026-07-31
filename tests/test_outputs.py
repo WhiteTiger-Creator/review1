@@ -1,622 +1,949 @@
-"""Config-driven verifier for one R-KNN calibration task.
-
-Three tiers, in order of what they hold the solver to:
-
-  STRUCTURE            the contracted artifacts exist with the exact schemas, dtypes and
-                       orderings from report_contract.csv; a fresh run is deterministic under
-                       env overrides; the leakage counterfactuals hold (flipping fit labels
-                       must move the held-out predictions, planting held-out labels must not).
-
-  INTERNAL CONSISTENCY every derived report is an HONEST account of the solver's OWN model:
-                       metrics, confusion, per-class scores, calibration bins, the group
-                       report and the threshold sweep are recomputed from the solver's own
-                       serialized per-row probabilities and predictions -- never from a pinned
-                       reference recipe. The neighbour and leave-one-out audits, which cannot
-                       be recomputed without pinning the recipe, are held to schema plus
-                       self-consistency (valid references, ranked distances, weights summing
-                       to one, thresholded labels, edges that tile the unit interval).
-
-  QUALITY FLOORS       the difficulty core: the solver's held-out predictions must clear
-                       min_accuracy and min_macro_f1 against the sealed labels. The floor is
-                       calibrated (gen.py) at the well-executed oracle's held-out metric minus
-                       a slack, and gen.py hard-fails unless a sloppy baseline falls clearly
-                       below it -- so clearing the floor demands genuinely careful modelling,
-                       not recipe replication. The floor test is named test_holdout_floor_holds
-                       so the band verdict machinery reads a clean floor-miss.
-
-Held-out truth and the quality floors are sealed under tests/eval/ and never enter the image.
-Tolerances: 1e-5 on metrics, 2e-5 on probabilities (the R side serializes at 6 decimals).
-"""
-import csv
-import json
-import math
+import operator
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
-import pytest
+CERTIFIED_BRACKETS = Path(__file__).resolve().parent / "fixtures"
+BRACKET_TOOL = os.environ.get("REFEREE_BIN", "/app/bin/hallowspar")
+BRACKET_TOOL_SRC = os.environ.get("REFEREE_SRC", "/app/opt/hallowspar")
+FIRST_CROWN = os.environ.get("CROWN_MAIN_ROOT", "/app/crown")
+OTHER_CROWN = str(CERTIFIED_BRACKETS / "corveholt")
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
-CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/app/config"))
-OUT_DIR = Path(os.environ.get("OUT_DIR", os.environ.get("OUTPUT_DIR", "/app/outputs")))
-EVAL_DIR = Path(os.environ.get("EVAL_DIR", str(Path(__file__).resolve().parent / "eval")))
-ANALYSIS = Path(os.environ.get("ANALYSIS_PATH", "/app/analysis.R"))
+BERTH_LADDER = ("CROWNED", "UPSET", "RESTED", "VACATED", "DARK")
+HOUSE_LADDER_ORDER = ("CROWNED", "BARRED", "CUT", "FELLED", "SEATED")
+BERTH_BLOCK_HEAD = "-- berths --"
+HOUSE_BLOCK_LINE = "-- houses --"
 
-BLANK_TOKENS = ("", "NA", "NaN", "nan", "null", "?")
-PROB_ATOL = 2e-5
-METRIC_ATOL = 1e-5
-
-CONTRACTED_ARTIFACTS = (
-    "predictions.csv",
-    "validation_predictions.csv",
-    "metrics.json",
-    "selection_report.csv",
-    "threshold_report.csv",
-    "confusion_matrix.csv",
-    "class_metrics.csv",
-    "calibration_bins.csv",
-    "group_error_report.csv",
-    "feature_summary.csv",
-    "neighbor_evidence.csv",
-    "fit_reference_calibration.csv",
-    "neighbor_detail.csv",
-    "loo_audit.csv",
-)
+_brackets_filed = {}
 
 
-# ---------------------------------------------------------------- plumbing
-
-def load_rows(path):
-    with open(path, newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
-def load_header(path):
-    with open(path, newline="") as handle:
-        return next(csv.reader(handle))
-
-
-def load_key_values(path):
-    return {row["key"]: row["value"] for row in load_rows(path)}
-
-
-def tidy_token(label):
-    squashed = "".join(ch if ch.isalnum() else "_" for ch in label.lower())
-    return squashed.strip("_")
-
-
-def prob_columns(classes):
-    return [f"prob_{tidy_token(cls)}" for cls in classes]
-
-
-def macro_f1_score(actual, predicted, classes):
-    per_class = []
-    for cls in classes:
-        tp = sum(1 for a, p in zip(actual, predicted) if a == cls and p == cls)
-        fp = sum(1 for a, p in zip(actual, predicted) if a != cls and p == cls)
-        fn = sum(1 for a, p in zip(actual, predicted) if a == cls and p != cls)
-        precision = 0.0 if tp + fp == 0 else tp / (tp + fp)
-        recall = 0.0 if tp + fn == 0 else tp / (tp + fn)
-        per_class.append(0.0 if precision + recall == 0
-                         else 2 * precision * recall / (precision + recall))
-    return sum(per_class) / len(per_class)
-
-
-def selected_flag(token):
-    """The `selected` flag must be the integer digits 1/0, never TRUE/FALSE (same contract
-    as `correct`/`loo_correct`). Reject anything else so a truthy TRUE/FALSE cannot pass."""
-    value = str(token).strip()
-    assert value in ("0", "1"), f"selected must be the integer digits 1/0, got {token!r}"
-    return value == "1"
-
-
-def run_analysis(data_dir, out_dir):
-    env = os.environ.copy()
-    env["DATA_DIR"] = str(data_dir)
-    env["DATA_PATH"] = str(Path(data_dir) / DATA_FILE_NAME())
-    env["OUT_DIR"] = str(out_dir)
-    env["OUTPUT_DIR"] = str(out_dir)
-    result = subprocess.run(
-        ["Rscript", str(ANALYSIS)],
+def invoke_bracket_tool(root, target, flags=()):
+    where = dict(os.environ)
+    where["RECORD_ROOT"] = str(root)
+    where["CLOSING_SHEET"] = str(target)
+    return subprocess.run(
+        [BRACKET_TOOL, *flags],
         capture_output=True,
         text=True,
-        timeout=420,
+        env=where,
         check=False,
-        env=env,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
-def DATA_FILE_NAME():
-    return load_key_values(CONFIG_DIR / "model_config.csv")["data_file"]
+def file_one_bracket(root, flags=()):
+    home = tempfile.mkdtemp(prefix="crown-")
+    target = Path(home) / "filed" / "closing-sheet.txt"
+    done = invoke_bracket_tool(root, target, flags)
+    return done, target, home
 
 
-# ---------------------------------------------------------------- fixtures
-
-@pytest.fixture(scope="module")
-def config():
-    raw = load_key_values(CONFIG_DIR / "model_config.csv")
-    costs = load_key_values(CONFIG_DIR / "costs.csv")
-    raw["classes"] = raw["class_order"].split("|")
-    raw["negative_class"] = next(c for c in raw["classes"] if c != raw["positive_class"])
-    raw["k_values"] = [int(x) for x in raw["k_grid"].split("|")]
-    raw["threshold_values"] = [float(x) for x in raw["threshold_grid"].split("|")]
-    raw["fp_cost"] = float(costs["false_positive_cost"])
-    raw["fn_cost"] = float(costs["false_negative_cost"])
-    return raw
+def settled_bracket(root):
+    key = str(root)
+    if key not in _brackets_filed:
+        done, target, _home = file_one_bracket(key)
+        assert done.returncode == 0, done.stderr
+        _brackets_filed[key] = target.read_text(encoding="ascii")
+    return _brackets_filed[key]
 
 
-@pytest.fixture(scope="module")
-def roles():
-    return load_rows(CONFIG_DIR / "feature_roles.csv")
+def certified_bracket(name):
+    return (CERTIFIED_BRACKETS / name).read_text(encoding="ascii")
 
 
-@pytest.fixture(scope="module")
-def contract():
-    return load_rows(CONFIG_DIR / "report_contract.csv")
+def replanted_crown(root, steps, widths=None):
+    home = tempfile.mkdtemp(prefix="replayed-")
+    laid = Path(home) / "crown"
+    shutil.copytree(root, laid)
+    body = "".join(f"{number} {line}\n" for number, line in enumerate(steps, 1))
+    (laid / "record" / "crown.log").write_text(body, encoding="ascii")
+    if widths is not None:
+        (laid / "widths.table").write_text(
+            "".join(f"{index} {width}\n" for index, width in enumerate(widths, 1)),
+            encoding="ascii")
+    done, target, _home = file_one_bracket(str(laid))
+    assert done.returncode == 0, done.stderr
+    return target.read_text(encoding="ascii")
 
 
-@pytest.fixture(scope="module")
-def table(config):
-    return load_rows(DATA_DIR / config["data_file"])
+def column_one_of(root, name):
+    rows = []
+    for raw in (Path(root) / name).read_text(encoding="ascii").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            rows.append(line.split()[0])
+    return rows
 
 
-@pytest.fixture(scope="session", autouse=True)
-def sealed_truth():
-    """Read the sealed held-out labels and quality floors into memory, then UNLINK them
-    from disk before any graded solver RERUN. The determinism and leakage counterfactual
-    tests rerun analysis.R; unlinking first guarantees no rerun can read the withheld truth
-    off /tests/eval, while the parsed content lives only in this process's memory (never in
-    an env var, so the reruns' os.environ copy cannot carry it either)."""
-    labels = load_rows(EVAL_DIR / "test_labels.csv")
-    floor_values = load_key_values(EVAL_DIR / "quality_floors.csv")
-    for name in ("test_labels.csv", "quality_floors.csv"):
-        try:
-            (EVAL_DIR / name).unlink()
-        except OSError:
-            pass
-    return {"labels": labels, "floors": floor_values}
+def carve_bracket(text):
+    lines = text.rstrip("\n").split("\n")
+    head = lines[0].split()
+    berths = int(head[head.index("berths") + 1])
+    houses = int(head[head.index("houses") + 1])
+    berth_rows = [line.split() for line in lines[2 : 2 + berths]]
+    first = 3 + berths
+    house_rows = [line.split() for line in lines[first : first + houses]]
+    return lines, berth_rows, house_rows
 
 
-@pytest.fixture(scope="module")
-def sealed_labels(sealed_truth):
-    return sealed_truth["labels"]
+def head_tally_of(text, word):
+    head = text.split("\n")[0].split()
+    return int(head[head.index(word) + 1])
 
 
-@pytest.fixture(scope="module")
-def floors(sealed_truth):
-    return sealed_truth["floors"]
+def berth_entry(text, name):
+    _lines, berth_rows, _house_rows = carve_bracket(text)
+    for row in berth_rows:
+        if row[0] == name:
+            return row
+    message = "no line for the berth " + name
+    raise AssertionError(message)
 
 
-@pytest.fixture
-def protected_out_dir(tmp_path):
-    """Snapshot the graded OUT_DIR and restore it after a rerun, so a solver that ignores
-    the OUT_DIR override and writes to the real output dir cannot contaminate the graded
-    artifacts that later tests re-read from OUT_DIR."""
-    backup = tmp_path / "out_backup"
-    shutil.copytree(OUT_DIR, backup)
-    yield
-    shutil.rmtree(OUT_DIR, ignore_errors=True)
-    shutil.copytree(backup, OUT_DIR)
+def house_entry(text, name):
+    _lines, _berth_rows, house_rows = carve_bracket(text)
+    for row in house_rows:
+        if row[0] == name:
+            return row
+    message = "no line for the house " + name
+    raise AssertionError(message)
 
 
-@pytest.fixture(scope="module")
-def predictions():
-    return load_rows(OUT_DIR / "predictions.csv")
+sitting_house = operator.itemgetter(2)
 
 
-@pytest.fixture(scope="module")
-def validation_predictions():
-    return load_rows(OUT_DIR / "validation_predictions.csv")
+def berth_board_count(row):
+    return int(row[4])
 
 
-@pytest.fixture(scope="module")
-def metrics():
-    return json.loads((OUT_DIR / "metrics.json").read_text())
+def berth_hand_count(row):
+    return int(row[6])
 
 
-def reference_ids(table, config):
-    split_col = config["split_column"]
-    return {int(r[config["id_column"]]) for r in table if r[split_col] in ("fit", "validation")}
+def opening_seed(row):
+    return int(row[2])
 
 
-# ================================================================ TIER 1: STRUCTURE
-
-class TestStructure:
-    def test_contracted_artifacts_exist(self):
-        """Every artifact named in the report contract is present under the output dir."""
-        missing = [name for name in CONTRACTED_ARTIFACTS if not (OUT_DIR / name).exists()]
-        assert not missing, f"missing artifacts: {missing}"
-
-    def test_artifact_schemas_match_contract(self, contract):
-        """Each artifact's columns/keys match report_contract.csv exactly, in order."""
-        listed = {row["artifact"] for row in contract}
-        assert listed == set(CONTRACTED_ARTIFACTS), (sorted(listed), sorted(CONTRACTED_ARTIFACTS))
-        for row in contract:
-            name = row["artifact"]
-            expected = row["columns"].split("|")
-            path = OUT_DIR / name
-            assert path.exists(), f"missing artifact {name}"
-            if name.endswith(".json"):
-                obj = json.loads(path.read_text())
-                assert set(obj) == set(expected), (name, sorted(obj), sorted(expected))
-            else:
-                assert load_header(path) == expected, (name, load_header(path), expected)
-
-    def test_public_test_targets_are_blank(self, table, config):
-        """The public snapshot must not disclose the held-out labels."""
-        leaked = [r for r in table
-                  if r[config["split_column"]] == "test"
-                  and r[config["target_column"]] not in BLANK_TOKENS]
-        assert not leaked
-
-    def test_feature_summary_recounts_missing_values(self, table, roles, config):
-        """feature_summary.csv lists the configured features in order with true missing counts."""
-        summary = load_rows(OUT_DIR / "feature_summary.csv")
-        expected = [(r["feature"], r["data_type"]) for r in roles if r["role"] == "feature"]
-        assert [(s["feature"], s["data_type"]) for s in summary] == expected
-        split_col = config["split_column"]
-        for entry in summary:
-            for split, column in (("fit", "missing_fit"),
-                                  ("validation", "missing_validation"),
-                                  ("test", "missing_test")):
-                count = sum(1 for r in table
-                            if r[split_col] == split and r[entry["feature"]] in BLANK_TOKENS)
-                assert int(entry[column]) == count
-
-    def test_predictions_cover_sealed_rows(self, predictions, sealed_labels, config):
-        """predictions.csv holds each held-out id exactly once, ascending."""
-        id_col = config["id_column"]
-        ids = [int(r[id_col]) for r in predictions]
-        assert len(ids) == len(set(ids))
-        assert set(ids) == {int(r[id_col]) for r in sealed_labels}
-        assert ids == sorted(ids)
-
-    def test_probability_rows_are_coherent(self, predictions, validation_predictions,
-                                           metrics, table, config):
-        """Probabilities are normalized and labels follow the operating threshold."""
-        id_col = config["id_column"]
-        group_col = config["group_column"]
-        neg_col, pos_col = prob_columns(config["classes"])
-        threshold = float(metrics["operating_threshold"])
-        group_by_id = {r[id_col]: r[group_col] for r in table}
-        for frame in (predictions, validation_predictions):
-            for row in frame:
-                p_neg = float(row[neg_col])
-                p_pos = float(row[pos_col])
-                assert 0.0 <= p_neg <= 1.0 and 0.0 <= p_pos <= 1.0
-                assert abs(p_neg + p_pos - 1.0) <= 1e-4
-                wanted = config["positive_class"] if p_pos >= threshold else config["negative_class"]
-                assert row["pred_label"] == wanted
-                assert row[group_col] == group_by_id[row[id_col]]
-
-    def test_validation_rows_are_labeled_from_table(self, validation_predictions, table, config):
-        """validation_predictions.csv restates the true validation labels and the correct flag."""
-        id_col = config["id_column"]
-        split_col = config["split_column"]
-        target_col = config["target_column"]
-        actual_by_id = {r[id_col]: r[target_col] for r in table if r[split_col] == "validation"}
-        ids = [int(r[id_col]) for r in validation_predictions]
-        assert ids == sorted(ids)
-        assert {r[id_col] for r in validation_predictions} == set(actual_by_id)
-        for row in validation_predictions:
-            assert row["actual"] == actual_by_id[row[id_col]]
-            assert int(row["correct"]) == int(row["actual"] == row["pred_label"])
-
-    def test_rerun_is_deterministic(self, tmp_path, config, protected_out_dir):
-        """A fresh run under DATA_DIR/OUT_DIR overrides reproduces EVERY contracted artifact
-        byte-for-byte, not just predictions.csv."""
-        clone = tmp_path / "data"
-        shutil.copytree(DATA_DIR, clone)
-        out = tmp_path / "out"
-        out.mkdir()
-        run_analysis(clone, out)
-        for name in CONTRACTED_ARTIFACTS:
-            assert (out / name).read_text() == (OUT_DIR / name).read_text(), name
-
-    def test_fit_label_flip_moves_predictions(self, tmp_path, predictions, config,
-                                              protected_out_dir):
-        """Rotating the fit labels must change the held-out probabilities."""
-        split_col = config["split_column"]
-        target_col = config["target_column"]
-        flip = {config["positive_class"]: config["negative_class"],
-                config["negative_class"]: config["positive_class"]}
-
-        def mutate(rows):
-            for row in rows:
-                if row[split_col] == "fit":
-                    row[target_col] = flip[row[target_col]]
-
-        rewrite_snapshot(DATA_DIR, tmp_path / "data", config["data_file"], mutate)
-        out = tmp_path / "out"
-        out.mkdir()
-        run_analysis(tmp_path / "data", out)
-        altered = load_rows(out / "predictions.csv")
-        _, pos_col = prob_columns(config["classes"])
-        id_col = config["id_column"]
-        original = {r[id_col]: float(r[pos_col]) for r in predictions}
-        drift = sum(abs(float(r[pos_col]) - original[r[id_col]]) for r in altered)
-        assert drift / len(altered) > 1e-6
-
-    def test_injected_test_labels_change_nothing(self, tmp_path, predictions, config,
-                                                 protected_out_dir):
-        """Planted labels on held-out rows must not leak into the predictions."""
-        split_col = config["split_column"]
-        target_col = config["target_column"]
-        classes = config["classes"]
-
-        def mutate(rows):
-            planted = 0
-            for row in rows:
-                if row[split_col] == "test":
-                    row[target_col] = classes[planted % len(classes)]
-                    planted += 1
-
-        rewrite_snapshot(DATA_DIR, tmp_path / "data", config["data_file"], mutate)
-        out = tmp_path / "out"
-        out.mkdir()
-        run_analysis(tmp_path / "data", out)
-        altered = load_rows(out / "predictions.csv")
-        id_col = config["id_column"]
-        neg_col, pos_col = prob_columns(classes)
-        original = {r[id_col]: r for r in predictions}
-        assert [r[id_col] for r in altered] == [r[id_col] for r in predictions]
-        for row in altered:
-            baseline = original[row[id_col]]
-            assert row["pred_label"] == baseline["pred_label"]
-            assert abs(float(row[pos_col]) - float(baseline[pos_col])) <= PROB_ATOL
-            assert abs(float(row[neg_col]) - float(baseline[neg_col])) <= PROB_ATOL
+def wins_held(row):
+    return int(row[4])
 
 
-def rewrite_snapshot(source_dir, target_dir, data_file, mutate):
-    shutil.copytree(source_dir, target_dir)
-    path = Path(target_dir) / data_file
-    with open(path, newline="") as handle:
-        reader = csv.DictReader(handle)
-        fieldnames = reader.fieldnames
-        rows = list(reader)
-    mutate(rows)
-    with open(path, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+def losses_held(row):
+    return int(row[6])
 
 
-# ================================================================ TIER 2: INTERNAL CONSISTENCY
-
-class TestInternalConsistency:
-    def test_metrics_summarize_own_validation(self, validation_predictions, metrics, table, config):
-        """metrics.json is an honest summary of the serialized validation table."""
-        actual = [r["actual"] for r in validation_predictions]
-        labels = [r["pred_label"] for r in validation_predictions]
-        accuracy = sum(1 for a, p in zip(actual, labels) if a == p) / len(actual)
-        f1 = macro_f1_score(actual, labels, config["classes"])
-        assert abs(float(metrics["validation_accuracy"]) - accuracy) <= METRIC_ATOL
-        assert abs(float(metrics["validation_macro_f1"]) - f1) <= METRIC_ATOL
-        threshold = float(metrics["operating_threshold"])
-        assert any(abs(threshold - t) <= 1e-9 for t in config["threshold_values"])
-        assert int(metrics["selected_k"]) in config["k_values"]
-        _, pos_col = prob_columns(config["classes"])
-        fp = sum(1 for r in validation_predictions
-                 if r["actual"] == config["negative_class"] and float(r[pos_col]) >= threshold)
-        fn = sum(1 for r in validation_predictions
-                 if r["actual"] == config["positive_class"] and float(r[pos_col]) < threshold)
-        cost = (config["fp_cost"] * fp + config["fn_cost"] * fn) / len(validation_predictions)
-        assert abs(float(metrics["validation_expected_cost"]) - cost) <= METRIC_ATOL
-        split_col = config["split_column"]
-        for split, key in (("fit", "n_fit"), ("validation", "n_validation"), ("test", "n_test")):
-            assert int(metrics[key]) == sum(1 for r in table if r[split_col] == split)
-        assert metrics["task_kind"] == config["task_kind"]
-        assert metrics["target_column"] == config["target_column"]
-
-    def test_selection_report_is_self_consistent(self, metrics, config):
-        """selection_report.csv sweeps the k grid in order and names one selected k."""
-        report = load_rows(OUT_DIR / "selection_report.csv")
-        assert [int(r["candidate_k"]) for r in report] == config["k_values"]
-        for row in report:
-            score = float(row["validation_macro_f1"])
-            assert 0.0 <= score <= 1.0
-        chosen = [r for r in report if selected_flag(r["selected"])]
-        assert len(chosen) == 1
-        assert int(chosen[0]["candidate_k"]) == int(metrics["selected_k"])
-        assert int(metrics["selected_k"]) in config["k_values"]
-
-    def test_threshold_report_is_self_consistent(self, validation_predictions, metrics, config):
-        """threshold_report.csv restates both cost sweeps over the solver's own validation probs.
-
-        The per-threshold counts, expected cost and worst-group cost must match a recompute
-        from the serialized validation probabilities; exactly one row is selected and it is
-        the operating threshold in metrics.json. Which selection rule the solver used is NOT
-        asserted -- the report only has to be an honest account of its own model.
-        """
-        report = load_rows(OUT_DIR / "threshold_report.csv")
-        grid = config["threshold_values"]
-        listed = [float(r["threshold"]) for r in report]
-        assert len(listed) == len(grid)
-        assert all(abs(a - b) <= 1e-9 for a, b in zip(listed, grid))
-        _, pos_col = prob_columns(config["classes"])
-        group_col = config["group_column"]
-        pairs = [(r["actual"], float(r[pos_col]), r[group_col]) for r in validation_predictions]
-        groups = sorted({g for _, _, g in pairs})
-        for row, threshold in zip(report, grid):
-            fp = sum(1 for actual, p, _ in pairs
-                     if actual == config["negative_class"] and p >= threshold)
-            fn = sum(1 for actual, p, _ in pairs
-                     if actual == config["positive_class"] and p < threshold)
-            cost = (config["fp_cost"] * fp + config["fn_cost"] * fn) / len(pairs)
-            worst = -math.inf
-            for name in groups:
-                members = [(a, p) for a, p, g in pairs if g == name]
-                gfp = sum(1 for a, p in members
-                          if a == config["negative_class"] and p >= threshold)
-                gfn = sum(1 for a, p in members
-                          if a == config["positive_class"] and p < threshold)
-                worst = max(worst,
-                            (config["fp_cost"] * gfp + config["fn_cost"] * gfn) / len(members))
-            assert int(row["false_positives"]) == fp
-            assert int(row["false_negatives"]) == fn
-            assert abs(float(row["expected_cost"]) - cost) <= METRIC_ATOL
-            assert abs(float(row["worst_group_cost"]) - worst) <= METRIC_ATOL
-        chosen = [r for r in report if selected_flag(r["selected"])]
-        assert len(chosen) == 1
-        assert abs(float(chosen[0]["threshold"]) - float(metrics["operating_threshold"])) <= 1e-9
-
-    def test_classification_tables_restate_own_validation(self, validation_predictions, config):
-        """Confusion matrix and per-class metrics restate the serialized validation table."""
-        actual = [r["actual"] for r in validation_predictions]
-        labels = [r["pred_label"] for r in validation_predictions]
-        confusion = load_rows(OUT_DIR / "confusion_matrix.csv")
-        expected_pairs = [(a, p) for a in config["classes"] for p in config["classes"]]
-        assert [(r["actual"], r["predicted"]) for r in confusion] == expected_pairs
-        for row in confusion:
-            count = sum(1 for a, p in zip(actual, labels)
-                        if a == row["actual"] and p == row["predicted"])
-            assert int(row["count"]) == count
-        per_class = load_rows(OUT_DIR / "class_metrics.csv")
-        assert [r["class"] for r in per_class] == config["classes"]
-        for row in per_class:
-            cls = row["class"]
-            tp = sum(1 for a, p in zip(actual, labels) if a == cls and p == cls)
-            fp = sum(1 for a, p in zip(actual, labels) if a != cls and p == cls)
-            fn = sum(1 for a, p in zip(actual, labels) if a == cls and p != cls)
-            precision = 0.0 if tp + fp == 0 else tp / (tp + fp)
-            recall = 0.0 if tp + fn == 0 else tp / (tp + fn)
-            f1 = 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
-            assert abs(float(row["precision"]) - precision) <= METRIC_ATOL
-            assert abs(float(row["recall"]) - recall) <= METRIC_ATOL
-            assert abs(float(row["f1"]) - f1) <= METRIC_ATOL
-            assert int(row["support"]) == sum(1 for a in actual if a == cls)
-
-    def test_calibration_and_group_tables_restate_own_validation(self, validation_predictions, config):
-        """Calibration bins and the group report restate the serialized validation table."""
-        _, pos_col = prob_columns(config["classes"])
-        rows = [(float(r[pos_col]), r["actual"], r[config["group_column"]],
-                 r["pred_label"]) for r in validation_predictions]
-        bins = load_rows(OUT_DIR / "calibration_bins.csv")
-        assert len(bins) == 5
-        for index, row in enumerate(bins):
-            assert abs(float(row["bin_low"]) - index / 5) <= 1e-9
-            assert abs(float(row["bin_high"]) - (index + 1) / 5) <= 1e-9
-            members = [(p, a) for p, a, _, _ in rows if min(4, int(p * 5)) == index]
-            assert int(row["count"]) == len(members)
-            if members:
-                mean_p = sum(p for p, _ in members) / len(members)
-                observed = sum(1 for _, a in members
-                               if a == config["positive_class"]) / len(members)
-            else:
-                mean_p = 0.0
-                observed = 0.0
-            assert abs(float(row["mean_predicted"]) - mean_p) <= METRIC_ATOL
-            assert abs(float(row["observed_rate"]) - observed) <= METRIC_ATOL
-        report = load_rows(OUT_DIR / "group_error_report.csv")
-        groups = sorted({g for _, _, g, _ in rows})
-        assert [r["group_value"] for r in report] == groups
-        for row in report:
-            members = [(a, lab) for _, a, g, lab in rows if g == row["group_value"]]
-            assert int(row["n_validation"]) == len(members)
-            accuracy = sum(1 for a, lab in members if a == lab) / len(members)
-            assert abs(float(row["accuracy"]) - accuracy) <= METRIC_ATOL
-
-    def test_neighbor_evidence_is_self_consistent(self, predictions, table, config):
-        """neighbor_evidence.csv lists the first held-out ids with a valid nearest reference."""
-        report = load_rows(OUT_DIR / "neighbor_evidence.csv")
-        id_col = config["id_column"]
-        held_out = sorted(int(r[id_col]) for r in predictions)
-        assert [int(r[id_col]) for r in report] == held_out[:50]
-        refs = reference_ids(table, config)
-        for row in report:
-            assert int(row["nearest_reference_id"]) in refs
-            assert float(row["nearest_distance"]) >= 0.0
-
-    def test_fit_reference_calibration_is_self_consistent(self, validation_predictions, config):
-        """The bins tile [0, 1] and honestly bin the solver's own validation probabilities."""
-        report = load_rows(OUT_DIR / "fit_reference_calibration.csv")
-        assert [int(r["bin"]) for r in report] == [1, 2, 3, 4, 5]
-        lowers = [float(r["lower_edge"]) for r in report]
-        uppers = [float(r["upper_edge"]) for r in report]
-        assert abs(lowers[0]) <= 1e-9
-        assert abs(uppers[4] - 1.0) <= 1e-9
-        for i in range(5):
-            assert lowers[i] <= uppers[i] + 1e-9
-        for i in range(4):
-            assert uppers[i] <= uppers[i + 1] + 1e-9
-            assert abs(uppers[i] - lowers[i + 1]) <= 1e-9
-        _, pos_col = prob_columns(config["classes"])
-        edges = uppers[:4]
-        rows = [(float(r[pos_col]), r["actual"]) for r in validation_predictions]
-        for index, row in enumerate(report):
-            members = [(p, a) for p, a in rows if sum(1 for e in edges if e < p) == index]
-            assert int(row["count"]) == len(members)
-            if members:
-                mean_p = sum(p for p, _ in members) / len(members)
-                observed = sum(1 for _, a in members
-                               if a == config["positive_class"]) / len(members)
-            else:
-                mean_p = 0.0
-                observed = 0.0
-            assert abs(float(row["mean_predicted"]) - mean_p) <= METRIC_ATOL
-            assert abs(float(row["observed_rate"]) - observed) <= METRIC_ATOL
-
-    def test_neighbor_detail_is_self_consistent(self, predictions, metrics, table, config):
-        """Per held-out row: selected-k distinct references, ranked by distance, weights to one."""
-        report = load_rows(OUT_DIR / "neighbor_detail.csv")
-        id_col = config["id_column"]
-        held_out = sorted(int(r[id_col]) for r in predictions)[:40]
-        per_id = {}
-        for row in report:
-            per_id.setdefault(int(row[id_col]), []).append(row)
-        assert sorted(per_id) == held_out
-        refs = reference_ids(table, config)
-        detail_k = min(int(metrics["selected_k"]), len(refs))
-        for tid in held_out:
-            rows = per_id[tid]
-            assert [int(r["neighbor_rank"]) for r in rows] == list(range(1, detail_k + 1))
-            neighbor_ids = [int(r["neighbor_id"]) for r in rows]
-            assert len(set(neighbor_ids)) == len(neighbor_ids)
-            assert all(nid in refs for nid in neighbor_ids)
-            distances = [float(r["distance"]) for r in rows]
-            assert all(d >= 0.0 for d in distances)
-            assert distances == sorted(distances)
-            shares = [float(r["weight_share"]) for r in rows]
-            assert all(0.0 <= s <= 1.0 for s in shares)
-            assert abs(sum(shares) - 1.0) <= 1e-4
-
-    def test_loo_audit_is_self_consistent(self, metrics, table, config):
-        """The designated fit rows carry probabilities in [0,1] labeled at the threshold."""
-        report = load_rows(OUT_DIR / "loo_audit.csv")
-        id_col = config["id_column"]
-        split_col = config["split_column"]
-        target_col = config["target_column"]
-        fit_rows = [r for r in table if r[split_col] == "fit"]
-        n_fit = len(fit_rows)
-        stride = max(1, n_fit // 12)
-        fit_ids_sorted = sorted(int(r[id_col]) for r in fit_rows)
-        expected_ids = [fit_ids_sorted[j * stride] for j in range(12) if j * stride < n_fit]
-        assert [int(r[id_col]) for r in report] == expected_ids
-        actual_by_id = {int(r[id_col]): r[target_col] for r in fit_rows}
-        threshold = float(metrics["operating_threshold"])
-        for row in report:
-            rid = int(row[id_col])
-            assert row["actual"] == actual_by_id[rid]
-            prob = float(row["loo_positive_prob"])
-            assert 0.0 <= prob <= 1.0
-            wanted = (config["positive_class"] if prob >= threshold
-                      else config["negative_class"])
-            assert row["loo_pred_label"] == wanted
-            assert int(row["loo_correct"]) == int(row["loo_pred_label"] == row["actual"])
+def meetings_held(row):
+    return int(row[8])
 
 
-# ================================================================ TIER 3: QUALITY FLOORS
+def strength_held(row):
+    return int(row[10])
 
-class TestQualityFloors:
-    def test_holdout_floor_holds(self, predictions, sealed_labels, floors, config):
-        """The sealed held-out labels score above the calibrated quality floors."""
-        id_col = config["id_column"]
-        truth = {r[id_col]: r[config["target_column"]] for r in sealed_labels}
-        actual = [truth[r[id_col]] for r in predictions]
-        labels = [r["pred_label"] for r in predictions]
-        accuracy = sum(1 for a, p in zip(actual, labels) if a == p) / len(actual)
-        f1 = macro_f1_score(actual, labels, config["classes"])
-        assert accuracy >= float(floors["min_accuracy"])
-        assert f1 >= float(floors["min_macro_f1"])
+
+def hands_taken(row):
+    return int(row[12])
+
+
+def hands_given(row):
+    return int(row[14])
+
+
+berth_held = operator.itemgetter(16)
+
+
+def place_held(row):
+    return int(row[18])
+
+
+place_rule = operator.itemgetter(19)
+
+
+settled_state = operator.itemgetter(-2)
+
+
+settled_token = operator.itemgetter(-1)
+
+
+def tally_counts(text, label):
+    for line in text.rstrip("\n").split("\n"):
+        if line.startswith(label + " "):
+            fields = line.split()[1:]
+            return {fields[i]: int(fields[i + 1]) for i in range(0, len(fields), 2)}
+    message = "no tally line for " + label
+    raise AssertionError(message)
+
+
+def test_certified_sheet_of_the_recorded_crown():
+    """Matches the whole filed sheet for the recorded crown against its certified copy."""
+    assert settled_bracket(FIRST_CROWN) == certified_bracket("certified-hallowspar.txt")
+
+
+def test_certified_sheet_of_the_second_crown():
+    """Matches the whole filed sheet for the other recorded crown, byte for byte."""
+    assert settled_bracket(OTHER_CROWN) == certified_bracket("certified-corveholt.txt")
+
+
+def test_repeat_filing_of_the_recorded_crown_agrees():
+    """Checks the repeat filing over an unchanged record for the recorded crown."""
+    done, target, _home = file_one_bracket(FIRST_CROWN, ("--selfcheck",))
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == ""
+    assert done.stderr == ""
+    assert target.read_text(encoding="ascii") == certified_bracket("certified-hallowspar.txt")
+
+
+def test_repeat_filing_of_the_second_crown_agrees():
+    """Checks the repeat filing over an unchanged record for the other crown."""
+    done, target, _home = file_one_bracket(OTHER_CROWN, ("--selfcheck",))
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == ""
+    assert done.stderr == ""
+    assert target.read_text(encoding="ascii") == certified_bracket("certified-corveholt.txt")
+
+
+def test_the_wins_rung_lifts_a_house_over_a_smaller_count():
+    """Examines how a larger count of wins weighs against a smaller one."""
+    text = settled_bracket(FIRST_CROWN)
+    lowen = house_entry(text, "lowen")
+    ingle = house_entry(text, "ingle")
+    assert place_held(lowen) < place_held(ingle)
+    assert place_rule(lowen) == "place.wins"
+
+
+def test_the_losses_rung_settles_houses_level_on_wins():
+    """Examines how two houses level on wins are separated further down."""
+    text = settled_bracket(FIRST_CROWN)
+    ingle = house_entry(text, "ingle")
+    hurst = house_entry(text, "hurst")
+    assert wins_held(ingle) == wins_held(hurst) == 3
+    assert losses_held(ingle) < losses_held(hurst)
+    assert place_held(ingle) < place_held(hurst)
+    assert place_rule(hurst) == "place.losses"
+
+
+def test_the_strength_rung_settles_houses_level_higher_up():
+    """Examines the rung reached when wins and losses both fail to separate."""
+    text = settled_bracket(FIRST_CROWN)
+    birling = house_entry(text, "birling")
+    gorrel = house_entry(text, "gorrel")
+    assert wins_held(birling) == wins_held(gorrel) == 5
+    assert losses_held(birling) == losses_held(gorrel) == 3
+    assert strength_held(birling) > strength_held(gorrel)
+    assert settled_state(birling) == "CROWNED"
+    assert settled_state(gorrel) == "CUT"
+    assert place_rule(gorrel) == "place.strength"
+
+
+def test_strength_adds_a_met_houses_wins_once_for_each_meeting():
+    """Examines how a house met more than once weighs on the third rung."""
+    text = settled_bracket(FIRST_CROWN)
+    arden = house_entry(text, "arden")
+    birling = house_entry(text, "birling")
+    gorrel = house_entry(text, "gorrel")
+    lowen = house_entry(text, "lowen")
+    assert meetings_held(arden) == 4
+    assert strength_held(arden) == wins_held(birling) + 2 * wins_held(gorrel) + wins_held(lowen)
+
+
+def test_strength_goes_on_moving_after_a_house_has_gone():
+    """Examines the third rung of a house whose opponents played on without it."""
+    text = settled_bracket(FIRST_CROWN)
+    ingle = house_entry(text, "ingle")
+    hurst = house_entry(text, "hurst")
+    lowen = house_entry(text, "lowen")
+    birling = house_entry(text, "birling")
+    assert settled_state(ingle) == "BARRED"
+    assert strength_held(ingle) == wins_held(hurst) + 2 * wins_held(lowen) + wins_held(birling)
+    assert strength_held(ingle) == 16
+
+
+def test_the_worse_opening_seed_ranks_above_on_the_last_rung():
+    """Examines which of two seeds ranks higher when nothing else separates."""
+    text = settled_bracket(OTHER_CROWN)
+    vessen = house_entry(text, "vessen")
+    umber = house_entry(text, "umber")
+    assert (wins_held(vessen), losses_held(vessen), strength_held(vessen)) == (0, 0, 0)
+    assert (wins_held(umber), losses_held(umber), strength_held(umber)) == (0, 0, 0)
+    assert opening_seed(vessen) > opening_seed(umber)
+    assert place_held(vessen) < place_held(umber)
+    assert place_rule(umber) == "place.seed"
+
+
+def test_beating_a_house_does_not_order_the_two_of_them():
+    """Examines whether one house beating another settles the order between them."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "seat quinnel near-1",
+        "seat rensham mid-2",
+        "board far-1 near-3 9 1",
+        "board near-3 near-1 9 1",
+        "board far-1 mid-2 1 9",
+        "board near-1 mid-2 9 1",
+    ])
+    sallow = house_entry(text, "sallow")
+    tarrant = house_entry(text, "tarrant")
+    assert (wins_held(sallow), losses_held(sallow), strength_held(sallow)) == (1, 1, 2)
+    assert (wins_held(tarrant), losses_held(tarrant), strength_held(tarrant)) == (1, 1, 2)
+    assert opening_seed(tarrant) > opening_seed(sallow)
+    assert place_held(tarrant) < place_held(sallow)
+
+
+def test_a_bye_leaves_the_meeting_count_where_it_was():
+    """Examines what a free win does to the count of meetings and to a berth."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "seat quinnel near-1",
+        "bye",
+    ])
+    quinnel = house_entry(text, "quinnel")
+    assert wins_held(quinnel) == 1
+    assert meetings_held(quinnel) == 0
+    assert strength_held(quinnel) == 0
+    assert berth_board_count(berth_entry(text, "near-1")) == 0
+    assert berth_hand_count(berth_entry(text, "near-1")) == 0
+    assert head_tally_of(text, "byes") == 1
+    assert head_tally_of(text, "boards") == 0
+
+
+def test_a_given_board_makes_a_meeting_for_one_side_only():
+    """Examines which side of a board given up carries a meeting afterwards."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "concede far-1 near-3",
+    ])
+    sallow = house_entry(text, "sallow")
+    tarrant = house_entry(text, "tarrant")
+    assert (wins_held(sallow), losses_held(sallow), meetings_held(sallow)) == (0, 1, 1)
+    assert (wins_held(tarrant), losses_held(tarrant), meetings_held(tarrant)) == (0, 0, 0)
+    assert head_tally_of(text, "concedes") == 1
+
+
+def test_a_seat_puts_a_house_into_a_berth_holding_none():
+    """Examines the plain case of a house taking a berth nothing holds."""
+    text = replanted_crown(OTHER_CROWN, ["seat sallow far-1"])
+    assert sitting_house(berth_entry(text, "far-1")) == "sallow"
+    assert berth_held(house_entry(text, "sallow")) == "far-1"
+    assert settled_state(house_entry(text, "sallow")) == "SEATED"
+    assert settled_token(house_entry(text, "sallow")) == "stand.seated"
+
+
+def test_a_seat_at_a_berth_already_holding_one_reaches_nothing():
+    """Examines a house sent to a berth another house is already sitting in."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant far-1",
+    ])
+    assert sitting_house(berth_entry(text, "far-1")) == "sallow"
+    assert berth_held(house_entry(text, "tarrant")) == "-"
+    assert settled_token(house_entry(text, "tarrant")) == "stand.unseated"
+
+
+def test_a_seat_for_a_house_already_placed_still_names_the_berth():
+    """Examines what a refused seating leaves behind at the berth it named."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat sallow near-3",
+    ])
+    assert sitting_house(berth_entry(text, "near-3")) == "-"
+    assert settled_state(berth_entry(text, "near-3")) == "DARK"
+    assert settled_token(berth_entry(text, "near-3")) == "dark.named"
+    assert settled_token(berth_entry(text, "near-2")) == "dark.silent"
+
+
+def test_a_board_enters_a_win_on_one_side_and_a_loss_on_the_other():
+    """Examines what a decided board writes into the two records it touches."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "board far-1 near-3 9 4",
+    ])
+    sallow = house_entry(text, "sallow")
+    tarrant = house_entry(text, "tarrant")
+    assert (wins_held(sallow), losses_held(sallow), meetings_held(sallow)) == (1, 0, 1)
+    assert (wins_held(tarrant), losses_held(tarrant), meetings_held(tarrant)) == (0, 1, 1)
+    assert head_tally_of(text, "boards") == 1
+
+
+def test_a_board_enters_hands_taken_and_hands_given_both_ways():
+    """Examines the two hand columns on each side of a decided board."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "board far-1 near-3 9 4",
+    ])
+    sallow = house_entry(text, "sallow")
+    tarrant = house_entry(text, "tarrant")
+    assert (hands_taken(sallow), hands_given(sallow)) == (9, 4)
+    assert (hands_taken(tarrant), hands_given(tarrant)) == (4, 9)
+
+
+def test_a_board_moves_the_columns_of_both_berths_it_names():
+    """Examines the board and hand columns carried by each berth of a meeting."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "board far-1 near-3 9 4",
+    ])
+    assert berth_board_count(berth_entry(text, "far-1")) == 1
+    assert berth_hand_count(berth_entry(text, "far-1")) == 9
+    assert berth_board_count(berth_entry(text, "near-3")) == 1
+    assert berth_hand_count(berth_entry(text, "near-3")) == 4
+
+
+def test_a_board_of_level_hands_falls_by_the_opening_seeds():
+    """Examines which house takes a board neither side led on hands."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "board far-1 near-3 5 5",
+    ])
+    sallow = house_entry(text, "sallow")
+    tarrant = house_entry(text, "tarrant")
+    assert opening_seed(tarrant) > opening_seed(sallow)
+    assert (wins_held(tarrant), losses_held(tarrant)) == (1, 0)
+    assert (wins_held(sallow), losses_held(sallow)) == (0, 1)
+    assert (hands_taken(sallow), hands_given(sallow)) == (5, 5)
+
+
+def test_a_board_where_neither_side_took_a_hand_is_still_weighed():
+    """Examines a meeting at which no hand at all was taken by either house."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "board far-1 near-3 0 0",
+    ])
+    sallow = house_entry(text, "sallow")
+    tarrant = house_entry(text, "tarrant")
+    assert (wins_held(tarrant), losses_held(tarrant), meetings_held(tarrant)) == (1, 0, 1)
+    assert (wins_held(sallow), losses_held(sallow), meetings_held(sallow)) == (0, 1, 1)
+    assert (hands_taken(tarrant), hands_given(tarrant)) == (0, 0)
+    assert berth_board_count(berth_entry(text, "far-1")) == 1
+    assert berth_hand_count(berth_entry(text, "far-1")) == 0
+    assert head_tally_of(text, "boards") == 1
+
+
+def test_a_board_reaching_an_empty_berth_enters_nothing():
+    """Examines a meeting called at a berth no house is sitting in."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "board far-1 near-3 9 4",
+    ])
+    sallow = house_entry(text, "sallow")
+    assert (wins_held(sallow), losses_held(sallow), meetings_held(sallow)) == (0, 0, 0)
+    assert (hands_taken(sallow), hands_given(sallow)) == (0, 0)
+    assert berth_board_count(berth_entry(text, "far-1")) == 0
+    assert settled_token(berth_entry(text, "near-3")) == "dark.named"
+    assert head_tally_of(text, "boards") == 0
+
+
+def test_a_bye_carries_no_argument_and_the_field_places_it():
+    """Examines which seated house a free win falls to when none is named."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "seat quinnel near-1",
+        "bye",
+    ])
+    assert wins_held(house_entry(text, "quinnel")) == 1
+    assert wins_held(house_entry(text, "sallow")) == 0
+    assert wins_held(house_entry(text, "tarrant")) == 0
+    assert settled_state(berth_entry(text, "near-1")) == "RESTED"
+
+
+def test_a_bye_where_no_house_is_seated_reaches_nothing():
+    """Examines a free win called over a bracket holding no house at all."""
+    text = replanted_crown(OTHER_CROWN, ["bye", "bye"])
+    assert head_tally_of(text, "byes") == 0
+    assert tally_counts(text, "houses")["SEATED"] == 8
+    assert tally_counts(text, "berths")["DARK"] == 8
+
+
+def test_a_struck_house_leaves_every_board_it_played_standing():
+    """Examines what survives on other houses when one comes off the roll."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "seat quinnel near-1",
+        "board far-1 near-3 4 9",
+        "board near-1 near-3 4 9",
+        "strike tarrant",
+    ])
+    sallow = house_entry(text, "sallow")
+    quinnel = house_entry(text, "quinnel")
+    tarrant = house_entry(text, "tarrant")
+    assert settled_state(tarrant) == "BARRED"
+    assert wins_held(tarrant) == 2
+    assert (wins_held(sallow), losses_held(sallow), meetings_held(sallow)) == (0, 1, 1)
+    assert strength_held(sallow) == 2
+    assert strength_held(quinnel) == 2
+
+
+def test_a_close_ranks_every_house_still_sitting_in_a_berth():
+    """Examines the order a close reads over the whole seated field."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "seat quinnel near-1",
+        "seat rensham mid-2",
+        "close",
+    ])
+    assert sitting_house(berth_entry(text, "mid-2")) == "tarrant"
+    assert sitting_house(berth_entry(text, "far-1")) == "rensham"
+    assert sitting_house(berth_entry(text, "near-3")) == "sallow"
+    assert sitting_house(berth_entry(text, "mid-1")) == "quinnel"
+
+
+def test_a_close_puts_out_the_houses_ranked_below_the_width():
+    """Examines who leaves when the field is larger than the next round allows."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat olney mid-1",
+        "seat pardle far-3",
+        "seat quinnel near-1",
+        "seat rensham mid-2",
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "seat umber mid-3",
+        "close",
+    ])
+    assert settled_state(house_entry(text, "quinnel")) == "CUT"
+    assert settled_token(house_entry(text, "quinnel")) == "cut.idle"
+    assert settled_state(house_entry(text, "umber")) == "CUT"
+    assert tally_counts(text, "houses")["CUT"] == 2
+    assert tally_counts(text, "houses")["SEATED"] == 6
+
+
+def test_a_house_beaten_in_the_round_just_closed_leaves_felled():
+    """Examines the ruling on a house that lost a board and then went out."""
+    text = settled_bracket(FIRST_CROWN)
+    lowen = house_entry(text, "lowen")
+    hurst = house_entry(text, "hurst")
+    assert settled_state(lowen) == "FELLED"
+    assert settled_token(lowen) == "felled.board"
+    assert settled_state(hurst) == "FELLED"
+    assert settled_token(hurst) == "felled.given"
+
+
+def test_a_house_unbeaten_in_the_round_just_closed_leaves_cut():
+    """Examines the ruling on a house that won its last board and still went out."""
+    text = settled_bracket(FIRST_CROWN)
+    gorrel = house_entry(text, "gorrel")
+    assert settled_state(gorrel) == "CUT"
+    assert settled_token(gorrel) == "cut.width"
+    assert losses_held(gorrel) == 3
+
+
+def test_the_marks_a_round_leaves_do_not_reach_the_next_close():
+    """Examines whether losses from earlier rounds still weigh at a later close."""
+    text = settled_bracket(FIRST_CROWN)
+    gorrel = house_entry(text, "gorrel")
+    hurst = house_entry(text, "hurst")
+    assert losses_held(gorrel) == losses_held(hurst) == 3
+    assert settled_state(gorrel) == "CUT"
+    assert settled_state(hurst) == "FELLED"
+
+
+def test_the_reseat_fills_the_berths_the_bracket_names_first():
+    """Examines which berths the survivors of a close are put into."""
+    order = column_one_of(OTHER_CROWN, "bracket.table")
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "seat quinnel near-1",
+        "seat rensham mid-2",
+        "close",
+    ])
+    held = [sitting_house(berth_entry(text, name)) for name in order]
+    assert held[:4] == ["tarrant", "rensham", "sallow", "quinnel"]
+    assert held[4:] == ["-", "-", "-", "-"]
+
+
+def test_the_reseat_empties_every_berth_beyond_the_width():
+    """Examines the berths left holding nobody once a close has moved the field."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "seat quinnel near-1",
+        "seat rensham mid-2",
+        "close",
+    ])
+    assert settled_state(berth_entry(text, "near-1")) == "VACATED"
+    assert settled_token(berth_entry(text, "near-1")) == "void.reseated"
+    assert settled_state(berth_entry(text, "near-2")) == "DARK"
+
+
+def test_the_last_house_left_alone_at_a_close_takes_the_crown():
+    """Examines what happens at a close that leaves one house sitting."""
+    text = replanted_crown(OTHER_CROWN, ["seat sallow far-1", "close"])
+    sallow = house_entry(text, "sallow")
+    assert settled_state(sallow) == "CROWNED"
+    assert settled_token(sallow) == "crown.sole"
+    assert place_held(sallow) == 1
+    assert place_rule(sallow) == "place.crown"
+    assert settled_state(berth_entry(text, "mid-2")) == "CROWNED"
+    assert settled_token(berth_entry(text, "mid-2")) == "held.own"
+    assert settled_token(berth_entry(settled_bracket(OTHER_CROWN), "mid-2")) == "held.own"
+
+
+def test_the_crown_token_reads_the_close_that_gave_it():
+    """Examines how the two crowning rules are told apart at the same berth."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "close",
+        "close",
+        "close",
+        "close",
+    ])
+    tarrant = house_entry(text, "tarrant")
+    sallow = house_entry(text, "sallow")
+    assert settled_state(tarrant) == "CROWNED"
+    assert settled_token(tarrant) == "crown.width"
+    assert settled_state(sallow) == "CUT"
+    assert settled_token(sallow) == "cut.idle"
+
+
+def test_a_close_over_an_empty_bracket_still_opens_a_round():
+    """Examines a close called when no house is sitting anywhere."""
+    text = replanted_crown(OTHER_CROWN, ["close", "close"])
+    assert head_tally_of(text, "rounds") == 3
+    assert tally_counts(text, "berths")["DARK"] == 8
+    assert tally_counts(text, "houses")["SEATED"] == 8
+    assert tally_counts(text, "houses")["CROWNED"] == 0
+
+
+def test_the_crowned_house_takes_the_first_place_outright():
+    """Examines the place given to the house that took the crown."""
+    for root, name in ((FIRST_CROWN, "birling"), (OTHER_CROWN, "rensham")):
+        row = house_entry(settled_bracket(root), name)
+        assert place_held(row) == 1
+        assert place_rule(row) == "place.crown"
+
+
+def test_a_house_gone_early_can_place_above_one_gone_later():
+    """Examines whether the moment a house stopped decides where it places."""
+    text = settled_bracket(FIRST_CROWN)
+    ingle = house_entry(text, "ingle")
+    hurst = house_entry(text, "hurst")
+    lowen = house_entry(text, "lowen")
+    assert settled_state(ingle) == "BARRED"
+    assert place_held(ingle) < place_held(hurst)
+    assert place_held(lowen) < place_held(ingle)
+    assert place_held(house_entry(text, "corvane")) < place_held(house_entry(text, "durrow"))
+
+
+def test_a_place_told_apart_at_the_wins_rung():
+    """Examines the naming of a place gap opened by the first rung."""
+    text = settled_bracket(OTHER_CROWN)
+    pardle = house_entry(text, "pardle")
+    olney = house_entry(text, "olney")
+    assert place_held(olney) == place_held(pardle) + 1
+    assert place_rule(olney) == "place.wins"
+
+
+def test_a_place_told_apart_at_the_losses_rung():
+    """Examines the naming of a place gap that the first rung left level."""
+    text = settled_bracket(OTHER_CROWN)
+    olney = house_entry(text, "olney")
+    quinnel = house_entry(text, "quinnel")
+    assert place_held(quinnel) == place_held(olney) + 1
+    assert place_rule(quinnel) == "place.losses"
+
+
+def test_a_place_told_apart_at_the_strength_rung():
+    """Examines the naming of a place gap the first two rungs left level."""
+    text = settled_bracket(FIRST_CROWN)
+    gorrel = house_entry(text, "gorrel")
+    assert place_held(gorrel) == 2
+    assert place_rule(gorrel) == "place.strength"
+
+
+def test_a_place_told_apart_at_the_seed_rung():
+    """Examines the naming of a place gap that only the seeds could open."""
+    text = settled_bracket(OTHER_CROWN)
+    umber = house_entry(text, "umber")
+    vessen = house_entry(text, "vessen")
+    assert place_held(umber) == place_held(vessen) + 1
+    assert place_rule(umber) == "place.seed"
+
+
+def test_a_crowned_berth_outranks_the_bye_it_also_drew():
+    """Examines a berth that fits the crowning rung and a lower one at once."""
+    plain = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "bye",
+    ])
+    assert settled_state(berth_entry(plain, "far-1")) == "RESTED"
+    text = settled_bracket(FIRST_CROWN)
+    assert settled_state(berth_entry(text, "south-2")) == "CROWNED"
+    assert settled_token(berth_entry(text, "south-2")) == "held.long"
+
+
+def test_an_upset_berth_outranks_the_bye_it_also_drew():
+    """Examines a berth that both hosted a win from below and drew a free win."""
+    text = settled_bracket(FIRST_CROWN)
+    assert settled_state(berth_entry(text, "south-1")) == "UPSET"
+    assert settled_state(berth_entry(text, "west-1")) == "RESTED"
+    assert settled_state(berth_entry(text, "east-3")) == "UPSET"
+
+
+def test_a_rested_berth_outranks_the_house_that_left_it():
+    """Examines a berth that drew a free win and was later emptied."""
+    text = settled_bracket(FIRST_CROWN)
+    west = berth_entry(text, "west-1")
+    assert settled_state(west) == "RESTED"
+    assert settled_token(west) == "rest.clear"
+    assert sitting_house(west) == "-"
+
+
+def test_a_berth_that_emptied_reads_below_the_three_rungs_above_it():
+    """Examines a berth that held houses, hosted nothing special, and ended empty."""
+    text = settled_bracket(FIRST_CROWN)
+    east = berth_entry(text, "east-2")
+    assert settled_state(east) == "VACATED"
+    assert settled_token(east) == "void.reseated"
+    assert berth_board_count(east) == 1
+    other = settled_bracket(OTHER_CROWN)
+    assert settled_token(berth_entry(other, "far-1")) == "void.barred"
+    assert settled_token(berth_entry(other, "far-3")) == "void.felled"
+    assert settled_token(berth_entry(other, "near-3")) == "void.cut"
+
+
+def test_a_berth_no_house_ever_took_reads_the_last_rung():
+    """Examines the ruling on a berth that never held anybody."""
+    text = settled_bracket(FIRST_CROWN)
+    north = berth_entry(text, "north-2")
+    assert settled_state(north) == "DARK"
+    assert settled_token(north) == "dark.silent"
+    assert berth_board_count(north) == 0
+    assert berth_hand_count(north) == 0
+
+
+def test_the_crowned_house_outranks_the_berth_it_still_holds():
+    """Examines a house that both took the crown and is still sitting down."""
+    text = settled_bracket(FIRST_CROWN)
+    birling = house_entry(text, "birling")
+    assert settled_state(birling) == "CROWNED"
+    assert berth_held(birling) == "south-2"
+    assert tally_counts(text, "houses")["SEATED"] == 1
+
+
+def test_a_struck_house_outranks_the_close_that_followed_it():
+    """Examines a house coming off the roll just before a close would have moved it."""
+    text = settled_bracket(OTHER_CROWN)
+    pardle = house_entry(text, "pardle")
+    assert settled_state(pardle) == "BARRED"
+    assert settled_token(pardle) == "barred.seated"
+    without = replanted_crown(OTHER_CROWN, [
+        line for line in steps_recorded(OTHER_CROWN) if line != "strike pardle"
+    ])
+    assert settled_state(house_entry(without, "pardle")) == "FELLED"
+
+
+def test_a_house_put_out_never_reads_as_one_left_standing():
+    """Examines two houses holding no berth, one of them stopped and one not."""
+    text = settled_bracket(FIRST_CROWN)
+    fenwick = house_entry(text, "fenwick")
+    elsham = house_entry(text, "elsham")
+    assert berth_held(fenwick) == berth_held(elsham) == "-"
+    assert settled_state(fenwick) == "CUT"
+    assert settled_state(elsham) == "SEATED"
+    assert settled_token(elsham) == "stand.unseated"
+
+
+def test_the_two_leaving_rules_part_on_the_round_just_closed():
+    """Examines the single question that tells the two ways of going out apart."""
+    text = settled_bracket(FIRST_CROWN)
+    gorrel = house_entry(text, "gorrel")
+    lowen = house_entry(text, "lowen")
+    assert losses_held(gorrel) == losses_held(lowen) == 3
+    assert settled_token(gorrel) == "cut.width"
+    assert settled_token(lowen) == "felled.board"
+
+
+def test_the_two_widths_of_a_win_from_below_part_on_the_gap():
+    """Examines how far below the beaten house the winner stood."""
+    text = settled_bracket(FIRST_CROWN)
+    assert settled_token(berth_entry(text, "north-1")) == "upset.close"
+    assert settled_token(berth_entry(text, "east-3")) == "upset.wide"
+    close = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "board far-1 near-3 9 4",
+    ])
+    assert settled_token(berth_entry(close, "far-1")) == "upset.close"
+
+
+def test_the_two_free_win_rules_part_at_the_seed_rung():
+    """Examines whether the seeds alone separated the lowest house from the next."""
+    assert settled_token(berth_entry(settled_bracket(OTHER_CROWN), "near-1")) == "rest.tie"
+    assert settled_token(berth_entry(settled_bracket(FIRST_CROWN), "west-1")) == "rest.clear"
+    tied = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "seat quinnel near-1",
+        "bye",
+    ])
+    assert settled_token(berth_entry(tied, "near-1")) == "rest.tie"
+
+
+def test_the_two_crowning_rules_part_on_who_else_left():
+    """Examines whether the crowning close also sent anybody home."""
+    assert settled_token(house_entry(settled_bracket(FIRST_CROWN), "birling")) == "crown.width"
+    assert settled_token(house_entry(settled_bracket(OTHER_CROWN), "rensham")) == "crown.sole"
+
+
+def test_the_two_striking_rules_part_on_holding_a_berth():
+    """Examines whether a house coming off the roll was sitting anywhere."""
+    text = settled_bracket(OTHER_CROWN)
+    assert settled_token(house_entry(text, "pardle")) == "barred.seated"
+    assert settled_token(house_entry(text, "umber")) == "barred.aside"
+    assert tally_counts(text, "houses")["BARRED"] == 2
+
+
+def test_a_record_of_no_steps_leaves_every_berth_untouched():
+    """Examines the sheet settled over a record carrying nothing at all."""
+    text = replanted_crown(FIRST_CROWN, [])
+    assert head_tally_of(text, "rounds") == 1
+    assert head_tally_of(text, "boards") == 0
+    assert tally_counts(text, "berths") == {"CROWNED": 0, "UPSET": 0, "RESTED": 0,
+                                        "VACATED": 0, "DARK": 10}
+    assert tally_counts(text, "houses")["SEATED"] == 10
+    assert place_held(house_entry(text, "lowen")) == 1
+    assert place_held(house_entry(text, "arden")) == 10
+    assert place_rule(house_entry(text, "lowen")) == "place.seed"
+
+
+def test_a_step_naming_what_the_tables_do_not_reaches_nothing():
+    """Examines steps calling on a berth or a house nowhere in the tables."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat wrayling far-1",
+        "seat vessen orling",
+        "board far-1 near-3 9 1",
+    ])
+    _lines, berth_rows, house_rows = carve_bracket(text)
+    assert len(berth_rows) == 8
+    assert len(house_rows) == 8
+    assert settled_token(berth_entry(text, "far-1")) == "dark.named"
+    assert settled_token(berth_entry(text, "near-3")) == "dark.named"
+    assert berth_held(house_entry(text, "vessen")) == "-"
+    assert head_tally_of(text, "boards") == 0
+
+
+def test_a_step_naming_one_berth_twice_reaches_nothing():
+    """Examines a meeting and a giving up that both call on a single berth."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat sallow far-1",
+        "seat tarrant near-3",
+        "board far-1 far-1 9 1",
+        "concede near-3 near-3",
+    ])
+    sallow = house_entry(text, "sallow")
+    tarrant = house_entry(text, "tarrant")
+    assert (wins_held(sallow), losses_held(sallow), meetings_held(sallow)) == (0, 0, 0)
+    assert (wins_held(tarrant), losses_held(tarrant), meetings_held(tarrant)) == (0, 0, 0)
+    assert berth_board_count(berth_entry(text, "far-1")) == 0
+    assert head_tally_of(text, "boards") == 0
+    assert head_tally_of(text, "concedes") == 0
+
+
+def test_a_house_struck_while_holding_no_berth_empties_none():
+    """Examines a house coming off the roll from outside the bracket."""
+    text = settled_bracket(OTHER_CROWN)
+    umber = house_entry(text, "umber")
+    assert settled_state(umber) == "BARRED"
+    assert settled_token(umber) == "barred.aside"
+    assert berth_held(umber) == "-"
+    marks = [settled_token(row) for row in carve_bracket(text)[1]]
+    assert marks.count("void.barred") == 1
+
+
+def test_a_close_beyond_the_declared_widths_holds_the_last_one():
+    """Examines a close asking for a round the width table never reached."""
+    text = replanted_crown(OTHER_CROWN, [
+        "seat olney mid-1",
+        "seat pardle far-3",
+        "seat quinnel near-1",
+        "close",
+        "seat sallow near-3",
+        "seat tarrant mid-1",
+        "close",
+    ], widths=[6, 2])
+    assert tally_counts(text, "houses")["CUT"] == 3
+    assert tally_counts(text, "houses")["SEATED"] == 5
+    assert sitting_house(berth_entry(text, "mid-2")) == "pardle"
+    assert sitting_house(berth_entry(text, "far-1")) == "tarrant"
+    assert head_tally_of(text, "rounds") == 3
+
+
+def test_a_record_stopping_in_mid_round_leaves_houses_sitting():
+    """Examines a record whose last round was never brought to a close."""
+    text = replanted_crown(OTHER_CROWN, steps_recorded(OTHER_CROWN)[:-1])
+    rensham = house_entry(text, "rensham")
+    assert settled_state(rensham) == "SEATED"
+    assert settled_token(rensham) == "stand.seated"
+    assert berth_held(rensham) == "mid-2"
+    mid = berth_entry(text, "mid-2")
+    assert settled_state(mid) == "VACATED"
+    assert settled_token(mid) == "void.standing"
+    assert place_held(rensham) == 1
+    assert place_rule(rensham) == "place.wins"
+    assert tally_counts(text, "houses")["CROWNED"] == 0
+
+
+def test_the_two_blocks_are_laid_out_in_two_different_orders():
+    """Examines the order each of the sheet's two blocks is written in."""
+    text = settled_bracket(OTHER_CROWN)
+    lines, berth_rows, house_rows = carve_bracket(text)
+    printed = [row[0] for row in berth_rows]
+    assert printed == sorted(printed)
+    assert printed != column_one_of(OTHER_CROWN, "bracket.table")
+    assert [row[0] for row in house_rows] == column_one_of(OTHER_CROWN, "roll.table")
+    assert lines[1] == BERTH_BLOCK_HEAD
+    assert lines[2 + len(berth_rows)] == HOUSE_BLOCK_LINE
+
+
+def test_both_tallies_carry_every_state_even_at_nothing():
+    """Examines whether a state reached by nobody still keeps its column."""
+    text = replanted_crown(OTHER_CROWN, [])
+    berths = tally_counts(text, "berths")
+    houses = tally_counts(text, "houses")
+    assert list(berths) == list(BERTH_LADDER)
+    assert list(houses) == list(HOUSE_LADDER_ORDER)
+    assert sum(berths.values()) == 8
+    assert sum(houses.values()) == 8
+    assert berths["CROWNED"] == 0
+
+
+def test_the_sheet_is_closed_by_a_single_newline():
+    """Examines how the filed sheet is terminated and spaced."""
+    for root in (FIRST_CROWN, OTHER_CROWN):
+        text = settled_bracket(root)
+        assert text.endswith("\n")
+        assert not text.endswith("\n\n")
+        assert "" not in text.rstrip("\n").split("\n")
+        assert not any(line.endswith(" ") for line in text.split("\n"))
+
+
+def test_a_clean_run_says_nothing_on_either_stream():
+    """Examines what the run writes to the terminal while filing a sheet."""
+    done, target, _home = file_one_bracket(FIRST_CROWN)
+    assert done.returncode == 0
+    assert done.stdout == ""
+    assert done.stderr == ""
+    assert target.exists()
+    assert Path(BRACKET_TOOL_SRC).is_dir()
+
+
+def steps_recorded(root):
+    steps = []
+    path = Path(root) / "record" / "crown.log"
+    for raw in path.read_text(encoding="ascii").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            steps.append(" ".join(line.split()[1:]))
+    return steps

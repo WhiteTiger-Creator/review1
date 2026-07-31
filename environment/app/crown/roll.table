@@ -1,0 +1,12 @@
+# <house> <seed>, one line to a house. THE ORDER OF THESE LINES IS ROLL ORDER, which is
+# the order the closing sheet prints houses in. The seed is the house's opening seed.
+durrow      3
+ingle       9
+arden       1
+fenwick     6
+birling     4
+lowen      10
+corvane     2
+hurst       8
+gorrel      5
+elsham      7

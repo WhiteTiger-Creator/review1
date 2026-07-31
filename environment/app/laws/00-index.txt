@@ -1,0 +1,52 @@
+THE LAWS OF THE CROWN
+=====================
+
+Six files carry the whole law of the crown. Every rule is numbered, C001 through C160, with no gap
+and no number used twice. This index is a map by topic and carries no rule of its own.
+
+  10-the-bracket.txt    C001 - C028
+      where the recorded crown is read, and how each of its four tables is read
+      the bracket and BRACKET ORDER, which is the reseat order and nothing else
+      the widths, one to a round, and the width past the last round declared
+      the roll, ROLL ORDER, and the opening seeds
+      comments, blank lines, whole numbers, and what the record may never grow
+
+  20-the-record.txt     C029 - C070
+      the record read top line first, one numbered step at a time
+      the six step kinds and no others
+      seat, and the five ways it reaches nothing
+      board, the hands, the more hands taking it, and equal hands
+      what a board enters, and THE MEETING it makes
+      bye, which carries no argument, and what it does not enter
+      concede and its asymmetry
+      strike, and the boards of a struck house that stand
+
+  30-the-standing.txt   C071 - C098
+      the four rungs of the standing, in order
+      wins counting byes, losses counting boards given up
+      STRENGTH: what it is read off, and that it is read at the moment it is weighed
+      the worse seed ranking above, and head to head never weighed
+      when a standing is taken, and when it is FROZEN
+
+  40-the-close.txt      C099 - C126
+      the close, the ranking it takes, and the width the next round allows
+      who goes out, and CUT against FELLED
+      the round marks, what sets them and when they are cleared
+      THE RESEAT into the berths the bracket names first
+      the crown, its two tokens, and that it is never lost
+
+  50-the-states.txt     C127 - C146
+      the five berth states, the order they are weighed in, and their tokens
+      the five house states, the order they are weighed in, and their tokens
+      the places, and the place tokens
+
+  60-the-sheet.txt      C147 - C160
+      the --selfcheck flag and what it does not prove
+      the closing sheet: the head line, the two blocks, the columns, the two sorts and the
+      two tallies, all fixed by C148 through C157
+      the running discipline
+      the awkward cases of the crown gathered again in one place
+
+Where two rules could be read as touching the same question, the more particular rule governs.
+Every rule carrying an order of its own states that order, and the direction of that order, where
+it stands.

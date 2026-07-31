@@ -1,0 +1,12 @@
+# one berth to a line. THE ORDER OF THESE LINES IS BRACKET ORDER: it is the order a
+# reseating fills berths in. It is NOT the order the closing sheet prints berths in.
+south-2
+east-1
+west-1
+north-3
+east-3
+south-1
+west-2
+north-1
+east-2
+north-2

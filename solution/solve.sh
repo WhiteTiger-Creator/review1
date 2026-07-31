@@ -1,19 +1,29 @@
 #!/bin/bash
 set -euo pipefail
 
-cp /solution/analysis.R /app/analysis.R
-Rscript /app/analysis.R
-test -s /app/outputs/predictions.csv
-test -s /app/outputs/validation_predictions.csv
-test -s /app/outputs/metrics.json
-test -s /app/outputs/selection_report.csv
-test -s /app/outputs/threshold_report.csv
-test -s /app/outputs/confusion_matrix.csv
-test -s /app/outputs/class_metrics.csv
-test -s /app/outputs/calibration_bins.csv
-test -s /app/outputs/group_error_report.csv
-test -s /app/outputs/feature_summary.csv
-test -s /app/outputs/neighbor_evidence.csv
-test -s /app/outputs/fit_reference_calibration.csv
-test -s /app/outputs/neighbor_detail.csv
-test -s /app/outputs/loo_audit.csv
+export PATH="/usr/local/go/bin:/go/bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+export HOME="${HOME:-/root}"
+export GOCACHE="${GOCACHE:-/opt/go-cache}"
+export GOPROXY="${GOPROXY:-off}"
+export GOSUMDB="${GOSUMDB:-off}"
+export GOFLAGS="${GOFLAGS:--mod=mod}"
+export GOTOOLCHAIN="${GOTOOLCHAIN:-local}"
+export CGO_ENABLED="${CGO_ENABLED:-0}"
+
+GO="${GO_BIN:-/usr/local/go/bin/go}"
+DST="/app/opt/hallowspar"
+SRC="/solution/reference"
+
+/bin/mkdir -p "$DST"
+/bin/rm -f "$DST"/*.go
+/bin/cp "$SRC/go.mod" "$DST/go.mod"
+/bin/cp "$SRC/tables.go" "$DST/tables.go"
+/bin/cp "$SRC/standing.go" "$DST/standing.go"
+/bin/cp "$SRC/play.go" "$DST/play.go"
+/bin/cp "$SRC/close.go" "$DST/close.go"
+/bin/cp "$SRC/sheet.go" "$DST/sheet.go"
+/bin/cp "$SRC/main.go" "$DST/main.go"
+
+cd "$DST"
+"$GO" build -o /app/bin/hallowspar .
+/app/bin/hallowspar

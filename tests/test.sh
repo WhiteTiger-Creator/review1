@@ -1,37 +1,34 @@
 #!/bin/bash
-# No `set -e`: the reward write at the bottom must happen on every path.
-set -uo pipefail
-
 mkdir -p /logs/verifier
 echo 0 > /logs/verifier/reward.txt
 
 if [ "$PWD" = "/" ]; then
-    echo "error: verifier launched without a working directory" >&2
+    echo "Error: No working directory set."
     exit 1
 fi
 
-TEST_DIR="${TEST_DIR:-/tests}"
+export PATH="/usr/local/go/bin:/go/bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+export GOCACHE="${GOCACHE:-/opt/go-cache}"
+export GOPROXY="${GOPROXY:-off}"
+export GOSUMDB="${GOSUMDB:-off}"
+export GOFLAGS="${GOFLAGS:--mod=mod}"
+export GOTOOLCHAIN="${GOTOOLCHAIN:-local}"
+export CGO_ENABLED="${CGO_ENABLED:-0}"
 
-rm -rf /app/outputs
-mkdir -p /app/outputs
-
-timeout 420s Rscript /app/analysis.R
-R_STATUS=$?
-if [ "$R_STATUS" -ne 0 ]; then
-    echo "analysis.R exited with status $R_STATUS" >&2
+mkdir -p /app/bin /app/var/lib/hallowspar
+if ! ( cd /app/opt/hallowspar && /usr/local/go/bin/go build -o /app/bin/hallowspar . ); then
+    echo "the referee's sources did not build"
+    echo 0 > /logs/verifier/reward.txt
     exit 1
 fi
 
-PYTHONSAFEPATH=1 /opt/verifier-venv/bin/python -I -m pytest \
-    -c "$TEST_DIR/pytest.ini" \
-    --rootdir="$TEST_DIR" \
-    --confcutdir="$TEST_DIR" \
-    -p no:cacheprovider \
-    --ctrf /logs/verifier/ctrf.json \
-    "$TEST_DIR/test_outputs.py" \
-    -v -rA
-PT_STATUS=$?
-if [ "$PT_STATUS" -eq 0 ]; then
+export REFEREE_BIN=/app/bin/hallowspar
+export REFEREE_SRC=/app/opt/hallowspar
+export CROWN_MAIN_ROOT=/app/crown
+
+python3 -m pytest -o cache_dir=/tmp/pytest_cache \
+  --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+if [ $? -eq 0 ]; then
     echo 1 > /logs/verifier/reward.txt
 else
     echo 0 > /logs/verifier/reward.txt
