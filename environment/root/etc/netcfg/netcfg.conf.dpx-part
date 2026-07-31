@@ -1,0 +1,6 @@
+# netcfg 1.5.0
+listen = 0.0.0.0:5300
+workers = 8
+log_level = info
+retry_backoff = 250ms
+region_map = /usr/share/netcfg/regions

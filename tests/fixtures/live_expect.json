@@ -1,0 +1,347 @@
+{
+ "cache": {
+  "hostkit-2.2.0.dpk": "2db85baed4eb6be1b8b6f2df3f58f1afdb7154489bf2d27a2c2fc93ce8347b28",
+  "netcfg-1.4.2.dpk": "be0f93948c3b15a919bc5f4469e77475c3e12a04e0ca9841109154de3e19f583",
+  "netcfg-1.5.0.dpk": "2546758f48e04eddc478dadc6af6726124b25f9a0f37054ad733571038464012",
+  "plait-1.1.0.dpk": "f55e8104291be5068c8bdccae4efb77135364a5b3637c0b0a6673511502a8937",
+  "zoneprep-2.9.dpk": "6f8112ad601e0c1b0d67b21a4db648317f14d59d75603a691b14cbaca5f3d057",
+  "zoneprep-3.0.dpk": "f50848ffcb29c8659f6ce1a2fa6729c890b778adf5110e9e649b33dcd664277a"
+ },
+ "db": {
+  "crumb": {
+   "manifest": [
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/crumb",
+     "ref": "9e85a6f8a80a3e9d379c576cf7fbcafcd29cb09d20aaeb06e49cf4e54d92e91e"
+    },
+    {
+     "config": true,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/etc/crumb/crumb.conf",
+     "ref": "a619352c2e8a17df8b1e3fa279caad0a95342702cb64250ef6082d204e242ae2"
+    }
+   ],
+   "txid": "T-2298",
+   "version": "3.3.1"
+  },
+  "hostkit": {
+   "manifest": [
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/hostkit",
+     "ref": "535de20b68247c453c346baf12692d9417c2fdb2cfdfe4fe1636c1334ad5dbf7"
+    },
+    {
+     "config": true,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/etc/hostkit/hostkit.conf",
+     "ref": "7e3525e6007ea80ad46fca79cd0e9351207fc7739aec916689221d4f5b9a1974"
+    },
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/share/hostkit/banner.txt",
+     "ref": "0625bfd3c8eed8225953bff2a58446ca49d0ba93dae9814673a888f03d249ffb"
+    },
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/lib/netcfg/shared/geo.dat",
+     "ref": "83b7e9b7b26a03ee21662eeeb565a3f680086a78e096b89c62a107322268d8c2"
+    }
+   ],
+   "txid": "T-2417",
+   "version": "2.2.0"
+  },
+  "netcfg": {
+   "manifest": [
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/netcfg",
+     "ref": "d997dc6148d16c97fe9e15de14757494762cedb7aed940d295caf1e39c8985df"
+    },
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/lib/netcfg/rules.tbl",
+     "ref": "bb5aa00a07b1b0e5ee326ef36d6d5be752f5ade48db0769b5e29b1c0528479b3"
+    },
+    {
+     "config": true,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/etc/netcfg/netcfg.conf",
+     "ref": "6bfe502ddf172bf98ef18a6309c0c45edb5787a376b24c393162016d9ad43bae"
+    },
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/lib/netcfg/libnet.so.1.5",
+     "ref": "09e58117a2ff9bab1c3d3e4533df702070d4f9ebbb9aa4c8ffbec91666b3a30f"
+    },
+    {
+     "config": false,
+     "kind": "l",
+     "mode": "0777",
+     "path": "/usr/lib/netcfg/libnet.so.1",
+     "ref": "libnet.so.1.5"
+    },
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/share/netcfg/regions/ap.map",
+     "ref": "3004f87be4b12cb22eadf8191643ffe02c9dc3d93e8b769bf18ab3060b4a59cb"
+    }
+   ],
+   "txid": "T-2417",
+   "version": "1.5.0"
+  },
+  "plait": {
+   "manifest": [
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/plait",
+     "ref": "7c40c53ea63ea314a337512e54c98a8004ccdfece32514258b60366b2cbf6876"
+    },
+    {
+     "config": true,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/etc/plait/plait.conf",
+     "ref": "d33fdea3607542f013ffb2bf94625c1c0ec1a0b20dc5b27f3ebc30f06ee6262a"
+    }
+   ],
+   "txid": "T-2298",
+   "version": "1.0.3"
+  },
+  "sift": {
+   "manifest": [
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/sift",
+     "ref": "f89a5ea0971613067a2f13d3a32fb70f4a7b465021f7c9664997800f9120dc0d"
+    },
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/share/sift/rules.txt",
+     "ref": "49432be30417eebbb5171156954871f856703df9614c665cc75b9ed580eeb9d1"
+    }
+   ],
+   "txid": "T-2298",
+   "version": "0.4.0"
+  },
+  "zoneprep": {
+   "manifest": [
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/zoneprep",
+     "ref": "9d22d3c65467da592c92df0bebbfae4efc3f0bc382f0f10982c383250095669d"
+    },
+    {
+     "config": true,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/etc/zoneprep/zones.conf",
+     "ref": "e24c76130b3104affa0bd7668d4c5814908d098f20fc7d429051cd338e73eefe"
+    },
+    {
+     "config": false,
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/share/zoneprep/base.dat",
+     "ref": "a926c892ba42695173a0402f10358560f1e194040f938e955c459d9bcc1946b0"
+    }
+   ],
+   "txid": "T-2298",
+   "version": "2.9"
+  }
+ },
+ "journals": {
+  "T-2390.jrn": "{\"seq\":1,\"op\":\"txn-begin\",\"txid\":\"T-2390\",\"kind\":\"upgrade\",\"packages\":[\"netcfg\",\"hostkit\"]}\n{\"seq\":2,\"op\":\"pkg-plan\",\"pkg\":\"netcfg\",\"from\":\"1.3.0\",\"to\":\"1.4.2\"}\n{\"seq\":3,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/bin/netcfg\",\"kind\":\"f\",\"mode\":\"0755\",\"ref\":\"b53dc779e5546c84195953ee222d5799e0e10b139527fd74667c867a3fb25cf8\",\"config\":false}\n{\"seq\":4,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/etc/netcfg/netcfg.conf\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"2b296f56d814cfc81898c6d9f5c6aac4dd899e83593794a69977ee6312fb691e\",\"config\":true}\n{\"seq\":5,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/rules.tbl\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"76c4f0b3393f217a6e2f0ef59dd5270003290969dde7f3301738b299d5fcefd7\",\"config\":false}\n{\"seq\":6,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/libnet.so.1\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"1001bedbf81d097dfb6535801634a7cc283955b6993b7c31260cfdb0b30b26a7\",\"config\":false}\n{\"seq\":7,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/shared/geo.dat\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"83b7e9b7b26a03ee21662eeeb565a3f680086a78e096b89c62a107322268d8c2\",\"config\":false}\n{\"seq\":8,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/shared/zones.idx\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"b2b1bb92992af31a72a21935711fd8b3bc923cd1c250a700b76286e47e232e79\",\"config\":false}\n{\"seq\":9,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/share/netcfg/legacy.tbl\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"7461f1b58be253e4ad6f884ed24234d6cff3b7f17a8e67ebdfaaca25708765e1\",\"config\":false}\n{\"seq\":10,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/share/netcfg/tables/old.idx\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"5206a41a892559a25075e069f0eaebab9102774cf06c126fae0b302494cf6483\",\"config\":false}\n{\"seq\":11,\"op\":\"file-obsolete\",\"pkg\":\"netcfg\",\"path\":\"/usr/share/netcfg/v13.tbl\"}\n{\"seq\":12,\"op\":\"stage-done\",\"pkg\":\"netcfg\"}\n{\"seq\":13,\"op\":\"commit-begin\",\"pkg\":\"netcfg\"}\n{\"seq\":14,\"op\":\"file-commit\",\"pkg\":\"netcfg\",\"path\":\"/usr/bin/netcfg\"}\n{\"seq\":15,\"op\":\"file-commit\",\"pkg\":\"netcfg\",\"path\":\"/etc/netcfg/netcfg.conf\"}\n{\"seq\":16,\"op\":\"file-commit\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/rules.tbl\"}\n{\"seq\":17,\"op\":\"file-commit\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/libnet.so.1\"}\n{\"seq\":18,\"op\":\"file-commit\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/shared/geo.dat\"}\n{\"seq\":19,\"op\":\"file-commit\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/shared/zones.idx\"}\n{\"seq\":20,\"op\":\"file-commit\",\"pkg\":\"netcfg\",\"path\":\"/usr/share/netcfg/legacy.tbl\"}\n{\"seq\":21,\"op\":\"file-commit\",\"pkg\":\"netcfg\",\"path\":\"/usr/share/netcfg/tables/old.idx\"}\n{\"seq\":22,\"op\":\"file-remove\",\"pkg\":\"netcfg\",\"path\":\"/usr/share/netcfg/v13.tbl\"}\n{\"seq\":23,\"op\":\"commit-done\",\"pkg\":\"netcfg\"}\n{\"seq\":24,\"op\":\"db-swap\",\"pkg\":\"netcfg\"}\n{\"seq\":25,\"op\":\"pkg-done\",\"pkg\":\"netcfg\"}\n{\"seq\":26,\"op\":\"pkg-plan\",\"pkg\":\"hostkit\",\"from\":\"2.0.0\",\"to\":\"2.1.0\"}\n{\"seq\":27,\"op\":\"file-stage\",\"pkg\":\"hostkit\",\"path\":\"/usr/bin/hostkit\",\"kind\":\"f\",\"mode\":\"0755\",\"ref\":\"5183d4348cfa29490b80dbe946852e61be900f1da32789ab0c72c7077747aafc\",\"config\":false}\n{\"seq\":28,\"op\":\"file-stage\",\"pkg\":\"hostkit\",\"path\":\"/etc/hostkit/hostkit.conf\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"64bcd40b926942b8f8f4135b0e2a8440c56a0c126c86edfdcb203b516ea801fc\",\"config\":true}\n{\"seq\":29,\"op\":\"file-stage\",\"pkg\":\"hostkit\",\"path\":\"/usr/share/hostkit/banner.txt\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"514778974f3a395e19fbcf51b70db11011ed835708c29d2b5bae7a53b17a5ccd\",\"config\":false}\n{\"seq\":30,\"op\":\"stage-done\",\"pkg\":\"hostkit\"}\n{\"seq\":31,\"op\":\"commit-begin\",\"pkg\":\"hostkit\"}\n{\"seq\":32,\"op\":\"file-commit\",\"pkg\":\"hostkit\",\"path\":\"/usr/bin/hostkit\"}\n{\"seq\":33,\"op\":\"file-commit\",\"pkg\":\"hostkit\",\"path\":\"/etc/hostkit/hostkit.conf\"}\n{\"seq\":34,\"op\":\"file-commit\",\"pkg\":\"hostkit\",\"path\":\"/usr/share/hostkit/banner.txt\"}\n{\"seq\":35,\"op\":\"commit-done\",\"pkg\":\"hostkit\"}\n{\"seq\":36,\"op\":\"db-swap\",\"pkg\":\"hostkit\"}\n{\"seq\":37,\"op\":\"pkg-done\",\"pkg\":\"hostkit\"}\n{\"seq\":38,\"op\":\"txn-end\",\"txid\":\"T-2390\"}\n",
+  "T-2417.jrn": "{\"seq\":1,\"op\":\"txn-begin\",\"txid\":\"T-2417\",\"kind\":\"upgrade\",\"packages\":[\"hostkit\",\"netcfg\",\"zoneprep\",\"plait\"]}\n{\"seq\":2,\"op\":\"pkg-plan\",\"pkg\":\"hostkit\",\"from\":\"2.1.0\",\"to\":\"2.2.0\"}\n{\"seq\":3,\"op\":\"file-stage\",\"pkg\":\"hostkit\",\"path\":\"/usr/bin/hostkit\",\"kind\":\"f\",\"mode\":\"0755\",\"ref\":\"535de20b68247c453c346baf12692d9417c2fdb2cfdfe4fe1636c1334ad5dbf7\",\"config\":false}\n{\"seq\":4,\"op\":\"file-stage\",\"pkg\":\"hostkit\",\"path\":\"/etc/hostkit/hostkit.conf\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"7e3525e6007ea80ad46fca79cd0e9351207fc7739aec916689221d4f5b9a1974\",\"config\":true}\n{\"seq\":5,\"op\":\"file-stage\",\"pkg\":\"hostkit\",\"path\":\"/usr/share/hostkit/banner.txt\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"0625bfd3c8eed8225953bff2a58446ca49d0ba93dae9814673a888f03d249ffb\",\"config\":false}\n{\"seq\":6,\"op\":\"file-stage\",\"pkg\":\"hostkit\",\"path\":\"/usr/lib/netcfg/shared/geo.dat\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"83b7e9b7b26a03ee21662eeeb565a3f680086a78e096b89c62a107322268d8c2\",\"config\":false}\n{\"seq\":7,\"op\":\"stage-done\",\"pkg\":\"hostkit\"}\n{\"seq\":8,\"op\":\"commit-begin\",\"pkg\":\"hostkit\"}\n{\"seq\":9,\"op\":\"file-commit\",\"pkg\":\"hostkit\",\"path\":\"/usr/bin/hostkit\"}\n{\"seq\":10,\"op\":\"file-commit\",\"pkg\":\"hostkit\",\"path\":\"/etc/hostkit/hostkit.conf\"}\n{\"seq\":11,\"op\":\"file-commit\",\"pkg\":\"hostkit\",\"path\":\"/usr/share/hostkit/banner.txt\"}\n{\"seq\":12,\"op\":\"file-commit\",\"pkg\":\"hostkit\",\"path\":\"/usr/lib/netcfg/shared/geo.dat\"}\n{\"seq\":13,\"op\":\"commit-done\",\"pkg\":\"hostkit\"}\n{\"seq\":14,\"op\":\"db-swap\",\"pkg\":\"hostkit\"}\n{\"seq\":15,\"op\":\"pkg-done\",\"pkg\":\"hostkit\"}\n{\"seq\":16,\"op\":\"pkg-plan\",\"pkg\":\"netcfg\",\"from\":\"1.4.2\",\"to\":\"1.5.0\"}\n{\"seq\":17,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/bin/netcfg\",\"kind\":\"f\",\"mode\":\"0755\",\"ref\":\"d997dc6148d16c97fe9e15de14757494762cedb7aed940d295caf1e39c8985df\",\"config\":false}\n{\"seq\":18,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/rules.tbl\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"bb5aa00a07b1b0e5ee326ef36d6d5be752f5ade48db0769b5e29b1c0528479b3\",\"config\":false}\n{\"seq\":19,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/etc/netcfg/netcfg.conf\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"6bfe502ddf172bf98ef18a6309c0c45edb5787a376b24c393162016d9ad43bae\",\"config\":true}\n{\"seq\":20,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/libnet.so.1.5\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"09e58117a2ff9bab1c3d3e4533df702070d4f9ebbb9aa4c8ffbec91666b3a30f\",\"config\":false}\n{\"seq\":21,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/libnet.so.1\",\"kind\":\"l\",\"mode\":\"0777\",\"ref\":\"libnet.so.1.5\",\"config\":false}\n{\"seq\":22,\"op\":\"file-stage\",\"pkg\":\"netcfg\",\"path\":\"/usr/share/netcfg/regions/ap.map\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"3004f87be4b12cb22eadf8191643ffe02c9dc3d93e8b769bf18ab3060b4a59cb\",\"config\":false}\n{\"seq\":23,\"op\":\"file-obsolete\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/shared/geo.dat\"}\n{\"seq\":24,\"op\":\"file-obsolete\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/shared/zones.idx\"}\n{\"seq\":25,\"op\":\"file-obsolete\",\"pkg\":\"netcfg\",\"path\":\"/usr/share/netcfg/legacy.tbl\"}\n{\"seq\":26,\"op\":\"file-obsolete\",\"pkg\":\"netcfg\",\"path\":\"/usr/share/netcfg/tables/old.idx\"}\n{\"seq\":27,\"op\":\"stage-done\",\"pkg\":\"netcfg\"}\n{\"seq\":28,\"op\":\"commit-begin\",\"pkg\":\"netcfg\"}\n{\"seq\":29,\"op\":\"file-commit\",\"pkg\":\"netcfg\",\"path\":\"/usr/bin/netcfg\"}\n{\"seq\":30,\"op\":\"file-commit\",\"pkg\":\"netcfg\",\"path\":\"/usr/lib/netcfg/rules.tbl\"}\n"
+ },
+ "prefixes": [
+  "/etc/netcfg",
+  "/etc/hostkit",
+  "/etc/zoneprep",
+  "/etc/plait",
+  "/etc/crumb",
+  "/usr/lib/netcfg",
+  "/usr/share/netcfg",
+  "/usr/share/hostkit",
+  "/usr/share/zoneprep",
+  "/usr/share/plait",
+  "/usr/share/sift",
+  "/usr/bin/netcfg",
+  "/usr/bin/hostkit",
+  "/usr/bin/zoneprep",
+  "/usr/bin/plait",
+  "/usr/bin/crumb",
+  "/usr/bin/sift"
+ ],
+ "tree": {
+  "dirs": [
+   "/etc/crumb",
+   "/etc/hostkit",
+   "/etc/netcfg",
+   "/etc/plait",
+   "/etc/zoneprep",
+   "/usr/lib/netcfg",
+   "/usr/lib/netcfg/shared",
+   "/usr/share/hostkit",
+   "/usr/share/netcfg",
+   "/usr/share/netcfg/regions",
+   "/usr/share/sift",
+   "/usr/share/zoneprep"
+  ],
+  "entries": [
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/crumb/crumb.conf",
+    "text": "# crumb 3.3.1\ncache = 64m\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/hostkit/hostkit.conf",
+    "text": "# hostkit 2.1.0\nhostname_source = static\nstatic_name = edge-07.corp\nttl = 900\nprobe_interval = 60\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/hostkit/hostkit.conf.dpxnew",
+    "text": "# hostkit 2.2.0\nhostname_source = dhcp\nttl = 300\nprobe_interval = 60\ngeo_table = /usr/lib/netcfg/shared/geo.dat\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/netcfg/netcfg.conf",
+    "text": "# netcfg 1.4.2\nlisten = 10.4.0.11:5300\nworkers = 4\nlog_level = debug\nretry_backoff = 250ms\ntrusted_peers = 10.4.0.12,10.4.0.13\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/netcfg/netcfg.conf.dpxnew",
+    "text": "# netcfg 1.5.0\nlisten = 0.0.0.0:5300\nworkers = 8\nlog_level = info\nretry_backoff = 250ms\nregion_map = /usr/share/netcfg/regions\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/plait/plait.conf",
+    "text": "# plait 1.0.3\nthreads = 2\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/zoneprep/zones.conf",
+    "text": "# zoneprep 2.9\nsource = /usr/share/zoneprep/base.dat\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/crumb",
+    "text": "#!/bin/sh\n# crumb 3.3.1\necho crumb\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/hostkit",
+    "text": "#!/bin/sh\n# hostkit 2.2.0\necho hostkit\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/netcfg",
+    "text": "#!/bin/sh\n# netcfg 1.5.0\nexec /usr/lib/netcfg/dispatch \"$@\"\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/plait",
+    "text": "#!/bin/sh\n# plait 1.0.3\necho plait\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/sift",
+    "text": "#!/bin/sh\n# sift 0.4.0\necho sift\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/zoneprep",
+    "text": "#!/bin/sh\n# zoneprep 2.9\necho zoneprep\n"
+   },
+   {
+    "kind": "l",
+    "path": "/usr/lib/netcfg/libnet.so.1",
+    "target": "libnet.so.1.5"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/lib/netcfg/libnet.so.1.5",
+    "text": "ELF-STUB libnet 1.5.0\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/lib/netcfg/rules.tbl",
+    "text": "# rules 1.5.0\nallow lan\nallow vpn\nallow mesh\ndeny wan\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/lib/netcfg/shared/geo.dat",
+    "text": "geo-table v4\neu 1\nna 2\nap 3\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/share/hostkit/banner.txt",
+    "text": "hostkit 2.2.0\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/share/netcfg/regions/ap.map",
+    "text": "ap-southeast-1 sin\nap-northeast-1 nrt\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/share/sift/rules.txt",
+    "text": "sift rules\ndrop noise\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/share/zoneprep/base.dat",
+    "text": "base zones\neu-west\nus-east\n"
+   }
+  ]
+ }
+}

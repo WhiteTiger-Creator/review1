@@ -1,0 +1,259 @@
+{
+ "cache": {
+  "gantry-5.1.dpk": "58f869a9fe220266cfa318220643996616188d06a63d6ed9e4798c3a836cb2b3",
+  "rivet-3.2.dpk": "c8491fb5295f519fc7b93e178377f2a776429c546b236058afa9f4fa7eafddc1"
+ },
+ "expect": {
+  "db": {
+   "gantry": {
+    "manifest": [
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0755",
+      "path": "/usr/bin/gantry",
+      "ref": "f24f3da3dc90af88786b425261413c23b59bfc117719bfe40ec8fcacc3c2395c"
+     },
+     {
+      "config": true,
+      "kind": "f",
+      "mode": "0644",
+      "path": "/etc/gantry/g.conf",
+      "ref": "eeee064d5eed98e4d29b3ef4e8541176b2c6f895be94861b566e0ae210093a8e"
+     },
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0644",
+      "path": "/usr/share/gantry/data.bin",
+      "ref": "6e903a85e725a72edf3433903c05011e06524fe540061c858cacfe70a8652017"
+     }
+    ],
+    "txid": "T-3400",
+    "version": "5.0"
+   },
+   "rivet": {
+    "manifest": [
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0755",
+      "path": "/usr/bin/rivet",
+      "ref": "ea619894459990a168305d75a5a154096c81071fc9c92107ad471a67e915bdab"
+     },
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0644",
+      "path": "/usr/share/rivet/pins.txt",
+      "ref": "d68dc7755cc6a763a00021ec9b27fde5f4fe6e391e9ca06860042b26fa78ddb4"
+     }
+    ],
+    "txid": "T-3400",
+    "version": "3.1"
+   }
+  },
+  "tree": {
+   "dirs": [
+    "/",
+    "/etc",
+    "/etc/gantry",
+    "/usr",
+    "/usr/bin",
+    "/usr/share",
+    "/usr/share/gantry",
+    "/usr/share/rivet",
+    "/var",
+    "/var/cache",
+    "/var/lib",
+    "/var/lib/dpx",
+    "/var/lib/dpx/db",
+    "/var/lib/dpx/db/gantry",
+    "/var/lib/dpx/db/rivet",
+    "/var/lib/dpx/journal"
+   ],
+   "entries": [
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/etc/gantry/g.conf",
+     "text": "# gantry 5.0\nslots = 24\naffinity = 0-7\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/gantry",
+     "text": "#!/bin/sh\n# gantry 5.0\necho gantry\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/rivet",
+     "text": "#!/bin/sh\n# rivet 3.1\necho rivet\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/share/gantry/data.bin",
+     "text": "gantry data 5.0\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/share/rivet/pins.txt",
+     "text": "pins\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/gantry/manifest",
+     "text": "f 0644 eeee064d5eed98e4d29b3ef4e8541176b2c6f895be94861b566e0ae210093a8e c /etc/gantry/g.conf\nf 0755 f24f3da3dc90af88786b425261413c23b59bfc117719bfe40ec8fcacc3c2395c - /usr/bin/gantry\nf 0644 6e903a85e725a72edf3433903c05011e06524fe540061c858cacfe70a8652017 - /usr/share/gantry/data.bin\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/gantry/meta",
+     "text": "name: gantry\nversion: 5.0\ninstalled-txid: T-3400\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/index",
+     "text": "/etc/gantry/g.conf gantry\n/usr/bin/gantry gantry\n/usr/bin/rivet rivet\n/usr/share/gantry/data.bin gantry\n/usr/share/rivet/pins.txt rivet\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/rivet/manifest",
+     "text": "f 0755 ea619894459990a168305d75a5a154096c81071fc9c92107ad471a67e915bdab - /usr/bin/rivet\nf 0644 d68dc7755cc6a763a00021ec9b27fde5f4fe6e391e9ca06860042b26fa78ddb4 - /usr/share/rivet/pins.txt\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/rivet/meta",
+     "text": "name: rivet\nversion: 3.1\ninstalled-txid: T-3400\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/journal/T-3402.jrn",
+     "text": ""
+    }
+   ]
+  }
+ },
+ "name": "c",
+ "root": {
+  "dirs": [
+   "/",
+   "/etc",
+   "/etc/gantry",
+   "/usr",
+   "/usr/bin",
+   "/usr/share",
+   "/usr/share/gantry",
+   "/usr/share/gantry/plugins",
+   "/usr/share/rivet",
+   "/var",
+   "/var/cache",
+   "/var/lib",
+   "/var/lib/dpx",
+   "/var/lib/dpx/db",
+   "/var/lib/dpx/db/gantry",
+   "/var/lib/dpx/db/rivet",
+   "/var/lib/dpx/journal"
+  ],
+  "entries": [
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/gantry/g.conf",
+    "text": "# gantry 5.0\nslots = 24\naffinity = 0-7\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0600",
+    "path": "/etc/gantry/g.conf.dpx-part",
+    "text": "# gantry 5.1\nslots = 16\nspill = on\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/gantry",
+    "text": "#!/bin/sh\n# gantry 5.0\necho gantry\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0600",
+    "path": "/usr/bin/gantry.dpx-part",
+    "text": "#!/bin/sh\n# gantry 5.1\necho gantry\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/rivet",
+    "text": "#!/bin/sh\n# rivet 3.1\necho rivet\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/share/gantry/data.bin",
+    "text": "gantry data 5.0\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0600",
+    "path": "/usr/share/gantry/plugins/p1.so.dpx-part",
+    "text": "plugin one\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/share/rivet/pins.txt",
+    "text": "pins\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/gantry/manifest",
+    "text": "f 0644 eeee064d5eed98e4d29b3ef4e8541176b2c6f895be94861b566e0ae210093a8e c /etc/gantry/g.conf\nf 0755 f24f3da3dc90af88786b425261413c23b59bfc117719bfe40ec8fcacc3c2395c - /usr/bin/gantry\nf 0644 6e903a85e725a72edf3433903c05011e06524fe540061c858cacfe70a8652017 - /usr/share/gantry/data.bin\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/gantry/meta",
+    "text": "name: gantry\nversion: 5.0\ninstalled-txid: T-3400\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/index",
+    "text": "/etc/gantry/g.conf gantry\n/usr/bin/gantry gantry\n/usr/bin/rivet rivet\n/usr/share/gantry/data.bin gantry\n/usr/share/rivet/pins.txt rivet\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/rivet/manifest",
+    "text": "f 0755 ea619894459990a168305d75a5a154096c81071fc9c92107ad471a67e915bdab - /usr/bin/rivet\nf 0644 d68dc7755cc6a763a00021ec9b27fde5f4fe6e391e9ca06860042b26fa78ddb4 - /usr/share/rivet/pins.txt\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/rivet/meta",
+    "text": "name: rivet\nversion: 3.1\ninstalled-txid: T-3400\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/journal/T-3402.jrn",
+    "text": "{\"seq\":1,\"op\":\"txn-begin\",\"txid\":\"T-3402\",\"kind\":\"upgrade\",\"packages\":[\"gantry\",\"rivet\"]}\n{\"seq\":2,\"op\":\"pkg-plan\",\"pkg\":\"gantry\",\"from\":\"5.0\",\"to\":\"5.1\"}\n{\"seq\":3,\"op\":\"file-stage\",\"pkg\":\"gantry\",\"path\":\"/usr/bin/gantry\",\"kind\":\"f\",\"mode\":\"0755\",\"ref\":\"9a3caade6ec0a94ecbc4f3603996c006765e6a607f9017b829b0d822b1b35a92\",\"config\":false}\n{\"seq\":4,\"op\":\"file-stage\",\"pkg\":\"gantry\",\"path\":\"/etc/gantry/g.conf\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"2a8683317a7e4c47b8241ebec96c4e1e8acce9f0c02691a2384a2dc4717e1e07\",\"config\":true}\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/journal/current",
+    "text": "T-3402\n"
+   }
+  ]
+ }
+}

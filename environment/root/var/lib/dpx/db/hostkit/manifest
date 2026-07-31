@@ -1,0 +1,4 @@
+f 0644 7e3525e6007ea80ad46fca79cd0e9351207fc7739aec916689221d4f5b9a1974 c /etc/hostkit/hostkit.conf
+f 0755 535de20b68247c453c346baf12692d9417c2fdb2cfdfe4fe1636c1334ad5dbf7 - /usr/bin/hostkit
+f 0644 83b7e9b7b26a03ee21662eeeb565a3f680086a78e096b89c62a107322268d8c2 - /usr/lib/netcfg/shared/geo.dat
+f 0644 0625bfd3c8eed8225953bff2a58446ca49d0ba93dae9814673a888f03d249ffb - /usr/share/hostkit/banner.txt

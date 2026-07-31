@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""dpx -- DPX/1 package tool.
+
+Read-only inspection of a DPX/1 root, plus the --force install repair hatch.
+Transactions are driven by the fleet orchestrator, not by this binary.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+import tarfile
+
+DB_DIR = "var/lib/dpx/db"
+JOURNAL_DIR = "var/lib/dpx/journal"
+PART = ".dpx-part"
+NEW = ".dpxnew"
+
+VERSION = "dpx 1.6.2 (DPX/1)"
+
+
+def real(root, path):
+    return os.path.join(root, path.lstrip("/"))
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def read_meta(root, pkg):
+    out = {}
+    with open(real(root, f"/{DB_DIR}/{pkg}/meta")) as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            key, _, value = line.partition(": ")
+            out[key] = value
+    return out
+
+
+def read_manifest(root, pkg):
+    entries = []
+    with open(real(root, f"/{DB_DIR}/{pkg}/manifest")) as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            kind, mode, ref, flags, path = line.split(" ", 4)
+            entries.append(
+                {
+                    "kind": kind,
+                    "mode": mode,
+                    "ref": ref,
+                    "config": flags == "c",
+                    "path": path,
+                }
+            )
+    return entries
+
+
+def packages(root):
+    base = real(root, "/" + DB_DIR)
+    if not os.path.isdir(base):
+        return []
+    return sorted(n for n in os.listdir(base) if os.path.isdir(os.path.join(base, n)))
+
+
+def load_db(root):
+    db = {}
+    for pkg in packages(root):
+        db[pkg] = {"meta": read_meta(root, pkg), "manifest": read_manifest(root, pkg)}
+    return db
+
+
+def journal_records(root, txid):
+    out = []
+    with open(real(root, f"/{JOURNAL_DIR}/{txid}.jrn")) as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    return out
+
+
+def current_txid(root):
+    path = real(root, f"/{JOURNAL_DIR}/current")
+    if not os.path.exists(path):
+        return None
+    with open(path) as fh:
+        return fh.read().strip() or None
+
+
+def journal_paths(root):
+    """Every path any journal in this root ever mentions."""
+    base = real(root, "/" + JOURNAL_DIR)
+    seen = set()
+    if not os.path.isdir(base):
+        return seen
+    for name in sorted(os.listdir(base)):
+        if not name.endswith(".jrn"):
+            continue
+        for rec in journal_records(root, name[:-4]):
+            if "path" in rec:
+                seen.add(rec["path"])
+    return seen
+
+
+def mode_of(root, path):
+    return "%04o" % (os.lstat(real(root, path)).st_mode & 0o7777)
+
+
+def scan(root, known):
+    """Walk the directories DPX/1 keeps files in, looking for leftovers.
+
+    Everything under the parent of any path the database or a journal mentions is in
+    scope, so a file staged into a directory nothing is installed in yet still shows up.
+    """
+    tops = []
+    for d in sorted({os.path.dirname(p) for p in known}):
+        if any(d == t or d.startswith(t.rstrip("/") + "/") for t in tops):
+            continue
+        tops.append(d)
+    found = set()
+    for top in tops:
+        base = real(root, top)
+        if not os.path.isdir(base):
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            rel = "/" + os.path.relpath(dirpath, root).replace(os.sep, "/")
+            rel = "/" if rel == "/." else rel
+            for name in list(filenames) + list(dirnames):
+                if name.endswith(PART) or name.endswith(NEW):
+                    found.add(os.path.join(rel, name))
+    return found
+
+
+def check(root):
+    """Return the list of consistency findings for a root."""
+    findings = []
+    db = load_db(root)
+
+    owners = {}
+    for pkg, rec in sorted(db.items()):
+        entries = rec["manifest"]
+        if [e["path"] for e in entries] != sorted(e["path"] for e in entries):
+            findings.append(("E", pkg, "manifest is not sorted by path"))
+        for e in entries:
+            owners.setdefault(e["path"], []).append(pkg)
+            target = real(root, e["path"])
+            if not os.path.lexists(target):
+                findings.append(("E", pkg, f"missing {e['path']}"))
+                continue
+            if e["kind"] == "l":
+                if not os.path.islink(target):
+                    findings.append(("E", pkg, f"not a symlink {e['path']}"))
+                elif os.readlink(target) != e["ref"]:
+                    findings.append(("E", pkg, f"wrong link target {e['path']}"))
+                continue
+            if os.path.islink(target) or not os.path.isfile(target):
+                findings.append(("E", pkg, f"not a regular file {e['path']}"))
+                continue
+            if mode_of(root, e["path"]) != e["mode"]:
+                findings.append(
+                    ("E", pkg, f"mode {mode_of(root, e['path'])} != {e['mode']} {e['path']}")
+                )
+            if digest(target) != e["ref"]:
+                if e["config"]:
+                    findings.append(("M", pkg, f"locally modified {e['path']}"))
+                else:
+                    findings.append(("E", pkg, f"content differs {e['path']}"))
+
+    for path, pkgs in sorted(owners.items()):
+        if len(pkgs) > 1:
+            findings.append(("E", ",".join(pkgs), f"claimed by more than one package {path}"))
+
+    want = sorted(f"{e['path']} {pkg}\n" for pkg, rec in db.items() for e in rec["manifest"])
+    index_path = real(root, f"/{DB_DIR}/index")
+    have = open(index_path).readlines() if os.path.exists(index_path) else None
+    if have is None:
+        findings.append(("E", "-", "database index is missing"))
+    elif have != want:
+        findings.append(("E", "-", "database index does not match the installed packages"))
+
+    config_paths = {e["path"] for rec in db.values() for e in rec["manifest"] if e["config"]}
+    for name in sorted(scan(root, set(owners) | journal_paths(root))):
+        if name.endswith(PART):
+            findings.append(("E", "-", f"staged file left behind {name}"))
+        elif name.endswith(NEW) and name[: -len(NEW)] not in config_paths:
+            findings.append(("E", "-", f"unclaimed {NEW} companion {name}"))
+
+    txid = current_txid(root)
+    if txid:
+        findings.append(("E", "-", f"transaction {txid} is still marked current"))
+    return findings
+
+
+def cmd_verify(args):
+    findings = check(args.root)
+    errors = [f for f in findings if f[0] == "E"]
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "root": args.root,
+                    "consistent": not errors,
+                    "findings": [
+                        {"level": lvl, "package": pkg, "detail": msg} for lvl, pkg, msg in findings
+                    ],
+                },
+                indent=2,
+            )
+        )
+    else:
+        for lvl, pkg, msg in findings:
+            print(f"{lvl} {pkg}: {msg}")
+        print("consistent" if not errors else f"{len(errors)} problem(s)")
+    return 1 if errors else 0
+
+
+def cmd_status(args):
+    root = args.root
+    txid = current_txid(root)
+    if not txid:
+        print("no transaction in flight")
+        return 0
+    recs = journal_records(root, txid)
+    begin = recs[0] if recs else {}
+    print(f"transaction {txid} ({begin.get('kind', '?')}) is in flight")
+    print("  packages: " + " ".join(begin.get("packages", [])))
+    last = {}
+    for rec in recs:
+        if "pkg" in rec:
+            last[rec["pkg"]] = rec
+    for pkg in begin.get("packages", []):
+        rec = last.get(pkg)
+        if rec is None:
+            print(f"  {pkg}: no record")
+        else:
+            where = rec.get("path", "")
+            print(f"  {pkg}: seq {rec['seq']} {rec['op']} {where}".rstrip())
+    print(f"  last record: seq {recs[-1]['seq']} {recs[-1]['op']}" if recs else "  empty journal")
+    return 0
+
+
+def cmd_list(args):
+    for pkg in packages(args.root):
+        meta = read_meta(args.root, pkg)
+        print(f"{pkg} {meta.get('version', '?')} {meta.get('installed-txid', '?')}")
+    return 0
+
+
+def cmd_show(args):
+    meta = read_meta(args.root, args.package)
+    for key in ("name", "version", "installed-txid"):
+        print(f"{key}: {meta.get(key, '')}")
+    print(f"files: {len(read_manifest(args.root, args.package))}")
+    return 0
+
+
+def cmd_files(args):
+    for e in read_manifest(args.root, args.package):
+        flag = "c" if e["config"] else "-"
+        print(f"{e['kind']} {e['mode']} {e['ref']} {flag} {e['path']}")
+    return 0
+
+
+def cmd_hash(args):
+    for path in args.paths:
+        print(f"{digest(path)}  {path}")
+    return 0
+
+
+def cmd_install(args):
+    """--force: write every file the archive carries, then take over the record.
+
+    This is a repair hatch. It does not consult the installed manifest, it does not
+    apply the config-file rule from the DPX/1 contract, and it does not remove files
+    the previous version owned.
+    """
+    if not args.force:
+        sys.stderr.write("dpx: transactional installs are driven by the orchestrator; "
+                         "use --force to write an archive straight to disk\n")
+        return 2
+    root = args.root
+    with tarfile.open(args.archive) as tar:
+        info = tar.extractfile("PKGINFO").read().decode()
+        manifest = tar.extractfile("MANIFEST").read().decode()
+        meta = dict(line.split(": ", 1) for line in info.strip().splitlines())
+        entries = []
+        for line in manifest.strip().splitlines():
+            kind, mode, ref, flags, path = line.split(" ", 4)
+            entries.append({"kind": kind, "mode": mode, "ref": ref, "flags": flags, "path": path})
+        for e in entries:
+            target = real(root, e["path"])
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            member = tar.getmember("data" + e["path"])
+            if os.path.lexists(target):
+                os.remove(target)
+            if e["kind"] == "l":
+                os.symlink(member.linkname, target)
+            else:
+                with open(target, "wb") as out:
+                    out.write(tar.extractfile(member).read())
+                os.chmod(target, int(e["mode"], 8))
+
+    pkg = meta["name"]
+    pkg_dir = real(root, f"/{DB_DIR}/{pkg}")
+    os.makedirs(pkg_dir, exist_ok=True)
+    with open(os.path.join(pkg_dir, "meta"), "w") as fh:
+        fh.write(f"name: {pkg}\nversion: {meta['version']}\ninstalled-txid: {args.txid}\n")
+    with open(os.path.join(pkg_dir, "manifest"), "w") as fh:
+        for e in sorted(entries, key=lambda x: x["path"]):
+            fh.write(f"{e['kind']} {e['mode']} {e['ref']} {e['flags']} {e['path']}\n")
+
+    db = load_db(root)
+    lines = sorted(f"{e['path']} {name}\n" for name, rec in db.items() for e in rec["manifest"])
+    with open(real(root, f"/{DB_DIR}/index"), "w") as fh:
+        fh.writelines(lines)
+    print(f"forced {pkg} {meta['version']}")
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="dpx", description="DPX/1 package tool")
+    parser.add_argument("--version", action="version", version=VERSION)
+    parser.add_argument("--root", default="/", help="root of the DPX/1 install (default /)")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("verify", help="report on the consistency of a root")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("status", help="describe the transaction in flight, if any")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("list", help="list installed packages")
+    p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("show", help="show a package record")
+    p.add_argument("package")
+    p.set_defaults(func=cmd_show)
+
+    p = sub.add_parser("files", help="print a package manifest")
+    p.add_argument("package")
+    p.set_defaults(func=cmd_files)
+
+    p = sub.add_parser("hash", help="sha256 a file the way DPX/1 does")
+    p.add_argument("paths", nargs="+")
+    p.set_defaults(func=cmd_hash)
+
+    p = sub.add_parser("install", help="write an archive straight to disk")
+    p.add_argument("archive")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--txid", default="T-FORCED")
+    p.set_defaults(func=cmd_install)
+
+    args = parser.parse_args(argv)
+    args.root = os.path.abspath(args.root)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, KeyError) as exc:
+        sys.stderr.write(f"dpx: {exc}\n")
+        sys.exit(2)

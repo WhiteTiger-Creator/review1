@@ -1,0 +1,3 @@
+#!/bin/sh
+# plait 1.0.3
+echo plait

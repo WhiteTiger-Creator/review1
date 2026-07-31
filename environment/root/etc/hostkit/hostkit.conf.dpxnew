@@ -1,0 +1,5 @@
+# hostkit 2.2.0
+hostname_source = dhcp
+ttl = 300
+probe_interval = 60
+geo_table = /usr/lib/netcfg/shared/geo.dat

@@ -1,0 +1,3 @@
+#!/bin/sh
+# hostkit 2.2.0
+echo hostkit

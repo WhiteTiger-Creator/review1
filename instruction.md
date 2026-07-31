@@ -1,3 +1,13 @@
-I need the current incident-risk calibration surface rebuilt in `/app`. Create `/app/bin/lattice-calibrate` so it reads `/app/data/lattice_config.json`, `/app/data/observations.json`, `/app/data/validation_cases.json`, and `/app/data/scoring_cases.json`, then writes `/app/out/calibration.json` and `/app/out/current_model.tsv`. The calibration contract at `/app/docs/lattice-calibration-contract.md` and the JSON schema at `/app/api/calibration.schema.json` define the exact fitting, model-selection, ordering, rounding, and decision rules.
+edge-07 dropped power in the middle of an overnight DPX/1 upgrade run and came back up in a
+state nobody trusts. `dpx verify` is unhappy about it and the rest of the rollout is queued
+behind this box. Get it back to consistent, with the interrupted run properly closed out.
 
-The command must replace stale outputs on each successful run and must not rewrite the last good outputs if the live training, validation, or scoring data is invalid. The selected model is the smoothing and shrinkage candidate pair with the lowest unrounded validation negative log likelihood after monotone pooling, logit shrinkage, and validation-fitted isotonic recalibration; ties use the smaller smoothing value, then the smaller shrinkage value. Include every configured severity/recency cell, every scoring case, every selected calibration block, and all candidate scores in the JSON report, and keep the TSV sorted by severity order and then recency order.
+Nineteen more boxes went down with it and I'm not doing this by hand nineteen times, so the
+fix has to be a thing we can ship: put it at /usr/local/sbin/dpx-reconcile, one argument
+which is the root of the install, exit 0 once it's done and that root is consistent. It has
+to be safe to run twice. Then run it here — this box's root is /.
+
+Worth saying: DPX/1 makes a set of promises about what lives on a machine, and none of them
+stop applying just because a run got cut in half. They're written up at
+/usr/local/share/doc/dpx/dpx-1.md. Whatever you do to tidy this up has to still keep every
+one of them. No network on the box.

@@ -1,0 +1,242 @@
+{
+ "cache": {
+  "ferrule-1.3.dpk": "969df40729c161a953c57b4f3d7caf8d7a7dc08024a21ea27113794c97659257",
+  "quoin-8.1.dpk": "39bbf3df1f6ae674a7ac859b3da70a8464aed4715ac236c30687fb761674bce9"
+ },
+ "expect": {
+  "db": {
+   "ferrule": {
+    "manifest": [
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0755",
+      "path": "/usr/bin/ferrule",
+      "ref": "55524a241cfbad8a1aa13bb6471173cb43b963d553c68e87c1ced896c7d604dd"
+     },
+     {
+      "config": true,
+      "kind": "f",
+      "mode": "0644",
+      "path": "/etc/ferrule/f.conf",
+      "ref": "6f81273d5a223a2985900aedbb49ae08e27cab8b14c43567defc0e82a4967519"
+     },
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0644",
+      "path": "/usr/share/ferrule/tbl/b.dat",
+      "ref": "9ed4ea5b81cf562c080b9cba846a2d124f02ca9062c85e99a9d67599c37683f2"
+     }
+    ],
+    "txid": "T-3555",
+    "version": "1.3"
+   },
+   "quoin": {
+    "manifest": [
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0755",
+      "path": "/usr/bin/quoin",
+      "ref": "b3d2001fcf02a0dc2310939bbb4115adb9e287e5fc750a68da8a766eb81c7858"
+     },
+     {
+      "config": true,
+      "kind": "f",
+      "mode": "0644",
+      "path": "/etc/quoin/q.conf",
+      "ref": "b47a9bd353131e70fa25d9ab02cbe574dd0cdde4b3e6fb840b6e92c0119e1578"
+     }
+    ],
+    "txid": "T-3550",
+    "version": "8.0"
+   }
+  },
+  "tree": {
+   "dirs": [
+    "/",
+    "/etc",
+    "/etc/ferrule",
+    "/etc/quoin",
+    "/usr",
+    "/usr/bin",
+    "/usr/share",
+    "/usr/share/ferrule",
+    "/usr/share/ferrule/tbl",
+    "/var",
+    "/var/cache",
+    "/var/lib",
+    "/var/lib/dpx",
+    "/var/lib/dpx/db",
+    "/var/lib/dpx/db/ferrule",
+    "/var/lib/dpx/db/quoin",
+    "/var/lib/dpx/journal"
+   ],
+   "entries": [
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/etc/ferrule/f.conf",
+     "text": "# ferrule 1.3\ngrip = firm\ntaper = 2\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/etc/quoin/q.conf",
+     "text": "# quoin 8.0\nbevel = 30\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/ferrule",
+     "text": "#!/bin/sh\n# ferrule 1.3\necho ferrule\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/quoin",
+     "text": "#!/bin/sh\n# quoin 8.0\necho quoin\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/share/ferrule/tbl/b.dat",
+     "text": "table b\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/ferrule/manifest",
+     "text": "f 0644 6f81273d5a223a2985900aedbb49ae08e27cab8b14c43567defc0e82a4967519 c /etc/ferrule/f.conf\nf 0755 55524a241cfbad8a1aa13bb6471173cb43b963d553c68e87c1ced896c7d604dd - /usr/bin/ferrule\nf 0644 9ed4ea5b81cf562c080b9cba846a2d124f02ca9062c85e99a9d67599c37683f2 - /usr/share/ferrule/tbl/b.dat\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/ferrule/meta",
+     "text": "name: ferrule\nversion: 1.3\ninstalled-txid: T-3555\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/index",
+     "text": "/etc/ferrule/f.conf ferrule\n/etc/quoin/q.conf quoin\n/usr/bin/ferrule ferrule\n/usr/bin/quoin quoin\n/usr/share/ferrule/tbl/b.dat ferrule\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/quoin/manifest",
+     "text": "f 0644 b47a9bd353131e70fa25d9ab02cbe574dd0cdde4b3e6fb840b6e92c0119e1578 c /etc/quoin/q.conf\nf 0755 b3d2001fcf02a0dc2310939bbb4115adb9e287e5fc750a68da8a766eb81c7858 - /usr/bin/quoin\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/quoin/meta",
+     "text": "name: quoin\nversion: 8.0\ninstalled-txid: T-3550\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/journal/T-3555.jrn",
+     "text": "{\"seq\":1,\"op\":\"txn-begin\",\"txid\":\"T-3555\",\"kind\":\"upgrade\",\"packages\":[\"ferrule\"]}\n{\"seq\":2,\"op\":\"pkg-plan\",\"pkg\":\"ferrule\",\"from\":\"1.2\",\"to\":\"1.3\"}\n{\"seq\":3,\"op\":\"file-stage\",\"pkg\":\"ferrule\",\"path\":\"/usr/bin/ferrule\",\"kind\":\"f\",\"mode\":\"0755\",\"ref\":\"55524a241cfbad8a1aa13bb6471173cb43b963d553c68e87c1ced896c7d604dd\",\"config\":false}\n{\"seq\":4,\"op\":\"file-stage\",\"pkg\":\"ferrule\",\"path\":\"/etc/ferrule/f.conf\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"6f81273d5a223a2985900aedbb49ae08e27cab8b14c43567defc0e82a4967519\",\"config\":true}\n{\"seq\":5,\"op\":\"file-stage\",\"pkg\":\"ferrule\",\"path\":\"/usr/share/ferrule/tbl/b.dat\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"9ed4ea5b81cf562c080b9cba846a2d124f02ca9062c85e99a9d67599c37683f2\",\"config\":false}\n{\"seq\":6,\"op\":\"file-obsolete\",\"pkg\":\"ferrule\",\"path\":\"/usr/share/ferrule/tbl/a.dat\"}\n{\"seq\":7,\"op\":\"stage-done\",\"pkg\":\"ferrule\"}\n{\"seq\":8,\"op\":\"commit-begin\",\"pkg\":\"ferrule\"}\n{\"seq\":9,\"op\":\"file-commit\",\"pkg\":\"ferrule\",\"path\":\"/usr/bin/ferrule\"}\n{\"seq\":10,\"op\":\"file-commit\",\"pkg\":\"ferrule\",\"path\":\"/etc/ferrule/f.conf\"}\n{\"seq\":11,\"op\":\"file-commit\",\"pkg\":\"ferrule\",\"path\":\"/usr/share/ferrule/tbl/b.dat\"}\n{\"seq\":12,\"op\":\"file-remove\",\"pkg\":\"ferrule\",\"path\":\"/usr/share/ferrule/tbl/a.dat\"}\n{\"seq\":13,\"op\":\"commit-done\",\"pkg\":\"ferrule\"}\n{\"seq\":14,\"op\":\"db-swap\",\"pkg\":\"ferrule\"}\n{\"seq\":15,\"op\":\"pkg-done\",\"pkg\":\"ferrule\"}\n{\"seq\":16,\"op\":\"txn-end\",\"txid\":\"T-3555\"}\n"
+    }
+   ]
+  }
+ },
+ "name": "d",
+ "root": {
+  "dirs": [
+   "/",
+   "/etc",
+   "/etc/ferrule",
+   "/etc/quoin",
+   "/usr",
+   "/usr/bin",
+   "/usr/share",
+   "/usr/share/ferrule",
+   "/usr/share/ferrule/tbl",
+   "/var",
+   "/var/cache",
+   "/var/lib",
+   "/var/lib/dpx",
+   "/var/lib/dpx/db",
+   "/var/lib/dpx/db/ferrule",
+   "/var/lib/dpx/db/quoin",
+   "/var/lib/dpx/journal"
+  ],
+  "entries": [
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/ferrule/f.conf",
+    "text": "# ferrule 1.3\ngrip = firm\ntaper = 2\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/quoin/q.conf",
+    "text": "# quoin 8.0\nbevel = 30\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/ferrule",
+    "text": "#!/bin/sh\n# ferrule 1.3\necho ferrule\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/quoin",
+    "text": "#!/bin/sh\n# quoin 8.0\necho quoin\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/share/ferrule/tbl/b.dat",
+    "text": "table b\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/ferrule/manifest",
+    "text": "f 0644 6f81273d5a223a2985900aedbb49ae08e27cab8b14c43567defc0e82a4967519 c /etc/ferrule/f.conf\nf 0755 55524a241cfbad8a1aa13bb6471173cb43b963d553c68e87c1ced896c7d604dd - /usr/bin/ferrule\nf 0644 9ed4ea5b81cf562c080b9cba846a2d124f02ca9062c85e99a9d67599c37683f2 - /usr/share/ferrule/tbl/b.dat\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/ferrule/meta",
+    "text": "name: ferrule\nversion: 1.3\ninstalled-txid: T-3555\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/index",
+    "text": "/etc/ferrule/f.conf ferrule\n/etc/quoin/q.conf quoin\n/usr/bin/ferrule ferrule\n/usr/bin/quoin quoin\n/usr/share/ferrule/tbl/a.dat ferrule\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/quoin/manifest",
+    "text": "f 0644 b47a9bd353131e70fa25d9ab02cbe574dd0cdde4b3e6fb840b6e92c0119e1578 c /etc/quoin/q.conf\nf 0755 b3d2001fcf02a0dc2310939bbb4115adb9e287e5fc750a68da8a766eb81c7858 - /usr/bin/quoin\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/quoin/meta",
+    "text": "name: quoin\nversion: 8.0\ninstalled-txid: T-3550\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/journal/T-3555.jrn",
+    "text": "{\"seq\":1,\"op\":\"txn-begin\",\"txid\":\"T-3555\",\"kind\":\"upgrade\",\"packages\":[\"ferrule\",\"quoin\"]}\n{\"seq\":2,\"op\":\"pkg-plan\",\"pkg\":\"ferrule\",\"from\":\"1.2\",\"to\":\"1.3\"}\n{\"seq\":3,\"op\":\"file-stage\",\"pkg\":\"ferrule\",\"path\":\"/usr/bin/ferrule\",\"kind\":\"f\",\"mode\":\"0755\",\"ref\":\"55524a241cfbad8a1aa13bb6471173cb43b963d553c68e87c1ced896c7d604dd\",\"config\":false}\n{\"seq\":4,\"op\":\"file-stage\",\"pkg\":\"ferrule\",\"path\":\"/etc/ferrule/f.conf\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"6f81273d5a223a2985900aedbb49ae08e27cab8b14c43567defc0e82a4967519\",\"config\":true}\n{\"seq\":5,\"op\":\"file-stage\",\"pkg\":\"ferrule\",\"path\":\"/usr/share/ferrule/tbl/b.dat\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"9ed4ea5b81cf562c080b9cba846a2d124f02ca9062c85e99a9d67599c37683f2\",\"config\":false}\n{\"seq\":6,\"op\":\"file-obsolete\",\"pkg\":\"ferrule\",\"path\":\"/usr/share/ferrule/tbl/a.dat\"}\n{\"seq\":7,\"op\":\"stage-done\",\"pkg\":\"ferrule\"}\n{\"seq\":8,\"op\":\"commit-begin\",\"pkg\":\"ferrule\"}\n{\"seq\":9,\"op\":\"file-commit\",\"pkg\":\"ferrule\",\"path\":\"/usr/bin/ferrule\"}\n{\"seq\":10,\"op\":\"file-commit\",\"pkg\":\"ferrule\",\"path\":\"/etc/ferrule/f.conf\"}\n{\"seq\":11,\"op\":\"file-commit\",\"pkg\":\"ferrule\",\"path\":\"/usr/share/ferrule/tbl/b.dat\"}\n{\"seq\":12,\"op\":\"file-remove\",\"pkg\":\"ferrule\",\"path\":\"/usr/share/ferrule/tbl/a.dat\"}\n{\"seq\":13,\"op\":\"commit-done\",\"pkg\":\"ferrule\"}\n{\"seq\":14,\"op\":\"db-swap\",\"pkg\":\"ferrule\"}\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/journal/current",
+    "text": "T-3555\n"
+   }
+  ]
+ }
+}

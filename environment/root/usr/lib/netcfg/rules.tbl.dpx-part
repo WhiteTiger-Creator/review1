@@ -1,0 +1,5 @@
+# rules 1.5.0
+allow lan
+allow vpn
+allow mesh
+deny wan

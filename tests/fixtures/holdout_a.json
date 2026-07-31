@@ -1,0 +1,363 @@
+{
+ "cache": {
+  "bramble-2.3.dpk": "e243f6e1969fefc1339a0d2fa1017e8a9b16ff6cddb12188970a917965041751",
+  "quill-4.1.0.dpk": "2c5289f102574ee7c55cfce667ba89357a6c3f5471dc87f7f480fabdeef30097",
+  "tinder-1.0.dpk": "12eb6908eac9a05d1cef7336191fae156273c7ada83e4250e9564b96d69075b9"
+ },
+ "expect": {
+  "db": {
+   "bramble": {
+    "manifest": [
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0755",
+      "path": "/usr/bin/bramble",
+      "ref": "ef2ca65c86df01ce4d9e8cc76d60dbf7cf5a63defdae02eab9636c5722551c65"
+     },
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0644",
+      "path": "/usr/share/bramble/thorns.txt",
+      "ref": "845c7b5483d83f74ddd2a4b2891819f46b93a36d79fdd5ba6f3474ccc780e0ee"
+     },
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0644",
+      "path": "/usr/share/quill/deep/nested/x.dat",
+      "ref": "3537c7d661d7f8261e43bca92d3cdc22f3e64d9a2beb7d898425f7ef7c30a154"
+     }
+    ],
+    "txid": "T-3101",
+    "version": "2.3"
+   },
+   "quill": {
+    "manifest": [
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0755",
+      "path": "/usr/bin/quill",
+      "ref": "658151ca0721dbfd190ab3105bd3f7d8d274704c645ea88d385aa83068e6ed1f"
+     },
+     {
+      "config": true,
+      "kind": "f",
+      "mode": "0644",
+      "path": "/etc/quill/quill.conf",
+      "ref": "bf1a40149b9845e94e998af0aa3cf7be507f9531b5357f927d2ff4ed1e8bde25"
+     },
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0644",
+      "path": "/usr/share/quill/tips/en.txt",
+      "ref": "25bf74e4d3729e45a31be16dd64962ee98448e609e3af82029ac9f80a37453f5"
+     }
+    ],
+    "txid": "T-3101",
+    "version": "4.1.0"
+   },
+   "tinder": {
+    "manifest": [
+     {
+      "config": false,
+      "kind": "f",
+      "mode": "0755",
+      "path": "/usr/bin/tinder",
+      "ref": "dad6c08c37cacc5db355d8fff68e0f311a591a7676b5ef9ba25d09840a4ccf28"
+     },
+     {
+      "config": true,
+      "kind": "f",
+      "mode": "0644",
+      "path": "/etc/tinder/tinder.conf",
+      "ref": "bd24d6edaab48be373ab3923b1c2d243559f22f9539c38a98d43d22fc0f8c0d0"
+     }
+    ],
+    "txid": "T-3000",
+    "version": "0.9"
+   }
+  },
+  "tree": {
+   "dirs": [
+    "/",
+    "/etc",
+    "/etc/quill",
+    "/etc/tinder",
+    "/usr",
+    "/usr/bin",
+    "/usr/share",
+    "/usr/share/bramble",
+    "/usr/share/quill",
+    "/usr/share/quill/deep",
+    "/usr/share/quill/deep/nested",
+    "/usr/share/quill/tips",
+    "/var",
+    "/var/cache",
+    "/var/lib",
+    "/var/lib/dpx",
+    "/var/lib/dpx/db",
+    "/var/lib/dpx/db/bramble",
+    "/var/lib/dpx/db/quill",
+    "/var/lib/dpx/db/tinder",
+    "/var/lib/dpx/journal"
+   ],
+   "entries": [
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/etc/quill/quill.conf",
+     "text": "# quill 4.1.0\nspool = /var/spool/quill\nflush = 2s\ncompress = on\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/etc/tinder/tinder.conf",
+     "text": "# tinder 0.9\nmode = lazy\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/bramble",
+     "text": "#!/bin/sh\n# bramble 2.3\necho bramble\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/quill",
+     "text": "#!/bin/sh\n# quill 4.1.0\necho quill\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0755",
+     "path": "/usr/bin/tinder",
+     "text": "#!/bin/sh\n# tinder 0.9\necho tinder\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/share/bramble/thorns.txt",
+     "text": "thorns\nand more thorns\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/share/quill/deep/nested/x.dat",
+     "text": "deep x\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/usr/share/quill/tips/en.txt",
+     "text": "quill tips\npress q to quit\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/bramble/manifest",
+     "text": "f 0755 ef2ca65c86df01ce4d9e8cc76d60dbf7cf5a63defdae02eab9636c5722551c65 - /usr/bin/bramble\nf 0644 845c7b5483d83f74ddd2a4b2891819f46b93a36d79fdd5ba6f3474ccc780e0ee - /usr/share/bramble/thorns.txt\nf 0644 3537c7d661d7f8261e43bca92d3cdc22f3e64d9a2beb7d898425f7ef7c30a154 - /usr/share/quill/deep/nested/x.dat\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/bramble/meta",
+     "text": "name: bramble\nversion: 2.3\ninstalled-txid: T-3101\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/index",
+     "text": "/etc/quill/quill.conf quill\n/etc/tinder/tinder.conf tinder\n/usr/bin/bramble bramble\n/usr/bin/quill quill\n/usr/bin/tinder tinder\n/usr/share/bramble/thorns.txt bramble\n/usr/share/quill/deep/nested/x.dat bramble\n/usr/share/quill/tips/en.txt quill\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/quill/manifest",
+     "text": "f 0644 bf1a40149b9845e94e998af0aa3cf7be507f9531b5357f927d2ff4ed1e8bde25 c /etc/quill/quill.conf\nf 0755 658151ca0721dbfd190ab3105bd3f7d8d274704c645ea88d385aa83068e6ed1f - /usr/bin/quill\nf 0644 25bf74e4d3729e45a31be16dd64962ee98448e609e3af82029ac9f80a37453f5 - /usr/share/quill/tips/en.txt\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/quill/meta",
+     "text": "name: quill\nversion: 4.1.0\ninstalled-txid: T-3101\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/tinder/manifest",
+     "text": "f 0644 bd24d6edaab48be373ab3923b1c2d243559f22f9539c38a98d43d22fc0f8c0d0 c /etc/tinder/tinder.conf\nf 0755 dad6c08c37cacc5db355d8fff68e0f311a591a7676b5ef9ba25d09840a4ccf28 - /usr/bin/tinder\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/db/tinder/meta",
+     "text": "name: tinder\nversion: 0.9\ninstalled-txid: T-3000\n"
+    },
+    {
+     "kind": "f",
+     "mode": "0644",
+     "path": "/var/lib/dpx/journal/T-3101.jrn",
+     "text": "{\"seq\":1,\"op\":\"txn-begin\",\"txid\":\"T-3101\",\"kind\":\"upgrade\",\"packages\":[\"bramble\",\"quill\"]}\n{\"seq\":2,\"op\":\"pkg-plan\",\"pkg\":\"bramble\",\"from\":\"2.2\",\"to\":\"2.3\"}\n{\"seq\":3,\"op\":\"file-stage\",\"pkg\":\"bramble\",\"path\":\"/usr/bin/bramble\",\"kind\":\"f\",\"mode\":\"0755\",\"ref\":\"ef2ca65c86df01ce4d9e8cc76d60dbf7cf5a63defdae02eab9636c5722551c65\",\"config\":false}\n{\"seq\":4,\"op\":\"file-stage\",\"pkg\":\"bramble\",\"path\":\"/usr/share/bramble/thorns.txt\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"845c7b5483d83f74ddd2a4b2891819f46b93a36d79fdd5ba6f3474ccc780e0ee\",\"config\":false}\n{\"seq\":5,\"op\":\"file-stage\",\"pkg\":\"bramble\",\"path\":\"/usr/share/quill/deep/nested/x.dat\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"3537c7d661d7f8261e43bca92d3cdc22f3e64d9a2beb7d898425f7ef7c30a154\",\"config\":false}\n{\"seq\":6,\"op\":\"stage-done\",\"pkg\":\"bramble\"}\n{\"seq\":7,\"op\":\"commit-begin\",\"pkg\":\"bramble\"}\n{\"seq\":8,\"op\":\"file-commit\",\"pkg\":\"bramble\",\"path\":\"/usr/bin/bramble\"}\n{\"seq\":9,\"op\":\"file-commit\",\"pkg\":\"bramble\",\"path\":\"/usr/share/bramble/thorns.txt\"}\n{\"seq\":10,\"op\":\"file-commit\",\"pkg\":\"bramble\",\"path\":\"/usr/share/quill/deep/nested/x.dat\"}\n{\"seq\":11,\"op\":\"commit-done\",\"pkg\":\"bramble\"}\n{\"seq\":12,\"op\":\"db-swap\",\"pkg\":\"bramble\"}\n{\"seq\":13,\"op\":\"pkg-done\",\"pkg\":\"bramble\"}\n{\"seq\":14,\"op\":\"pkg-plan\",\"pkg\":\"quill\",\"from\":\"4.0.1\",\"to\":\"4.1.0\"}\n{\"seq\":15,\"op\":\"file-stage\",\"pkg\":\"quill\",\"path\":\"/usr/bin/quill\",\"kind\":\"f\",\"mode\":\"0755\",\"ref\":\"658151ca0721dbfd190ab3105bd3f7d8d274704c645ea88d385aa83068e6ed1f\",\"config\":false}\n{\"seq\":16,\"op\":\"file-stage\",\"pkg\":\"quill\",\"path\":\"/etc/quill/quill.conf\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"bf1a40149b9845e94e998af0aa3cf7be507f9531b5357f927d2ff4ed1e8bde25\",\"config\":true}\n{\"seq\":17,\"op\":\"file-stage\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/tips/en.txt\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"25bf74e4d3729e45a31be16dd64962ee98448e609e3af82029ac9f80a37453f5\",\"config\":false}\n{\"seq\":18,\"op\":\"file-obsolete\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/deep/nested/x.dat\"}\n{\"seq\":19,\"op\":\"file-obsolete\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/old/a.dat\"}\n{\"seq\":20,\"op\":\"file-obsolete\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/old/b.dat\"}\n{\"seq\":21,\"op\":\"stage-done\",\"pkg\":\"quill\"}\n{\"seq\":22,\"op\":\"commit-begin\",\"pkg\":\"quill\"}\n{\"seq\":23,\"op\":\"file-commit\",\"pkg\":\"quill\",\"path\":\"/usr/bin/quill\"}\n{\"seq\":24,\"op\":\"file-commit\",\"pkg\":\"quill\",\"path\":\"/etc/quill/quill.conf\"}\n{\"seq\":25,\"op\":\"file-commit\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/tips/en.txt\"}\n{\"seq\":26,\"op\":\"file-remove\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/deep/nested/x.dat\"}\n{\"seq\":27,\"op\":\"file-remove\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/old/a.dat\"}\n{\"seq\":28,\"op\":\"file-remove\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/old/b.dat\"}\n{\"seq\":29,\"op\":\"commit-done\",\"pkg\":\"quill\"}\n{\"seq\":30,\"op\":\"db-swap\",\"pkg\":\"quill\"}\n{\"seq\":31,\"op\":\"pkg-done\",\"pkg\":\"quill\"}\n{\"seq\":32,\"op\":\"txn-end\",\"txid\":\"T-3101\"}\n"
+    }
+   ]
+  }
+ },
+ "name": "a",
+ "root": {
+  "dirs": [
+   "/",
+   "/etc",
+   "/etc/quill",
+   "/etc/tinder",
+   "/usr",
+   "/usr/bin",
+   "/usr/share",
+   "/usr/share/bramble",
+   "/usr/share/quill",
+   "/usr/share/quill/deep",
+   "/usr/share/quill/deep/nested",
+   "/usr/share/quill/old",
+   "/usr/share/quill/tips",
+   "/var",
+   "/var/cache",
+   "/var/lib",
+   "/var/lib/dpx",
+   "/var/lib/dpx/db",
+   "/var/lib/dpx/db/bramble",
+   "/var/lib/dpx/db/quill",
+   "/var/lib/dpx/db/tinder",
+   "/var/lib/dpx/journal"
+  ],
+  "entries": [
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/quill/quill.conf",
+    "text": "# quill 4.0.1\nspool = /var/spool/quill\nflush = 5s\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0600",
+    "path": "/etc/quill/quill.conf.dpx-part",
+    "text": "# quill 4.1.0\nspool = /var/spool/quill\nflush = 2s\ncompress = on\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/etc/tinder/tinder.conf",
+    "text": "# tinder 0.9\nmode = lazy\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/bramble",
+    "text": "#!/bin/sh\n# bramble 2.3\necho bramble\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/quill",
+    "text": "#!/bin/sh\n# quill 4.0.1\necho quill\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0600",
+    "path": "/usr/bin/quill.dpx-part",
+    "text": "#!/bin/sh\n# quill 4.1.0\necho quill\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0755",
+    "path": "/usr/bin/tinder",
+    "text": "#!/bin/sh\n# tinder 0.9\necho tinder\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/share/bramble/thorns.txt",
+    "text": "thorns\nand more thorns\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/share/quill/deep/nested/x.dat",
+    "text": "deep x\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/share/quill/old/a.dat",
+    "text": "old a\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/usr/share/quill/old/b.dat",
+    "text": "old b\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0600",
+    "path": "/usr/share/quill/tips/en.txt.dpx-part",
+    "text": "quill tips\npress q to quit\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/bramble/manifest",
+    "text": "f 0755 ef2ca65c86df01ce4d9e8cc76d60dbf7cf5a63defdae02eab9636c5722551c65 - /usr/bin/bramble\nf 0644 845c7b5483d83f74ddd2a4b2891819f46b93a36d79fdd5ba6f3474ccc780e0ee - /usr/share/bramble/thorns.txt\nf 0644 3537c7d661d7f8261e43bca92d3cdc22f3e64d9a2beb7d898425f7ef7c30a154 - /usr/share/quill/deep/nested/x.dat\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/bramble/meta",
+    "text": "name: bramble\nversion: 2.3\ninstalled-txid: T-3101\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/index",
+    "text": "/etc/quill/quill.conf quill\n/etc/tinder/tinder.conf tinder\n/usr/bin/bramble bramble\n/usr/bin/quill quill\n/usr/bin/tinder tinder\n/usr/share/bramble/thorns.txt bramble\n/usr/share/quill/deep/nested/x.dat bramble\n/usr/share/quill/deep/nested/x.dat quill\n/usr/share/quill/old/a.dat quill\n/usr/share/quill/old/b.dat quill\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/quill/manifest",
+    "text": "f 0644 f4afd5c9f793df1c438a8e3c8fcc3f77a34d761d97c8bb331929cafe02a68414 c /etc/quill/quill.conf\nf 0755 4876144bb243e567068a097398dd167cf433d9a7629606e76cc70c1c17a7c47d - /usr/bin/quill\nf 0644 3537c7d661d7f8261e43bca92d3cdc22f3e64d9a2beb7d898425f7ef7c30a154 - /usr/share/quill/deep/nested/x.dat\nf 0644 c8518d7e574626e44644fb5dd1348aec70ed95b22336992a981336f5a0c69be3 - /usr/share/quill/old/a.dat\nf 0644 4a817ab691a5a179b5becbaa44b5f7046ab58a8d6e2daba2737392c767591d80 - /usr/share/quill/old/b.dat\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/quill/meta",
+    "text": "name: quill\nversion: 4.0.1\ninstalled-txid: T-3000\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/tinder/manifest",
+    "text": "f 0644 bd24d6edaab48be373ab3923b1c2d243559f22f9539c38a98d43d22fc0f8c0d0 c /etc/tinder/tinder.conf\nf 0755 dad6c08c37cacc5db355d8fff68e0f311a591a7676b5ef9ba25d09840a4ccf28 - /usr/bin/tinder\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/db/tinder/meta",
+    "text": "name: tinder\nversion: 0.9\ninstalled-txid: T-3000\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/journal/T-3101.jrn",
+    "text": "{\"seq\":1,\"op\":\"txn-begin\",\"txid\":\"T-3101\",\"kind\":\"upgrade\",\"packages\":[\"bramble\",\"quill\",\"tinder\"]}\n{\"seq\":2,\"op\":\"pkg-plan\",\"pkg\":\"bramble\",\"from\":\"2.2\",\"to\":\"2.3\"}\n{\"seq\":3,\"op\":\"file-stage\",\"pkg\":\"bramble\",\"path\":\"/usr/bin/bramble\",\"kind\":\"f\",\"mode\":\"0755\",\"ref\":\"ef2ca65c86df01ce4d9e8cc76d60dbf7cf5a63defdae02eab9636c5722551c65\",\"config\":false}\n{\"seq\":4,\"op\":\"file-stage\",\"pkg\":\"bramble\",\"path\":\"/usr/share/bramble/thorns.txt\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"845c7b5483d83f74ddd2a4b2891819f46b93a36d79fdd5ba6f3474ccc780e0ee\",\"config\":false}\n{\"seq\":5,\"op\":\"file-stage\",\"pkg\":\"bramble\",\"path\":\"/usr/share/quill/deep/nested/x.dat\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"3537c7d661d7f8261e43bca92d3cdc22f3e64d9a2beb7d898425f7ef7c30a154\",\"config\":false}\n{\"seq\":6,\"op\":\"stage-done\",\"pkg\":\"bramble\"}\n{\"seq\":7,\"op\":\"commit-begin\",\"pkg\":\"bramble\"}\n{\"seq\":8,\"op\":\"file-commit\",\"pkg\":\"bramble\",\"path\":\"/usr/bin/bramble\"}\n{\"seq\":9,\"op\":\"file-commit\",\"pkg\":\"bramble\",\"path\":\"/usr/share/bramble/thorns.txt\"}\n{\"seq\":10,\"op\":\"file-commit\",\"pkg\":\"bramble\",\"path\":\"/usr/share/quill/deep/nested/x.dat\"}\n{\"seq\":11,\"op\":\"commit-done\",\"pkg\":\"bramble\"}\n{\"seq\":12,\"op\":\"db-swap\",\"pkg\":\"bramble\"}\n{\"seq\":13,\"op\":\"pkg-done\",\"pkg\":\"bramble\"}\n{\"seq\":14,\"op\":\"pkg-plan\",\"pkg\":\"quill\",\"from\":\"4.0.1\",\"to\":\"4.1.0\"}\n{\"seq\":15,\"op\":\"file-stage\",\"pkg\":\"quill\",\"path\":\"/usr/bin/quill\",\"kind\":\"f\",\"mode\":\"0755\",\"ref\":\"658151ca0721dbfd190ab3105bd3f7d8d274704c645ea88d385aa83068e6ed1f\",\"config\":false}\n{\"seq\":16,\"op\":\"file-stage\",\"pkg\":\"quill\",\"path\":\"/etc/quill/quill.conf\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"bf1a40149b9845e94e998af0aa3cf7be507f9531b5357f927d2ff4ed1e8bde25\",\"config\":true}\n{\"seq\":17,\"op\":\"file-stage\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/tips/en.txt\",\"kind\":\"f\",\"mode\":\"0644\",\"ref\":\"25bf74e4d3729e45a31be16dd64962ee98448e609e3af82029ac9f80a37453f5\",\"config\":false}\n{\"seq\":18,\"op\":\"file-obsolete\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/deep/nested/x.dat\"}\n{\"seq\":19,\"op\":\"file-obsolete\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/old/a.dat\"}\n{\"seq\":20,\"op\":\"file-obsolete\",\"pkg\":\"quill\",\"path\":\"/usr/share/quill/old/b.dat\"}\n{\"seq\":21,\"op\":\"stage-done\",\"pkg\":\"quill\"}\n"
+   },
+   {
+    "kind": "f",
+    "mode": "0644",
+    "path": "/var/lib/dpx/journal/current",
+    "text": "T-3101\n"
+   }
+  ]
+ }
+}

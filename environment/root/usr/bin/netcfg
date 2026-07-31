@@ -1,0 +1,3 @@
+#!/bin/sh
+# netcfg 1.5.0
+exec /usr/lib/netcfg/dispatch "$@"
