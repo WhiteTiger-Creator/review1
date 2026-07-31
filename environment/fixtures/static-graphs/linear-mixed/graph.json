@@ -1,0 +1,11 @@
+{
+  "graph_id": "linear-mixed",
+  "certification_epoch": 0,
+  "layers": [
+    {"id": "input", "op": "input", "inputs": []},
+    {"id": "aff1", "op": "affine", "inputs": ["input"], "weight_key": "w1"},
+    {"id": "relu1", "op": "relu", "inputs": ["aff1"]},
+    {"id": "aff2", "op": "affine", "inputs": ["relu1"], "weight_key": "w2"},
+    {"id": "output", "op": "output", "inputs": ["aff2"]}
+  ]
+}

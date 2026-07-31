@@ -1,0 +1,5 @@
+{
+  "scenario_id": "scenario-standard",
+  "drift_bound": 0.08,
+  "input_interval": {"lo": -1.0, "hi": 1.0}
+}

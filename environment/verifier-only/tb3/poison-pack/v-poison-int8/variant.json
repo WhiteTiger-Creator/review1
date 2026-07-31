@@ -1,0 +1,7 @@
+{
+  "variant_id": "v-poison-int8",
+  "graph_id": "linear-poison",
+  "overrides": {
+    "w1": {"dtype": "int8", "scale": 0.02, "zero_point": 0, "w_q": 20, "b_q": 1}
+  }
+}

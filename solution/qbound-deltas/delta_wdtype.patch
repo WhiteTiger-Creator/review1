@@ -1,0 +1,11 @@
+--- a/numeric/wdtype.cpp	2026-07-07 12:52:38.078320944 +0530
++++ b/numeric/wdtype.cpp	2026-07-07 12:48:08.643578894 +0530
+@@ -4,7 +4,7 @@
+     if (!wt->has_quant) {
+         return 0.0;
+     }
+-    return wt->scale;
++    return wt->scale / 2.0;
+ }
+ 
+ void qdrift_dequant_weight(const qdrift_weight_t *wt, double *w_d, double *b_d) {

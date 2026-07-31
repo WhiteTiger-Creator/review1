@@ -1,0 +1,8 @@
+{
+  "variant_id": "v-int8-tight",
+  "graph_id": "linear-clean",
+  "overrides": {
+    "w1": {"dtype": "int8", "scale": 0.01, "zero_point": 0, "w_q": 50, "b_q": 10},
+    "w2": {"dtype": "int8", "scale": 0.01, "zero_point": 0, "w_q": 80, "b_q": -5}
+  }
+}

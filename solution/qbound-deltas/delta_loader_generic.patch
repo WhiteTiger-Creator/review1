@@ -1,0 +1,183 @@
+--- a/src/qgraph_loader.cpp	2026-07-13 13:55:07.787832355 +0530
++++ b/src/qgraph_loader.cpp	2026-07-13 13:55:07.791498908 +0530
+@@ -171,34 +171,69 @@
+     g->weight_count++;
+ }
+ 
+-static int load_weights(const char *json, qdrift_graph_t *g) {
+-    g->weight_count = 0;
+-    const char *keys[] = {"w1", "w2", "w3", "w4"};
+-    for (int ki = 0; ki < 4; ++ki) {
+-        const char *p = find_key(json, keys[ki]);
+-        if (!p) {
+-            continue;
+-        }
++static int parse_weight_block(const char *key, const char *block, qdrift_graph_t *g) {
++    if (!strstr(block, "\"w\"")) {
++        return 0;
++    }
++    add_weight(g, key, parse_number_after(block, "w"), parse_number_after(block, "b"));
++    return 1;
++}
++
++static int parse_top_level_weight_objects(const char *json, qdrift_graph_t *g) {
++    const char *start = strchr(json, '{');
++    if (!start) {
++        return 0;
++    }
++    const char *p = start + 1;
++    while (g->weight_count < 8) {
++        while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t' || *p == ',') {
++            p++;
++        }
++        if (*p == '}') {
++            break;
++        }
++        if (*p != '"') {
++            break;
++        }
++        p++;
++        const char *key_end = strchr(p, '"');
++        if (!key_end) {
++            break;
++        }
++        char key[QDRIFT_MAX_WEIGHT_KEY];
++        int kn = (int)(key_end - p);
++        if (kn >= QDRIFT_MAX_WEIGHT_KEY) {
++            kn = QDRIFT_MAX_WEIGHT_KEY - 1;
++        }
++        memcpy(key, p, (size_t)kn);
++        key[kn] = '\0';
++        p = key_end + 1;
+         const char *obj = strchr(p, '{');
+         if (!obj) {
+-            continue;
++            break;
+         }
+         const char *end = json_object_end(obj);
+         if (!end) {
+-            continue;
++            break;
+         }
+-        char block[256];
++        char block[512];
+         int len = (int)(end - obj + 1);
+         if (len >= (int)sizeof(block)) {
+             len = (int)sizeof(block) - 1;
+         }
+         memcpy(block, obj, (size_t)len);
+         block[len] = '\0';
+-        add_weight(g, keys[ki], parse_number_after(block, "w"), parse_number_after(block, "b"));
++        parse_weight_block(key, block, g);
++        p = end + 1;
+     }
+     return 1;
+ }
+ 
++static int load_weights(const char *json, qdrift_graph_t *g) {
++    g->weight_count = 0;
++    return parse_top_level_weight_objects(json, g);
++}
++
+ int qdrift_load_graph_pack(const char *root, qdrift_graph_t *out) {
+     char path[512];
+     snprintf(path, sizeof(path), "%s/graph.json", root);
+@@ -235,33 +270,69 @@
+     if (!ov) {
+         return 0;
+     }
+-    static const char *weight_keys[] = {"w1", "w2", "w3", "w4"};
+-    for (int ki = 0; ki < 4; ++ki) {
+-        char search[32];
+-        snprintf(search, sizeof(search), "\"%s\"", weight_keys[ki]);
+-        const char *kp = strstr(ov, search);
+-        if (!kp) {
+-            continue;
+-        }
+-        const char *obj = strchr(kp, '{');
+-        if (!obj) {
+-            continue;
+-        }
+-        const char *end = json_object_end(obj);
+-        if (!end) {
+-            continue;
++    const char *colon = strchr(ov, ':');
++    if (!colon) {
++        return 0;
++    }
++    const char *obj = strchr(colon, '{');
++    if (!obj) {
++        return 0;
++    }
++    const char *end = json_object_end(obj);
++    if (!end) {
++        return 0;
++    }
++    char overrides[2048];
++    int len = (int)(end - obj + 1);
++    if (len >= (int)sizeof(overrides)) {
++        len = (int)sizeof(overrides) - 1;
++    }
++    memcpy(overrides, obj, (size_t)len);
++    overrides[len] = '\0';
++    const char *p = overrides + 1;
++    while (p < overrides + len) {
++        while (p < overrides + len && (*p == ' ' || *p == '\n' || *p == ',')) {
++            p++;
++        }
++        if (*p == '}') {
++            break;
++        }
++        if (*p != '"') {
++            break;
++        }
++        p++;
++        const char *key_end = strchr(p, '"');
++        if (!key_end) {
++            break;
++        }
++        char key[QDRIFT_MAX_WEIGHT_KEY];
++        int kn = (int)(key_end - p);
++        if (kn >= QDRIFT_MAX_WEIGHT_KEY) {
++            kn = QDRIFT_MAX_WEIGHT_KEY - 1;
++        }
++        memcpy(key, p, (size_t)kn);
++        key[kn] = '\0';
++        p = key_end + 1;
++        const char *entry = strchr(p, '{');
++        if (!entry) {
++            break;
++        }
++        const char *entry_end = json_object_end(entry);
++        if (!entry_end) {
++            break;
+         }
+         char block[512];
+-        int len = (int)(end - obj + 1);
+-        if (len >= (int)sizeof(block)) {
+-            len = (int)sizeof(block) - 1;
++        int blen = (int)(entry_end - entry + 1);
++        if (blen >= (int)sizeof(block)) {
++            blen = (int)sizeof(block) - 1;
+         }
+-        memcpy(block, obj, (size_t)len);
+-        block[len] = '\0';
++        memcpy(block, entry, (size_t)blen);
++        block[blen] = '\0';
+         if (!strstr(block, "\"dtype\"")) {
++            p = entry_end + 1;
+             continue;
+         }
+-        qdrift_weight_t *w = find_weight(g, weight_keys[ki]);
++        qdrift_weight_t *w = find_weight(g, key);
+         if (w) {
+             w->has_quant = 1;
+             w->scale = parse_number_after(block, "scale");
+@@ -269,6 +340,7 @@
+             w->w_q = parse_int_after(block, "w_q");
+             w->b_q = parse_int_after(block, "b_q");
+         }
++        p = entry_end + 1;
+     }
+     return 0;
+ }

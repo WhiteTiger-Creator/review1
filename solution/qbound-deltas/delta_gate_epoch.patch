@@ -1,0 +1,11 @@
+--- a/policy/gate_epoch.cpp	2026-07-07 12:52:39.413111182 +0530
++++ b/policy/gate_epoch.cpp	2026-07-07 12:48:16.947990071 +0530
+@@ -25,7 +25,7 @@
+         if (certification_epoch == 2) {
+             violates = drift >= scenario->drift_bound;
+         } else {
+-            violates = drift > scenario->drift_bound * 2.0;
++            violates = drift > scenario->drift_bound;
+         }
+         if (violates) {
+             qdrift_violation_t *v = &report->violations[report->violation_count++];

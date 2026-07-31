@@ -1,0 +1,10 @@
+{
+  "graph_id": "hetero-poison",
+  "certification_epoch": 2,
+  "layers": [
+    {"id": "input", "op": "input", "inputs": []},
+    {"id": "aff1", "op": "affine", "inputs": ["input"], "weight_key": "blk_affine"},
+    {"id": "relu1", "op": "relu", "inputs": ["aff1"]},
+    {"id": "output", "op": "output", "inputs": ["relu1"]}
+  ]
+}

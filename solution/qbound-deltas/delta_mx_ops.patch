@@ -1,0 +1,13 @@
+--- a/kernel/mx_ops.cpp	2026-07-07 12:42:56.580485841 +0530
++++ b/kernel/mx_ops.cpp	2026-07-07 12:48:06.549623837 +0530
+@@ -23,8 +23,8 @@
+ qdrift_interval_t qdrift_relu_interval(const qdrift_interval_t *in) {
+     qdrift_interval_t out;
+     out.lo = in->lo > 0.0 ? in->lo : 0.0;
+-  if (in->lo < 0.0 && in->hi > 0.0) {
+-        out.hi = 0.0;
++    if (in->lo < 0.0 && in->hi > 0.0) {
++        out.hi = in->hi;
+     } else {
+         out.hi = in->hi > 0.0 ? in->hi : 0.0;
+     }

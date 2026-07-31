@@ -1,0 +1,116 @@
+--- a/catalog/witness_seal.cpp	2026-07-13 13:46:40.930145006 +0530
++++ b/catalog/witness_seal.cpp	2026-07-13 13:46:40.930145006 +0530
+@@ -24,16 +24,13 @@
+     hex_out[hash_len * 2] = '\0';
+ }
+ 
+-static int cmp_cstr(const void *a, const void *b) {
+-    return strcmp(*(const char *const *)a, *(const char *const *)b);
+-}
+-
+ int qdrift_write_walk_witness(const char *staging_dir, const qdrift_snapshot_t *snap) {
++    char idbuf[QDRIFT_MAX_LAYERS][QDRIFT_MAX_ID_LEN];
+     const char *ids[QDRIFT_MAX_LAYERS];
+     for (int i = 0; i < snap->layer_count; ++i) {
+-        ids[i] = snap->layers[i].layer_id;
++        strncpy(idbuf[i], snap->layers[i].layer_id, sizeof(idbuf[i]) - 1);
++        ids[i] = idbuf[i];
+     }
+-    qsort((void *)ids, (size_t)snap->layer_count, sizeof(const char *), cmp_cstr);
+     char hex[65];
+     digest_layer_order(ids, snap->layer_count, hex, sizeof(hex));
+     char path[512];
+@@ -48,13 +45,89 @@
+ }
+ 
+ int qdrift_validate_walk_witness(const char *staging_dir, const qdrift_snapshot_t *snap) {
+-    (void)staging_dir;
+-    (void)snap;
++    char idbuf[QDRIFT_MAX_LAYERS][QDRIFT_MAX_ID_LEN];
++    const char *ids[QDRIFT_MAX_LAYERS];
++    for (int i = 0; i < snap->layer_count; ++i) {
++        strncpy(idbuf[i], snap->layers[i].layer_id, sizeof(idbuf[i]) - 1);
++        ids[i] = idbuf[i];
++    }
++    char expect[65];
++    digest_layer_order(ids, snap->layer_count, expect, sizeof(expect));
++    char path[512];
++    snprintf(path, sizeof(path), "%s/walk-witness.json", staging_dir);
++    FILE *f = fopen(path, "r");
++    if (!f) {
++        return -1;
++    }
++    char buf[256];
++    fread(buf, 1, sizeof(buf) - 1, f);
++    buf[sizeof(buf) - 1] = '\0';
++    fclose(f);
++    const char *dp = strstr(buf, "layer_order_digest");
++    if (!dp) {
++        return -1;
++    }
++    dp = strchr(dp, ':');
++    if (!dp) {
++        return -1;
++    }
++    dp = strchr(dp, '"');
++    if (!dp) {
++        return -1;
++    }
++    dp++;
++    const char *de = strchr(dp, '"');
++    if (!de) {
++        return -1;
++    }
++    char got[65];
++    int n = (int)(de - dp);
++    if (n >= (int)sizeof(got)) {
++        n = (int)sizeof(got) - 1;
++    }
++    memcpy(got, dp, (size_t)n);
++    got[n] = '\0';
++    if (strcmp(got, expect) != 0) {
++        return -1;
++    }
+     return 0;
+ }
+ 
+ int qdrift_bump_publish_ledger(const char *graph_id, const char *witness_hex) {
+-    (void)graph_id;
+-    (void)witness_hex;
++    const char *ledger_dir = "/app/var/qbound-cert-ledger";
++    char cmd[256];
++    snprintf(cmd, sizeof(cmd), "mkdir -p %s", ledger_dir);
++    if (system(cmd) != 0) {
++        return -1;
++    }
++    char path[512];
++    snprintf(path, sizeof(path), "%s/publish-seq.json", ledger_dir);
++    int seq = 0;
++    FILE *f = fopen(path, "r");
++    if (f) {
++        char buf[512];
++        fread(buf, 1, sizeof(buf) - 1, f);
++        buf[sizeof(buf) - 1] = '\0';
++        fclose(f);
++        const char *gp = strstr(buf, "\"graph_id\"");
++        if (gp && strstr(gp, graph_id)) {
++            const char *sp = strstr(buf, "publish_seq");
++            if (sp) {
++                seq = (int)strtod(strchr(sp, ':') + 1, NULL);
++            }
++        }
++    }
++    f = fopen(path, "w");
++    if (!f) {
++        return -1;
++    }
++    fprintf(
++        f,
++        "{\"graph_id\":\"%s\",\"publish_seq\":%d,\"witness_digest\":\"%s\"}\n",
++        graph_id,
++        seq + 1,
++        witness_hex
++    );
++    fclose(f);
+     return 0;
+ }

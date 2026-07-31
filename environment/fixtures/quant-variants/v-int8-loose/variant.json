@@ -1,0 +1,8 @@
+{
+  "variant_id": "v-int8-loose",
+  "graph_id": "linear-mixed",
+  "overrides": {
+    "w1": {"dtype": "int8", "scale": 0.05, "zero_point": 0, "w_q": 24, "b_q": -6},
+    "w2": {"dtype": "int8", "scale": 0.05, "zero_point": 0, "w_q": -18, "b_q": 8}
+  }
+}

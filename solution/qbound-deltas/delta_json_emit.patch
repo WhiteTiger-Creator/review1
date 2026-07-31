@@ -1,0 +1,18 @@
+--- a/catalog/json_emit.cpp	2026-07-07 12:43:37.618845699 +0530
++++ b/catalog/json_emit.cpp	2026-07-07 12:48:22.789364671 +0530
+@@ -7,7 +7,14 @@
+ 
+ void qdrift_report_digest(const qdrift_cert_report_t *report, char *hex_out, int hex_len) {
+     char buf[4096];
+-    int pos = snprintf(buf, sizeof(buf), "%s%s", report->graph_id, report->scenario_id);
++    int pos = snprintf(
++        buf,
++        sizeof(buf),
++        "%s%s%s",
++        report->graph_id,
++        report->variant_id,
++        report->scenario_id
++    );
+     for (int i = 0; i < report->violation_count; ++i) {
+         pos += snprintf(
+             buf + pos,
