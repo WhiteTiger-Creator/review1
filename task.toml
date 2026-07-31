@@ -1,27 +1,40 @@
+# Task configuration schema version
 version = "2.0"
 
+# Task metadata (author, difficulty, categorization)
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
 difficulty = "hard"
-category = "machine-learning"
-subcategories = []
+category = "security"
+# Options for subcategories are: "long_context", "tool_specific", "api_integration", "db_interaction", "ui_building"
+subcategories = [ ]
+# The number of milestones in the task (can be zero if not a milestone task)
 number_of_milestones = 0
-codebase_size = "minimal"
-languages = ["r"]
-tags = ["policyml", "offline-policy", "calibration", "social-commerce", "weighted-classification"]
-expert_time_estimate_min = 120
-junior_time_estimate_min = 240
+# Size of the codebase: minimal -> 0-20 files, small -> 20+ files, large -> 200+ files
+codebase_size = "small"
+# Coding languages used in the oracle solution or required by the agent
+languages = [ "rust",]
+# For tool_specific, api_integration, and db_interaction subcategories, please include specific tool, api framework, or database software
+tags = [ "rust", "reverse-engineering", "firmware", "emulator", "disassembler", "binary-analysis",]
+# Estimated time to complete (minutes)
+expert_time_estimate_min = 330
+junior_time_estimate_min = 900
 
+# Verifier: rebuilds the crate from the agent's source and runs the pytest suite. Every CLI
+# call the suite makes finishes in milliseconds, so this is generous even after a cold
+# rebuild of the crate.
 [verifier]
-timeout_sec = 1800
+timeout_sec = 900.0
 
+# Agent: limits how long the agent can run when attempting the task
 [agent]
-timeout_sec = 1800
+timeout_sec = 1800.0
 
+# Sandbox environment limits
 [environment]
-build_timeout_sec = 600
+build_timeout_sec = 900.0
 cpus = 2
 memory_mb = 4096
-storage_mb = 8192
+storage_mb = 10240
 allow_internet = false

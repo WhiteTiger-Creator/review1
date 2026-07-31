@@ -6,8 +6,8 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-**/target/
 **/dist/
+**/target/
 **/build/
 **/.venv/
 **/venv/
@@ -15,7 +15,3 @@
 *.log
 solution/
 tests/
-CLAUDE.md
-AGENTS.md
-skills.md
-.cursor/

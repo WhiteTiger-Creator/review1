@@ -1,5 +1,21 @@
-Train an offline machine-learning model for a logged social-commerce response policy. Training data at /app/data/training_posts.csv contains Facebook Live seller posts with publication time, logged_content_route, behavior_propensity, target_policy_weight, priority_stratum, engagement counters, and observed response_route. Held-out posts at /app/data/evaluation_posts.csv have the same policy and engagement fields but omit response_route. Route meanings are in /app/data/response_routes.csv. The task emphasizes calibrated generalization because the target policy upweights low-support content routes and later live-video behavior.
+One of the LP-series access controllers came back from a site with nobody left who remembers
+its unlock code, and the vendor folded years ago. What we have is the flash image, the core
+datasheet at /app/docs/kx8-datasheet.md, and the notes we keep on our own workbench tool at
+/app/docs/kxtool-contract.md. Nothing off the shelf makes sense of this core, so the Rust
+project in /app is where the work goes: `make` there builds it and leaves the binary at
+/app/bin/kxtool. Two boards' images, plus one that came off the programmer damaged, are in
+/app/samples.
 
-Place /app/analysis.R. It must learn from training rows and write /app/outputs/response_route_probabilities.csv with one row per held-out post and columns post_id, prob_conversation_service, prob_share_amplify, prob_emotion_nurture, prob_routine_watch. Also place /app/score_response_routes.R, called as Rscript /app/score_response_routes.R <input_dir> <output_dir>. It must read training_posts.csv and evaluation_posts.csv from input_dir and write the same probability file in output_dir. Probabilities must be finite [0, 1] values summing to 1 within 0.000001. Treat missing numeric values as zero and missing categorical values as unknown.
+Four things have to work. Disassemble a window of an image. Run an image against a key
+stream and report what the board did with it. Describe an image and what running it changes.
+And recover the unlock code the image accepts. Boards differ — code, constants, layout — so
+this has to hold for any image that fits the container, not only for the two samples, and an
+image that does not check out gets refused rather than executed.
 
-Verification runs offline with Rscript /app/analysis.R and hidden labels, weighted by target_policy_weight. Overall weighted log loss must be <=0.65, Brier <=0.35, and top-one accuracy >=0.78. For priority_stratum policy_shift: log loss <=0.62, Brier <=0.36, accuracy >=0.78. For low_support: accuracy >=0.70 and Brier <=0.53. The scorer is also replayed on verifier-held splits with changed post ids, target weights, priority/content mix, and route support; on each split log loss must be <=0.94, Brier <=0.52, and accuracy >=0.62.
+The contract fixes what the tool prints, down to the text of a disassembly line. Read the
+datasheet closely but do not take it on faith — it is a revision behind the parts we
+actually have, and /app/samples/conformance holds a bench capture off one of those parts
+along with the ROMs it was taken from. Your model of the core has to reproduce that capture
+exactly, cycle counts and all, before anything it tells you about a board is worth
+believing. Standard library only, no new dependencies, no network, and leave the images in
+/app/samples as you found them.
