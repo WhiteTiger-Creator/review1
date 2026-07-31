@@ -1,0 +1,6 @@
+"feature","design_term_count","l2_norm","normalized_importance","max_abs_coefficient"
+"native_english_speaker",4,1.39781622,0.12205657,1.160088
+"course_instructor",25,3.74212593,0.32676045,1.21821707
+"course_id",22,3.753997,0.32779702,1.61158889
+"summer_or_regular",4,1.86176506,0.16256834,1.36960974
+"class_size",1,0.69649555,0.06081762,0.57440755

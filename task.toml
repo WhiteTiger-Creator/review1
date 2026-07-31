@@ -3,26 +3,29 @@ version = "2.0"
 [metadata]
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "hard"
 category = "machine-learning"
-subcategories = ["tool_specific"]
-number_of_milestones = 0
+subcategories = []
+difficulty = "hard"
 codebase_size = "minimal"
-languages = ["ruby"]
-tags = ["calibration", "isotonic-regression", "model-selection", "risk-model"]
-expert_time_estimate_min = 90
-junior_time_estimate_min = 180
+number_of_milestones = 0
+languages = ["r"]
+tags = ["classification", "teaching-evaluations", "mixed-tabular", "cross-validation", "counterfactual-audit"]
+expert_time_estimate_min = 120
+junior_time_estimate_min = 300
 
 [verifier]
 timeout_sec = 900
 
 [agent]
 timeout_sec = 1800
+user = "candidate"
 
 [environment]
-build_timeout_sec = 600
+build_timeout_sec = 1800
 cpus = 2
-memory_mb = 4096
-storage_mb = 10240
-workdir = "/app"
+memory_mb = 8192
+storage_mb = 8192
 allow_internet = false
+docker_flags = []
+gpus = 0
+gpu_types = []

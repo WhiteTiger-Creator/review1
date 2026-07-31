@@ -1,9 +1,0 @@
-[
-  {"case_id": "v-001", "severity": "low", "recency": "settled", "label": 0, "weight": 2.0},
-  {"case_id": "v-002", "severity": "low", "recency": "fresh", "label": 0, "weight": 1.0},
-  {"case_id": "v-003", "severity": "guarded", "recency": "warm", "label": 1, "weight": 1.4},
-  {"case_id": "v-004", "severity": "high", "recency": "settled", "label": 0, "weight": 1.2},
-  {"case_id": "v-005", "severity": "high", "recency": "fresh", "label": 1, "weight": 1.6},
-  {"case_id": "v-006", "severity": "critical", "recency": "settled", "label": 1, "weight": 1.1},
-  {"case_id": "v-007", "severity": "critical", "recency": "fresh", "label": 1, "weight": 2.0}
-]

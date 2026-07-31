@@ -1,0 +1,6 @@
+"fold_id","training_rows","holdout_rows","class_size_missing_count","class_size_center","class_size_sample_sd","instructor_level_count","course_level_count"
+1,71,18,0,27.83098592,12.52310541,25,22
+2,71,18,0,29.70422535,13.79585276,23,21
+3,71,18,0,28.15492958,12.38622263,24,22
+4,71,18,0,30.36619718,13.17382625,23,20
+5,72,17,0,28.27777778,12.76573563,24,20

@@ -1,0 +1,4 @@
+"class","support","precision","recall","f1","mean_probability"
+"eval_low",10,0.272727,0.3,0.285714,0.349435
+"eval_medium",10,0.545455,0.6,0.571429,0.501003
+"eval_high",11,0.555556,0.454545,0.5,0.351701

@@ -1,421 +1,344 @@
-from __future__ import annotations
+"""Independent checks for the teaching-evaluation multiclass artifacts."""
 
-import copy
-import hashlib
-import itertools
 import json
-import math
-import subprocess
+import os
 from pathlib import Path
 
-import jsonschema
+import numpy as np
+import pandas as pd
 import pytest
+from sklearn.metrics import f1_score
 
-APP = Path("/app")
-CONFIG = APP / "data" / "lattice_config.json"
-OBS = APP / "data" / "observations.json"
-VALID = APP / "data" / "validation_cases.json"
-SCORING = APP / "data" / "scoring_cases.json"
-SCHEMA = APP / "api" / "calibration.schema.json"
-COMMAND = APP / "bin" / "lattice-calibrate"
-OUT = APP / "out" / "calibration.json"
-TSV = APP / "out" / "current_model.tsv"
-
-
-def _load(path: Path) -> object:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _write(path: Path, data: object) -> None:
-    path.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-
-
-def _validate_levels(rows: list[dict], severity: list[str], recency: list[str]) -> None:
-    for row in rows:
-        assert row["severity"] in severity
-        assert row["recency"] in recency
-
-
-def _rate(block: dict, alpha: float) -> float:
-    denom = block["trials"] + 2.0 * alpha * len(block["cells"])
-    if denom == 0:
-        return 0.5
-    return (block["events"] + alpha * len(block["cells"])) / denom
-
-
-def _fit_surface(
-    severity: list[str],
-    recency: list[str],
-    observations: list[dict],
-    alpha: float,
-) -> tuple[dict[tuple[str, str], dict], dict[tuple[str, str], float]]:
-    cells = {(sev, rec): {"events": 0, "trials": 0} for sev in severity for rec in recency}
-    for row in observations:
-        cells[(row["severity"], row["recency"])]["events"] += row["events"]
-        cells[(row["severity"], row["recency"])]["trials"] += row["trials"]
-
-    block_for: dict[tuple[str, str], dict] = {}
-    blocks: list[dict] = []
-    for key, counts in cells.items():
-        block = {"cells": [key], "events": counts["events"], "trials": counts["trials"]}
-        blocks.append(block)
-        block_for[key] = block
-
-    sev_index = {value: idx for idx, value in enumerate(severity)}
-    rec_index = {value: idx for idx, value in enumerate(recency)}
-    changed = True
-    while changed:
-        changed = False
-        for si, sev in enumerate(severity):
-            for ri, rec in enumerate(recency):
-                neighbors = []
-                if si + 1 < len(severity):
-                    neighbors.append((severity[si + 1], rec))
-                if ri + 1 < len(recency):
-                    neighbors.append((sev, recency[ri + 1]))
-                for neighbor in neighbors:
-                    left = block_for[(sev, rec)]
-                    right = block_for[neighbor]
-                    if left is right or _rate(left, alpha) <= _rate(right, alpha):
-                        continue
-                    merged = {
-                        "cells": sorted(
-                            left["cells"] + right["cells"],
-                            key=lambda cell: (sev_index[cell[0]], rec_index[cell[1]]),
-                        ),
-                        "events": left["events"] + right["events"],
-                        "trials": left["trials"] + right["trials"],
-                    }
-                    for cell in merged["cells"]:
-                        block_for[cell] = merged
-                    blocks = [block for block in blocks if block is not left and block is not right]
-                    blocks.append(merged)
-                    changed = True
-    probabilities = {key: _rate(block_for[key], alpha) for key in cells}
-    return cells, probabilities
+OUT = Path("/app/outputs")
+EXPECTED = Path("/tests/expected")
+DATA = Path("/app/data")
+EVAL = Path(os.environ.get("VERIFIER_EVAL_DIR", "/tests/eval"))
+CLASSES = ["eval_low", "eval_medium", "eval_high"]
+FEATURES = [
+    "native_english_speaker",
+    "course_instructor",
+    "course_id",
+    "summer_or_regular",
+    "class_size",
+]
+C_GRID = [0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0]
+ARTIFACTS = [
+    "metrics.json",
+    "candidate_results.csv",
+    "fit_cv_results.csv",
+    "fit_oof_predictions.csv",
+    "fold_preprocessing_summary.csv",
+    "predictions.csv",
+    "validation_confusion_matrix.csv",
+    "validation_class_report.csv",
+    "validation_confidence_deciles.csv",
+    "score_course_counterfactual.csv",
+    "model_term_importance.csv",
+    "preprocessing_summary.csv",
+    "model_manifest.json",
+]
 
 
-def _nll(probabilities: dict[tuple[str, str], float], validation: list[dict]) -> float:
-    total = 0.0
-    for row in validation:
-        p = min(max(probabilities[(row["severity"], row["recency"])], 1e-15), 1.0 - 1e-15)
-        label = row["label"]
-        weight = float(row.get("weight", 1))
-        total += weight * -(label * math.log(p) + (1 - label) * math.log(1.0 - p))
-    return total
+def read_json(directory: Path, name: str) -> dict:
+    """Load one JSON artifact."""
+    return json.loads((directory / name).read_text(encoding="utf-8"))
 
 
-def _clip(probability: float) -> float:
-    return min(max(probability, 1e-15), 1.0 - 1e-15)
+def read_csv(directory: Path, name: str) -> pd.DataFrame:
+    """Load one CSV artifact."""
+    return pd.read_csv(directory / name)
 
 
-def _logit(probability: float) -> float:
-    safe = _clip(probability)
-    return math.log(safe / (1.0 - safe))
+def assert_json_close(observed: object, expected: object) -> None:
+    """Compare nested JSON with public-precision tolerance."""
+    if isinstance(expected, dict):
+        assert isinstance(observed, dict)
+        assert list(observed) == list(expected)
+        for key in expected:
+            assert_json_close(observed[key], expected[key])
+    elif isinstance(expected, list):
+        assert isinstance(observed, list)
+        assert len(observed) == len(expected)
+        for observed_item, expected_item in zip(observed, expected, strict=True):
+            assert_json_close(observed_item, expected_item)
+    elif isinstance(expected, (int, float)) and not isinstance(expected, bool):
+        assert float(observed) == pytest.approx(float(expected), abs=2e-6)
+    else:
+        assert str(observed) == str(expected)
 
 
-def _sigmoid(value: float) -> float:
-    return 1.0 / (1.0 + math.exp(-value))
-
-
-def _shrink_surface(
-    probabilities: dict[tuple[str, str], float],
-    observations: list[dict],
-    alpha: float,
-    shrinkage: float,
-) -> dict[tuple[str, str], float]:
-    total_events = sum(row["events"] for row in observations)
-    total_trials = sum(row["trials"] for row in observations)
-    denom = total_trials + 2.0 * alpha
-    base = 0.5 if denom == 0 else (total_events + alpha) / denom
-    base_logit = _logit(base)
-    return {
-        key: _sigmoid((1.0 - shrinkage) * _logit(probability) + shrinkage * base_logit)
-        for key, probability in probabilities.items()
-    }
-
-
-def _fit_calibrator(probabilities: dict[tuple[str, str], float], validation: list[dict]) -> list[dict]:
-    blocks = []
-    for row in sorted(validation, key=lambda item: (probabilities[(item["severity"], item["recency"])], item["case_id"])):
-        raw = probabilities[(row["severity"], row["recency"])]
-        weight = float(row.get("weight", 1))
-        blocks.append(
-            {
-                "min_raw": raw,
-                "max_raw": raw,
-                "weight": weight,
-                "weighted_events": weight * row["label"],
-            }
-        )
-    index = 0
-    while index < len(blocks) - 1:
-        current_rate = blocks[index]["weighted_events"] / blocks[index]["weight"]
-        next_rate = blocks[index + 1]["weighted_events"] / blocks[index + 1]["weight"]
-        if current_rate > next_rate:
-            merged = {
-                "min_raw": min(blocks[index]["min_raw"], blocks[index + 1]["min_raw"]),
-                "max_raw": max(blocks[index]["max_raw"], blocks[index + 1]["max_raw"]),
-                "weight": blocks[index]["weight"] + blocks[index + 1]["weight"],
-                "weighted_events": blocks[index]["weighted_events"] + blocks[index + 1]["weighted_events"],
-            }
-            blocks[index : index + 2] = [merged]
-            index = max(index - 1, 0)
+def assert_frame_close(observed: pd.DataFrame, expected: pd.DataFrame) -> None:
+    """Compare CSV structure and values at published precision."""
+    assert list(observed.columns) == list(expected.columns)
+    assert observed.shape == expected.shape
+    for column in expected.columns:
+        if pd.api.types.is_numeric_dtype(expected[column]):
+            assert np.allclose(
+                pd.to_numeric(observed[column]),
+                pd.to_numeric(expected[column]),
+                atol=2e-6,
+                rtol=0,
+                equal_nan=True,
+            )
         else:
-            index += 1
-    return blocks
+            assert observed[column].astype(str).tolist() == expected[
+                column
+            ].astype(str).tolist()
 
 
-def _calibrate_probability(probability: float, blocks: list[dict]) -> float:
-    if not blocks:
-        return probability
-    for block in blocks:
-        if probability <= block["max_raw"]:
-            return block["weighted_events"] / block["weight"]
-    return blocks[-1]["weighted_events"] / blocks[-1]["weight"]
+def assign_folds(frame: pd.DataFrame) -> dict[str, int]:
+    """Rebuild the published class-stratified folds."""
+    assigned: dict[str, int] = {}
+    for label in CLASSES:
+        rows = frame.loc[frame["evaluation_class"] == label].sort_values("row_id")
+        for position, row_id in enumerate(rows["row_id"].astype(str), start=1):
+            assigned[row_id] = ((position - 1) % 5) + 1
+    return assigned
 
 
-def _calibrate_surface(probabilities: dict[tuple[str, str], float], blocks: list[dict]) -> dict[tuple[str, str], float]:
-    return {key: _calibrate_probability(probability, blocks) for key, probability in probabilities.items()}
-
-
-def _decision(probability: float, thresholds: dict) -> str:
-    if probability >= float(thresholds["alert"]):
-        return "alert"
-    if probability >= float(thresholds["monitor"]):
-        return "monitor"
-    return "clear"
-
-
-def _expected() -> dict:
-    config = _load(CONFIG)
-    observations = _load(OBS)
-    validation = _load(VALID)
-    scoring = _load(SCORING)
-    severity = config["severity"]
-    recency = config["recency"]
-    _validate_levels(observations, severity, recency)
-    _validate_levels(validation, severity, recency)
-    _validate_levels(scoring, severity, recency)
-
-    fits = []
-    for alpha_value in config["candidate_alpha"]:
-        alpha = float(alpha_value)
-        _cells, probabilities = _fit_surface(severity, recency, observations, alpha)
-        for shrinkage_value in config["candidate_shrinkage"]:
-            shrinkage = float(shrinkage_value)
-            shrunk = _shrink_surface(probabilities, observations, alpha, shrinkage)
-            blocks = _fit_calibrator(shrunk, validation)
-            calibrated = _calibrate_surface(shrunk, blocks)
-            fits.append(
-                {
-                    "alpha": alpha,
-                    "shrinkage": shrinkage,
-                    "probabilities": calibrated,
-                    "calibration_blocks": blocks,
-                    "raw_validation_nll": _nll(shrunk, validation),
-                    "calibrated_validation_nll": _nll(calibrated, validation),
-                }
-            )
-    best = min(fits, key=lambda fit: (fit["calibrated_validation_nll"], fit["alpha"], fit["shrinkage"]))
-    cells, pooled = _fit_surface(severity, recency, observations, best["alpha"])
-    shrunk = _shrink_surface(pooled, observations, best["alpha"], best["shrinkage"])
-    probabilities = _calibrate_surface(shrunk, best["calibration_blocks"])
-    thresholds = config["decision_thresholds"]
-    input_sha = hashlib.sha256(b"".join(path.read_bytes() for path in [CONFIG, OBS, VALID, SCORING])).hexdigest()
-    return {
-        "schema_version": "monotone-lattice/v1",
-        "generated_at": "2026-07-28T00:00:00Z",
-        "selected_alpha": round(best["alpha"], 6),
-        "selected_shrinkage": round(best["shrinkage"], 6),
-        "validation_nll": round(best["calibrated_validation_nll"], 6),
-        "levels": {"severity": severity, "recency": recency},
-        "candidate_scores": [
-            {
-                "alpha": round(fit["alpha"], 6),
-                "shrinkage": round(fit["shrinkage"], 6),
-                "raw_validation_nll": round(fit["raw_validation_nll"], 6),
-                "calibrated_validation_nll": round(fit["calibrated_validation_nll"], 6),
-            }
-            for fit in sorted(fits, key=lambda fit: (fit["alpha"], fit["shrinkage"]))
-        ],
-        "calibration_blocks": [
-            {
-                "min_raw_probability": round(block["min_raw"], 6),
-                "max_raw_probability": round(block["max_raw"], 6),
-                "calibrated_probability": round(block["weighted_events"] / block["weight"], 6),
-                "weight": round(block["weight"], 6),
-            }
-            for block in best["calibration_blocks"]
-        ],
-        "cells": [
-            {
-                "severity": sev,
-                "recency": rec,
-                "events": cells[(sev, rec)]["events"],
-                "trials": cells[(sev, rec)]["trials"],
-                "probability": round(probabilities[(sev, rec)], 6),
-            }
-            for sev in severity
-            for rec in recency
-        ],
-        "scoring": [
-            {
-                "case_id": row["case_id"],
-                "severity": row["severity"],
-                "recency": row["recency"],
-                "probability": round(probabilities[(row["severity"], row["recency"])], 6),
-                "decision": _decision(round(probabilities[(row["severity"], row["recency"])], 6), thresholds),
-            }
-            for row in sorted(scoring, key=lambda item: item["case_id"])
-        ],
-        "input_sha256": input_sha,
-    }
-
-
-@pytest.fixture(scope="session")
-def result() -> dict:
-    """Run the submitted calibrator after verifier-only data changes that static answers cannot know."""
-    config = _load(CONFIG)
-    config["candidate_shrinkage"] = [0, 0.2, 0.45, 0.7]
-    _write(CONFIG, config)
-    observations = _load(OBS)
-    observations.extend(
+def multiclass_metrics(
+    actual: pd.Series, probabilities: np.ndarray
+) -> tuple[float, float, float]:
+    """Compute macro F1, accuracy, and natural-log loss."""
+    predicted = np.asarray(CLASSES)[np.argmax(probabilities, axis=1)]
+    macro = f1_score(actual, predicted, labels=CLASSES, average="macro")
+    accuracy = float(np.mean(predicted == actual.to_numpy()))
+    class_positions = {label: index for index, label in enumerate(CLASSES)}
+    selected = np.asarray(
         [
-            {"severity": "guarded", "recency": "fresh", "events": 8, "trials": 14},
-            {"severity": "critical", "recency": "warm", "events": 7, "trials": 9},
+            probabilities[row_index, class_positions[label]]
+            for row_index, label in enumerate(actual.astype(str))
         ]
     )
-    _write(OBS, observations)
-    validation = _load(VALID)
-    validation.extend(
-        [
-            {"case_id": "v-dynamic-a", "severity": "guarded", "recency": "fresh", "label": 1, "weight": 1.7},
-            {"case_id": "v-dynamic-b", "severity": "critical", "recency": "warm", "label": 1, "weight": 1.3},
+    loss = float(np.mean(-np.log(np.clip(selected, 1e-15, 1.0))))
+    return float(macro), accuracy, float(loss)
+
+
+def test_exact_artifact_set_and_sealed_outputs() -> None:
+    """Require all thirteen files and compare with sealed evidence."""
+    assert sorted(path.name for path in OUT.iterdir()) == sorted(ARTIFACTS)
+    assert sorted(path.name for path in EXPECTED.iterdir()) == sorted(ARTIFACTS)
+    for name in ["metrics.json", "model_manifest.json"]:
+        assert_json_close(read_json(OUT, name), read_json(EXPECTED, name))
+    for name in [item for item in ARTIFACTS if item.endswith(".csv")]:
+        assert_frame_close(read_csv(OUT, name), read_csv(EXPECTED, name))
+
+
+def test_manifest_declares_public_scope_and_pipeline() -> None:
+    """Validate input scope, model metadata, and artifact declaration."""
+    manifest = read_json(OUT, "model_manifest.json")
+    train = pd.read_csv(DATA / "train.csv")
+    score = pd.read_csv(DATA / "score.csv")
+    assert manifest["feature_columns"] == FEATURES
+    assert manifest["categorical_columns"] == FEATURES[:4]
+    assert manifest["numeric_columns"] == ["class_size"]
+    assert manifest["excluded_columns"] == [
+        "row_id",
+        "split_role",
+        "evaluation_class",
+    ]
+    assert manifest["class_order"] == CLASSES
+    assert [float(value) for value in manifest["candidate_grid"]] == C_GRID
+    assert manifest["artifact_files"] == ARTIFACTS
+    assert manifest["fit_rows"] == int((train["split_role"] == "fit").sum())
+    assert manifest["validation_rows"] == int(
+        (train["split_role"] == "validation").sum()
+    )
+    assert manifest["score_rows"] == len(score)
+    assert len(manifest["design_columns"]) > len(FEATURES)
+
+
+def test_candidate_path_varies_and_selects_cv_minimum() -> None:
+    """Ensure regularization changes behavior and selection follows CV loss."""
+    candidates = read_csv(OUT, "candidate_results.csv")
+    assert candidates["candidate_c"].astype(float).tolist() == C_GRID
+    assert candidates["is_selected"].astype(int).sum() == 1
+    assert candidates["cv_mean_log_loss"].nunique() > 3
+    selected = candidates.loc[candidates["is_selected"] == 1].iloc[0]
+    minimum = candidates["cv_mean_log_loss"].min()
+    assert float(selected["cv_mean_log_loss"]) <= float(minimum) + 2e-6
+    tied = candidates.loc[
+        candidates["cv_mean_log_loss"] <= float(minimum) + 2e-6,
+        "candidate_c",
+    ]
+    assert float(selected["candidate_c"]) == float(tied.min())
+
+
+def test_cv_rows_cover_every_candidate_and_fold() -> None:
+    """Reconcile candidate summaries with forty fold evaluations."""
+    cv = read_csv(OUT, "fit_cv_results.csv")
+    assert len(cv) == len(C_GRID) * 5
+    assert cv[["candidate_c", "fold_id"]].drop_duplicates().shape[0] == len(cv)
+    assert sorted(cv["fold_id"].astype(int).unique()) == [1, 2, 3, 4, 5]
+    for c_value in C_GRID:
+        rows = cv[np.isclose(cv["candidate_c"], c_value)]
+        assert rows["fold_id"].astype(int).tolist() == [1, 2, 3, 4, 5]
+        assert (rows["training_rows"] + rows["holdout_rows"]).nunique() == 1
+
+
+def test_oof_predictions_cover_fit_rows_and_reconcile_metrics() -> None:
+    """Check leakage-free OOF row coverage, folds, labels, and metrics."""
+    train = pd.read_csv(DATA / "train.csv", dtype={"row_id": str})
+    fit = train.loc[train["split_role"] == "fit"].copy()
+    oof = read_csv(OUT, "fit_oof_predictions.csv")
+    assert oof["row_id"].astype(str).tolist() == sorted(fit["row_id"].astype(str))
+    expected_folds = assign_folds(fit)
+    assert oof["fold_id"].astype(int).tolist() == [
+        expected_folds[row_id] for row_id in oof["row_id"].astype(str)
+    ]
+    probabilities = oof[
+        ["prob_eval_low", "prob_eval_medium", "prob_eval_high"]
+    ].to_numpy(float)
+    assert np.allclose(probabilities.sum(axis=1), 1, atol=2e-7)
+    macro, _, loss = multiclass_metrics(
+        oof["actual_class"].astype(str), probabilities
+    )
+    metrics = read_json(OUT, "metrics.json")
+    assert macro == pytest.approx(metrics["fit_oof_macro_f1"], abs=2e-6)
+    assert loss == pytest.approx(metrics["fit_oof_log_loss"], abs=2e-6)
+
+
+def test_fold_preprocessing_is_fit_partition_local() -> None:
+    """Independently reconstruct selected-fold numeric and level summaries."""
+    train = pd.read_csv(DATA / "train.csv", dtype={"row_id": str})
+    fit = train.loc[train["split_role"] == "fit"].copy()
+    folds = assign_folds(fit)
+    summary = read_csv(OUT, "fold_preprocessing_summary.csv")
+    assert summary["fold_id"].astype(int).tolist() == [1, 2, 3, 4, 5]
+    for _, row in summary.iterrows():
+        fold = int(row["fold_id"])
+        training = fit.loc[
+            [folds[row_id] != fold for row_id in fit["row_id"].astype(str)]
         ]
-    )
-    _write(VALID, validation)
-    scoring = _load(SCORING)
-    scoring.append({"case_id": "s-verifier", "severity": "guarded", "recency": "fresh"})
-    _write(SCORING, scoring)
-
-    (APP / "out").mkdir(exist_ok=True)
-    OUT.write_text('{"stale": true}\n', encoding="utf-8")
-    TSV.write_text("stale\tmodel\n", encoding="utf-8")
-    assert COMMAND.exists(), "missing /app/bin/lattice-calibrate"
-    completed = subprocess.run(
-        [str(COMMAND)],
-        cwd=APP,
-        text=True,
-        capture_output=True,
-        timeout=60,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr + completed.stdout
-    assert OUT.exists(), "calibration JSON was not written"
-    assert TSV.exists(), "current model TSV was not written"
-    return json.loads(OUT.read_text(encoding="utf-8"))
-
-
-def test_json_schema_and_exact_report(result: dict) -> None:
-    """The report validates against the visible schema and matches an independent implementation."""
-    jsonschema.validate(result, _load(SCHEMA))
-    assert result == _expected()
-
-
-def test_monotone_surface_and_dynamic_scoring_case(result: dict) -> None:
-    """The fitted lattice is monotone in both configured dimensions and includes verifier-added scoring."""
-    config = _load(CONFIG)
-    probs = {(cell["severity"], cell["recency"]): cell["probability"] for cell in result["cells"]}
-    for si, sev in enumerate(config["severity"]):
-        for ri, rec in enumerate(config["recency"]):
-            if si + 1 < len(config["severity"]):
-                assert probs[(sev, rec)] <= probs[(config["severity"][si + 1], rec)]
-            if ri + 1 < len(config["recency"]):
-                assert probs[(sev, rec)] <= probs[(sev, config["recency"][ri + 1])]
-    scoring_ids = [item["case_id"] for item in result["scoring"]]
-    assert scoring_ids == sorted(scoring_ids)
-    assert "s-verifier" in scoring_ids
-
-
-def test_candidate_selection_uses_unrounded_validation_nll(result: dict) -> None:
-    """The chosen smoothing/shrinkage pair follows validation NLL with documented tie-breaks."""
-    config = _load(CONFIG)
-    scores = result["candidate_scores"]
-    assert len(scores) == len(config["candidate_alpha"]) * len(config["candidate_shrinkage"])
-    assert scores == sorted(scores, key=lambda row: (row["alpha"], row["shrinkage"]))
-    assert any(row["shrinkage"] == 0.7 for row in scores)
-    best = min(scores, key=lambda row: (row["calibrated_validation_nll"], row["alpha"], row["shrinkage"]))
-    assert result["selected_alpha"] == best["alpha"]
-    assert result["selected_shrinkage"] == best["shrinkage"]
-    assert result["validation_nll"] == best["calibrated_validation_nll"]
-
-
-def test_selected_isotonic_calibration_blocks_are_used(result: dict) -> None:
-    """The selected second-stage calibrator is monotone and changes the final lattice probabilities."""
-    blocks = result["calibration_blocks"]
-    assert len(blocks) >= 2
-    assert blocks == sorted(blocks, key=lambda row: (row["min_raw_probability"], row["max_raw_probability"]))
-    for left, right in itertools.pairwise(blocks):
-        assert left["max_raw_probability"] <= right["max_raw_probability"]
-        assert left["calibrated_probability"] <= right["calibrated_probability"]
-    expected = _expected()
-    assert result["calibration_blocks"] == expected["calibration_blocks"]
-
-
-def test_tsv_matches_sorted_cells_and_cell_decisions(result: dict) -> None:
-    """The TSV current model is sorted by lattice order and uses cell-level rounded probabilities."""
-    config = _load(CONFIG)
-    lines = TSV.read_text(encoding="utf-8").splitlines()
-    assert lines[0] == "severity\trecency\tprobability\tdecision"
-    expected_lines = ["severity\trecency\tprobability\tdecision"]
-    for cell in result["cells"]:
-        expected_lines.append(
-            "\t".join(
-                [
-                    cell["severity"],
-                    cell["recency"],
-                    f"{cell['probability']:.6f}",
-                    _decision(cell["probability"], config["decision_thresholds"]),
-                ]
-            )
+        numeric = pd.to_numeric(training["class_size"], errors="coerce")
+        center = float(numeric.mean()) if numeric.notna().any() else 0.0
+        imputed = numeric.fillna(center)
+        scale = float(imputed.std(ddof=1))
+        if not np.isfinite(scale) or scale == 0:
+            scale = 1.0
+        instructors = set(training["course_instructor"].dropna().astype(str))
+        courses = set(training["course_id"].dropna().astype(str))
+        assert float(row["class_size_center"]) == pytest.approx(center, abs=2e-7)
+        assert float(row["class_size_sample_sd"]) == pytest.approx(scale, abs=2e-7)
+        assert int(row["instructor_level_count"]) == len(
+            instructors | {"__missing__", "__other__"}
         )
-    assert lines == expected_lines
+        assert int(row["course_level_count"]) == len(
+            courses | {"__missing__", "__other__"}
+        )
 
 
-def test_rerun_replaces_outputs_for_changed_live_data(result: dict) -> None:
-    """A later valid input change recomputes the current artifacts and removes stale bytes."""
-    before = copy.deepcopy(result)
-    original_observations = OBS.read_text(encoding="utf-8")
-    try:
-        OUT.write_text(json.dumps(before, sort_keys=True, indent=2) + "\nSTALE\n", encoding="utf-8")
-        observations = _load(OBS)
-        observations.append({"severity": "high", "recency": "fresh", "events": 6, "trials": 7})
-        _write(OBS, observations)
-        completed = subprocess.run([str(COMMAND)], cwd=APP, text=True, capture_output=True, timeout=60, check=False)
-        assert completed.returncode == 0, completed.stderr + completed.stdout
-        after = json.loads(OUT.read_text(encoding="utf-8"))
-        assert after == _expected()
-        assert after["input_sha256"] != before["input_sha256"]
-        assert "STALE" not in OUT.read_text(encoding="utf-8")
-    finally:
-        OBS.write_text(original_observations, encoding="utf-8")
-        completed = subprocess.run([str(COMMAND)], cwd=APP, text=True, capture_output=True, timeout=60, check=False)
-        assert completed.returncode == 0, completed.stderr + completed.stdout
+def test_predictions_are_score_only_valid_and_nonconstant() -> None:
+    """Validate score scope, class probabilities, and nondegenerate labels."""
+    score = pd.read_csv(DATA / "score.csv", dtype={"row_id": str})
+    predictions = read_csv(OUT, "predictions.csv")
+    assert predictions["row_id"].astype(str).tolist() == sorted(score["row_id"])
+    probabilities = predictions[
+        ["prob_eval_low", "prob_eval_medium", "prob_eval_high"]
+    ].to_numpy(float)
+    assert np.isfinite(probabilities).all()
+    assert ((probabilities >= 0) & (probabilities <= 1)).all()
+    assert np.allclose(probabilities.sum(axis=1), 1, atol=2e-7)
+    expected_labels = np.asarray(CLASSES)[np.argmax(probabilities, axis=1)]
+    assert predictions["predicted_class"].astype(str).tolist() == expected_labels.tolist()
+    assert predictions["predicted_class"].nunique() >= 2
 
 
-def test_invalid_data_preserves_last_good_outputs(result: dict) -> None:
-    """Invalid live data fails without clobbering the most recent successful model files."""
-    original_observations = OBS.read_text(encoding="utf-8")
-    last_good_json = OUT.read_text(encoding="utf-8")
-    last_good_tsv = TSV.read_text(encoding="utf-8")
-    try:
-        observations = _load(OBS)
-        observations.append({"severity": "critical", "recency": "fresh", "events": 12, "trials": 4})
-        _write(OBS, observations)
-        completed = subprocess.run([str(COMMAND)], cwd=APP, text=True, capture_output=True, timeout=60, check=False)
-        assert completed.returncode != 0
-        assert OUT.read_text(encoding="utf-8") == last_good_json
-        assert TSV.read_text(encoding="utf-8") == last_good_tsv
-    finally:
-        OBS.write_text(original_observations, encoding="utf-8")
+def test_validation_metrics_confusion_and_report_reconcile() -> None:
+    """Reconcile validation metrics, confusion counts, and class summaries."""
+    expected_cases = read_csv(EXPECTED, "validation_class_report.csv")
+    report = read_csv(OUT, "validation_class_report.csv")
+    assert_frame_close(report, expected_cases)
+    confusion = read_csv(OUT, "validation_confusion_matrix.csv")
+    train = pd.read_csv(DATA / "train.csv")
+    validation = train.loc[train["split_role"] == "validation"]
+    assert len(confusion) == 9
+    assert confusion["n"].astype(int).sum() == len(validation)
+    assert confusion["actual_class"].astype(str).tolist() == [
+        actual for actual in CLASSES for _ in CLASSES
+    ]
+    assert confusion["predicted_class"].astype(str).tolist() == CLASSES * 3
+    assert report["support"].astype(int).sum() == len(validation)
+    metrics = read_json(OUT, "metrics.json")
+    assert 0 <= float(metrics["validation_macro_f1"]) <= 1
+    assert 0 <= float(metrics["validation_accuracy"]) <= 1
+    assert float(metrics["validation_log_loss"]) > 0
+
+
+def test_validation_confidence_deciles_cover_rows() -> None:
+    """Require deterministic complete confidence-decile aggregation."""
+    deciles = read_csv(OUT, "validation_confidence_deciles.csv")
+    train = pd.read_csv(DATA / "train.csv")
+    validation_rows = int((train["split_role"] == "validation").sum())
+    assert deciles["decile"].astype(int).tolist() == list(range(1, 11))
+    assert deciles["row_count"].astype(int).sum() == validation_rows
+    assert deciles["accuracy"].between(0, 1).all()
+    assert deciles["mean_confidence"].between(0, 1).all()
+    assert deciles["mean_margin"].between(0, 1).all()
+
+
+def test_course_counterfactual_is_complete_and_substantive() -> None:
+    """Check course-instructor stress rows, class totals, and probability shifts."""
+    counterfactual = read_csv(OUT, "score_course_counterfactual.csv")
+    manifest = read_json(OUT, "model_manifest.json")
+    score_rows = int(manifest["score_rows"])
+    expected_levels = sorted(
+        {
+            column.removeprefix("course_instructor_")
+            for column in manifest["design_columns"]
+            if column.startswith("course_instructor_")
+        }
+    )
+    assert len(counterfactual) == len(expected_levels)
+    count_columns = [
+        "predicted_eval_low_count",
+        "predicted_eval_medium_count",
+        "predicted_eval_high_count",
+    ]
+    assert (counterfactual[count_columns].sum(axis=1) == score_rows).all()
+    means = counterfactual[
+        ["mean_prob_eval_low", "mean_prob_eval_medium", "mean_prob_eval_high"]
+    ].sum(axis=1)
+    assert np.allclose(means, 1, atol=3e-6)
+    assert counterfactual["mean_total_variation"].max() > 0
+
+
+def test_model_term_importance_covers_features_and_normalizes() -> None:
+    """Validate original-feature grouping and normalized coefficient magnitude."""
+    importance = read_csv(OUT, "model_term_importance.csv")
+    assert importance["feature"].astype(str).tolist() == FEATURES
+    assert (importance["design_term_count"] > 0).all()
+    assert (importance["l2_norm"] >= 0).all()
+    assert float(importance["normalized_importance"].sum()) == pytest.approx(
+        1.0, abs=5e-8
+    )
+    assert importance["l2_norm"].nunique() > 2
+
+
+def test_preprocessing_summary_covers_features() -> None:
+    """Check final-fit preprocessing scopes and feature typing."""
+    summary = read_csv(OUT, "preprocessing_summary.csv")
+    assert summary["feature"].astype(str).tolist() == FEATURES
+    assert summary["feature_type"].astype(str).tolist() == [
+        "categorical",
+        "categorical",
+        "categorical",
+        "categorical",
+        "numeric",
+    ]
+    assert (summary[["fit_missing_count", "validation_missing_count"]] >= 0).all().all()
+    assert float(summary.iloc[-1]["fit_sample_sd"]) > 0
+
+
+def test_hidden_score_quality_is_nontrivial() -> None:
+    """Require useful but imperfect predictions on held-out score labels."""
+    labels = pd.read_csv(EVAL / "labels.csv", dtype={"row_id": str})
+    predictions = read_csv(OUT, "predictions.csv")
+    merged = predictions.merge(labels, on="row_id", validate="one_to_one")
+    accuracy = float(
+        np.mean(
+            merged["predicted_class"].astype(str)
+            == merged["evaluation_class"].astype(str)
+        )
+    )
+    assert 0.25 <= accuracy < 1.0
