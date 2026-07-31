@@ -1,313 +1,1107 @@
-"""Behavioral checks for training/serving skew journal."""
+"""Exactly 24 candidate-facing tests for the WebAuthn assertion ledger repair worker."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+from helpers.wa_helpers import (
+    AS_OF,
+    TEST_DIR,
+    assertion_by_id,
+    auth_data,
+    binary_path,
+    challenge_by_id,
+    client_data_bytes,
+    copy_fixture_db,
+    credential_by_id,
+    insert_challenge,
+    insert_pending_job,
+    json_diff,
+    load_private_key,
+    load_report,
+    mutate_schema_version,
+    pretty_report_bytes,
+    query_one,
+    query_rows,
+    reinsert_shuffled,
+    run_worker,
+    sign_assertion,
+    snapshot_table,
+    update_job,
+)
 
-ENV = Path("/app/environment")
-OUT = Path("/app/output/skew_journal.json")
-TOL = 1e-9
-K = 0x9E3779B97F4A7C15
+UP = 0x01
+UV = 0x04
+BE = 0x08
+BS = 0x10
 
-
-def _fnv_u64(data: bytes) -> int:
-    h = 0xCBF29CE484222325
-    for b in data:
-        h ^= b
-        h = (h * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
-    return h
-
-
-def _hex16(v: int) -> str:
-    return f"{v:016x}"
-
-
-def _f32_pack(value: float) -> bytes:
-    # NaN is the only float that is unordered with 0 and both signs.
-    if not (value < 0.0 or value > 0.0 or value == 0.0):
-        return (0x7FC00000).to_bytes(4, "little")
-    if value == float("inf"):
-        return (0x7F800000).to_bytes(4, "little")
-    if value == float("-inf"):
-        return (0xFF800000).to_bytes(4, "little")
-    sign = 1 if (value < 0.0 or (value == 0.0 and str(value).startswith("-"))) else 0
-    if value == 0.0:
-        return (sign << 31).to_bytes(4, "little")
-    abs_v = -value if value < 0 else value
-    exp = 0
-    while abs_v >= 1.0:
-        abs_v *= 0.5
-        exp += 1
-    while abs_v < 0.5:
-        abs_v *= 2.0
-        exp -= 1
-    exp_bits = exp + 126
-    if exp_bits >= 255:
-        return ((sign << 31) | 0x7F800000).to_bytes(4, "little")
-    if exp_bits <= 0:
-        frac = int(abs_v * float(1 << (23 + exp_bits)))
-        return ((sign << 31) | (frac & 0x7FFFFF)).to_bytes(4, "little")
-    frac = int((abs_v * 2.0 - 1.0) * float(1 << 23) + 0.5)
-    return ((sign << 31) | ((exp_bits & 0xFF) << 23) | (frac & 0x7FFFFF)).to_bytes(4, "little")
+PERMUTATION_SEEDS = (7, 19, 41, 83, 127)
+GOLDEN_PATH = TEST_DIR / "fixtures" / "canonical_report.json"
+GOLDEN_HASH_PATH = TEST_DIR / "fixtures" / "canonical_report.sha256"
 
 
-def _f32_at(buf: bytes, off: int) -> float:
-    bits = int.from_bytes(buf[off : off + 4], "little")
-    sign = -1.0 if (bits >> 31) else 1.0
-    exp_bits = (bits >> 23) & 0xFF
-    frac = bits & 0x7FFFFF
-    if exp_bits == 255:
-        return float("inf") * sign if frac == 0 else float("nan")
-    if exp_bits == 0:
-        if frac == 0:
-            return 0.0 * sign
-        return sign * (float(frac) * (2.0**-149))
-    return sign * ((1.0 + float(frac) / float(1 << 23)) * (2.0 ** (exp_bits - 127)))
+def _run_cli(
+    database: str | Path,
+    output: str | Path,
+    as_of: str = AS_OF,
+    *,
+    extra_args: list[str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    out = Path(output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(binary_path()),
+        "--database",
+        str(database),
+        "--as-of",
+        as_of,
+        "--output",
+        str(output),
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
-def _load_slots(rel: str):
-    obj = json.loads((ENV / rel).read_text(encoding="utf-8"))
-    return [(s["name"], float(s["v"])) for s in obj.get("slots", [])]
+def _output_path(tmp: Path) -> Path:
+    out_dir = tmp / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / "report.json"
 
 
-def _resolve_wire(gen: int, wire: str):
-    maps = {
-        0: {"u_a": "u_a", "u_b": "u_b", "u_c": "u_c", "u_d": "u_d"},
-        1: {"v_a": "u_a", "v_c": "u_c", "u_b": "u_b", "u_d": "u_d"},
-        2: {
-            "u_a": "u_a",
-            "u_b": "u_b",
-            "w_n": "w_n",
-            "u_c": "u_c",
-            "u_d": "u_d",
-        },
-        3: {"u_a": "u_a", "u_b": "u_b", "u_d": "u_d"},
-    }
-    canon = (
-        ["u_a", "u_b", "w_n", "u_c", "u_d"]
-        if gen >= 2 and gen != 3
-        else ["u_a", "u_b", "u_c", "u_d"]
+def _run_on_copy(tmp: Path, db: Path | None = None):
+    database = db or copy_fixture_db()
+    output = _output_path(tmp)
+    proc = run_worker(database, output, AS_OF)
+    report = load_report(output) if output.is_file() else None
+    return proc, output, report, database
+
+
+def _job_row(db: Path, assertion_id: str) -> tuple[bytes, bytes, bytes]:
+    row = query_rows(
+        db,
+        """SELECT client_data_json, authenticator_data, signature_der
+           FROM assertion_jobs WHERE assertion_id=?""",
+        (assertion_id,),
+    )[0]
+    return row[0], row[1], row[2]
+
+
+def _credential_rp(db: Path, credential_id: str) -> str:
+    return query_one(db, "SELECT rp_id FROM credentials WHERE credential_id=?", (credential_id,))
+
+
+def _challenge_bytes(db: Path, challenge_id: str) -> bytes:
+    return query_one(
+        db, "SELECT challenge_bytes FROM challenges WHERE challenge_id=?", (challenge_id,)
     )
-    m = maps.get(gen, {})
-    if wire in m:
-        return m[wire]
-    if wire in m.values() or wire in canon:
-        return wire
-    if gen in maps:
-        return None
-    if wire in canon:
-        return wire
-    return None
 
 
-def _canon(gen: int):
-    if gen >= 2 and gen != 3:
-        return ["u_a", "u_b", "w_n", "u_c", "u_d"]
-    return ["u_a", "u_b", "u_c", "u_d"]
+def _origin_for_rp(db: Path, rp_id: str) -> str:
+    return query_one(db, "SELECT origin FROM rp_origins WHERE rp_id=? LIMIT 1", (rp_id,))
 
 
-def _bind_fill(gen: int, slots):
-    resolved = {}
-    for w, v in slots:
-        c = _resolve_wire(gen, w)
-        if c is None:
-            return None
-        resolved[c] = v
-    names = _canon(gen)
-    fills = {"w_n": 0.125}
-    out = bytearray()
-    present = []
-    for n in names:
-        if n in resolved:
-            out += _f32_pack(resolved[n])
-            present.append(True)
-        elif n in fills:
-            out += _f32_pack(fills[n])
-            present.append(True)
-        else:
-            out += _f32_pack(0.0)
-            present.append(False)
-    for name in ["u_c"]:
-        idx = names.index(name) if name in names else -1
-        if idx < 0 or not present[idx]:
-            return b""
-    for name in names:
-        idx = names.index(name)
-        if not present[idx]:
-            return b""
-    return bytes(out)
+def _private_key_for_credential(credential_id: str):
+    if credential_id == "cred-backup-b":
+        return load_private_key("key_b.pem")
+    return load_private_key("key_a.pem")
 
 
-def _baseline_u64(slots) -> int:
-    mapped = []
-    for w, v in slots:
-        n = w
-        if n == "v_a":
-            n = "u_a"
-        elif n == "v_c":
-            n = "u_c"
-        if n == "w_n":
-            continue
-        mapped.append((n, v))
-    b = _bind_fill(0, mapped)
-    assert b is not None and b != b""
-    return _fnv_u64(b)
-
-
-def _expect_preds(chan: bytes, base_u: int):
-    d = _fnv_u64(chan)
-    h = (d ^ ((base_u * K) & 0xFFFFFFFFFFFFFFFF)) & 0xFFFFFFFFFFFFFFFF
-    rows = []
-    for i in range(1, 4):
-        mixed = (h + i * 17) & 0xFFFFFFFFFFFFFFFF
-        v = 1.0 / (1.0 + (mixed % 1000) / 100.0)
-        rows.append((i, v))
-    return rows
-
-
-def _near(a: float, b: float) -> bool:
-    d = a - b
-    if d < 0:
-        d = -d
-    return d < TOL
-
-
-def _preds_ok(arm: dict, chan: bytes, slots) -> bool:
-    expect = _expect_preds(chan, _baseline_u64(slots))
-    if arm["gate_code"] != 0 or len(arm["pred_rows"]) != 3:
-        return False
-    for (t, v), row in zip(expect, arm["pred_rows"]):
-        if row["t"] != t or not _near(row["v"], v):
-            return False
-    return True
-
-
-def _journal_blob() -> dict:
-    subprocess.run(
-        ["/app/environment/scripts/refresh_join.sh"],
-        check=True,
-        cwd="/app/environment",
+def _resign_job(
+    db: Path,
+    assertion_id: str,
+    *,
+    client_data_json: bytes | None = None,
+    authenticator_data: bytes | None = None,
+) -> None:
+    cred_id = query_one(
+        db, "SELECT credential_id FROM assertion_jobs WHERE assertion_id=?", (assertion_id,)
     )
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "/app/environment/tools/skew_probe/skew_probe",
-            "--suite",
-            "full",
-            "--catalog",
-            "/app/environment/cfgs/join_policy.toml",
-            "--journal-out",
-            "/app/output/skew_journal.json",
-        ],
-        check=True,
+    cdata, adata, _ = _job_row(db, assertion_id)
+    if client_data_json is not None:
+        cdata = client_data_json
+    if authenticator_data is not None:
+        adata = authenticator_data
+    sk = _private_key_for_credential(cred_id)
+    sig = sign_assertion(sk, adata, cdata)
+    update_job(
+        db, assertion_id, client_data_json=cdata, authenticator_data=adata, signature_der=sig
     )
-    return json.loads(OUT.read_text(encoding="utf-8"))
 
 
-def _rev_row(blob: dict, rev_id: str) -> dict:
-    for a in blob["rev_traces"]:
-        if a["rev_id"] == rev_id:
-            return a
-    raise AssertionError(f"missing rev {rev_id}")
+def _insert_signed_job(
+    db: Path,
+    *,
+    assertion_id: str,
+    received_at: str,
+    event_seq: int,
+    credential_id: str,
+    challenge_id: str,
+    origin: str,
+    flags: int,
+    sign_count: int,
+    extra_client: dict | None = None,
+) -> None:
+    rp_id = _credential_rp(db, credential_id)
+    chal = _challenge_bytes(db, challenge_id)
+    cdata = client_data_bytes(chal, origin, **(extra_client or {}))
+    adata = auth_data(rp_id, flags, sign_count)
+    sk = _private_key_for_credential(credential_id)
+    sig = sign_assertion(sk, adata, cdata)
+    insert_pending_job(
+        db,
+        assertion_id=assertion_id,
+        received_at=received_at,
+        event_seq=event_seq,
+        credential_id=credential_id,
+        challenge_id=challenge_id,
+        client_data_json=cdata,
+        authenticator_data=adata,
+        signature_der=sig,
+    )
 
 
-def _edge_row(blob: dict, rev_id: str) -> dict:
-    for a in blob["edge_traces"]:
-        if a["rev_id"] == rev_id:
-            return a
-    raise AssertionError(f"missing edge {rev_id}")
+def _db_fingerprint(db: Path) -> dict[str, list[tuple]]:
+    tables = (
+        "schema_metadata",
+        "rp_policies",
+        "rp_origins",
+        "users",
+        "credentials",
+        "challenges",
+        "assertion_jobs",
+        "assertion_results",
+    )
+    return {t: snapshot_table(db, t) for t in tables}
 
 
-@pytest.fixture(scope="module")
-def journal() -> dict:
-    return _journal_blob()
+def test_01_native_cli_schema_and_preflight_validation(tmp_path: Path) -> None:
+    """Native binary requires absolute paths and validates schema before mutation."""
+    assert binary_path().is_file() and os.access(binary_path(), os.X_OK)
+
+    db = copy_fixture_db()
+    out_parent = tmp_path / "parent"
+    out_parent.mkdir()
+    out = out_parent / "report.json"
+
+    rel_db = _run_cli("relative/db.sqlite", out, AS_OF)
+    assert rel_db.returncode != 0
+    assert rel_db.stderr.strip()
+
+    rel_out = _run_cli(db, "relative/out.json", AS_OF)
+    assert rel_out.returncode != 0
+    assert rel_out.stderr.strip()
+
+    bad_as_of = _run_cli(db, out, "2026-07-01T12:00:00+00:00")
+    assert bad_as_of.returncode != 0
+
+    unknown_flag = _run_cli(db, out, AS_OF, extra_args=["--unexpected"])
+    assert unknown_flag.returncode != 0
+    assert unknown_flag.stderr.strip()
+
+    assert query_one(db, "SELECT schema_version FROM schema_metadata") == 1
+    for table in (
+        "schema_metadata",
+        "rp_policies",
+        "rp_origins",
+        "users",
+        "credentials",
+        "challenges",
+        "assertion_jobs",
+        "assertion_results",
+    ):
+        assert (
+            query_one(
+                db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            )
+            == 1
+        )
+
+    proc, _, report, _ = _run_on_copy(tmp_path, db)
+    assert proc.returncode == 0
+    assert report is not None
+    assert report["summary"]["processed_assertion_count"] == 12
 
 
-class TestJSuiteA:
-    def test_j01(self, journal: dict):
-        """Renamed wire names keep channel digests aligned with the baseline revision."""
-        base = _rev_row(journal, "rev_base")
-        ren = _rev_row(journal, "rev_rename")
-        assert ren["gate_code"] == 0
-        assert ren["offline_geom"] == base["offline_geom"] == ren["online_geom"]
-        assert ren["chan_digest"] == base["chan_digest"]
+def test_02_fatal_database_state_rolls_back_and_cleans_output(tmp_path: Path) -> None:
+    """Fatal database state rolls back mutations and cleans stale/temporary outputs."""
+    db = copy_fixture_db()
+    before = _db_fingerprint(db)
+    out_parent = tmp_path / "out"
+    out_parent.mkdir()
+    out = out_parent / "report.json"
+    out.write_text("stale report\n", encoding="utf-8")
+    tmp = Path(str(out) + ".tmp")
+    tmp.write_text("temporary\n", encoding="utf-8")
 
-    def test_j02(self, journal: dict):
-        """Shuffled slot order on an edge fixture still matches the baseline digest."""
-        base = _rev_row(journal, "rev_base")
-        edge = _edge_row(journal, "edge_reorder")
-        assert edge["gate_code"] == 0
-        assert edge["chan_digest"] == base["chan_digest"]
+    mutate_schema_version(db, 2)
+    before = _db_fingerprint(db)
+    proc = run_worker(db, out, AS_OF)
+    assert proc.returncode != 0
+    assert proc.stderr.strip()
+    assert not out.exists()
+    assert not tmp.exists()
+    assert _db_fingerprint(db) == before
 
-    def test_j03(self, journal: dict):
-        """Partially remapped edge wires resolve to the same baseline digest."""
-        base = _rev_row(journal, "rev_base")
-        edge = _edge_row(journal, "edge_mixed")
-        assert edge["gate_code"] == 0
-        assert edge["chan_digest"] == base["chan_digest"]
-
-
-class TestJSuiteB:
-    def test_j04(self, journal: dict):
-        """Additive nullable revision keeps offline and online digests identical."""
-        arm = _rev_row(journal, "rev_add")
-        slots = _load_slots("fixtures/revs/add.json")
-        expect = _bind_fill(2, slots)
-        assert arm["gate_code"] == 0 and arm["offline_geom"] == arm["online_geom"]
-        assert expect is not None and expect != b""
-        assert arm["chan_digest"] == _hex16(_fnv_u64(expect))
-
-    def test_j05(self, journal: dict):
-        """Missing nullable slot receives the documented public default value."""
-        slots = _load_slots("fixtures/revs/add.json")
-        expect = _bind_fill(2, slots)
-        arm = _rev_row(journal, "rev_add")
-        assert expect is not None and _near(_f32_at(expect, 8), 0.125)
-        assert arm["chan_digest"] == _hex16(_fnv_u64(expect))
-
-
-class TestJSuiteC:
-    def test_j06(self, journal: dict):
-        """Forbidden removal revision hard-fails with empty prediction rows."""
-        arm = _rev_row(journal, "rev_drop")
-        assert arm["gate_code"] == 2
-        assert arm["pred_rows"] == [] and arm["chan_digest"] == ""
-
-    def test_j07(self, journal: dict):
-        """Empty boundary fixture hard-fails the same way as a forbidden removal."""
-        edge = _edge_row(journal, "edge_empty")
-        assert edge["gate_code"] == 2
-        assert edge["pred_rows"] == []
-
-    def test_j08(self, journal: dict):
-        """Baseline revision still scores successfully when other revisions reject."""
-        base = _rev_row(journal, "rev_base")
-        assert base["gate_code"] == 0
-        assert len(base["pred_rows"]) == 3
+    db2 = copy_fixture_db()
+    conn = sqlite3.connect(db2)
+    conn.execute(
+        """INSERT INTO assertion_results
+           (assertion_id, status, reason_or_null, risk_or_null, credential_id,
+            challenge_id, received_at, user_present_or_null, user_verified_or_null,
+            backup_eligible_or_null, backup_state_or_null, sign_count_or_null,
+            sign_count_before_or_null, sign_count_after_or_null, challenge_consumed,
+            credential_mutated)
+           VALUES ('assert-zero-zero','rejected','invalid_signature',NULL,
+                   'cred-device-a','chal-zero','2026-06-10T10:00:00Z',
+                   NULL,NULL,NULL,NULL,NULL,0,0,0,0)"""
+    )
+    conn.commit()
+    conn.close()
+    before2 = _db_fingerprint(db2)
+    out2 = out_parent / "report2.json"
+    proc2 = run_worker(db2, out2, AS_OF)
+    assert proc2.returncode != 0
+    assert proc2.stderr.strip()
+    assert not out2.exists()
+    assert _db_fingerprint(db2) == before2
 
 
-class TestJSuiteD:
-    def test_j09(self, journal: dict):
-        """Baseline prediction rows stay continuous with the documented mix."""
-        arm = _rev_row(journal, "rev_base")
-        slots = _load_slots("fixtures/revs/base.json")
-        chan = _bind_fill(0, slots)
-        assert chan is not None and chan != b""
-        assert _preds_ok(arm, chan, slots)
+def test_03_chronological_processing_and_as_of_window(tmp_path: Path) -> None:
+    """as_of window ignores future jobs; final report rows sort by received_at then assertion_id.
 
-    def test_j10(self, journal: dict):
-        """Alternate baseline payload still follows the same continuity mix."""
-        arm = _rev_row(journal, "rev_twice")
-        slots = _load_slots("fixtures/revs/twice.json")
-        chan = _bind_fill(0, slots)
-        assert chan is not None and chan != b""
-        assert _preds_ok(arm, chan, slots)
+    Final report order is independent of processing order (received_at, event_seq,
+    assertion_id). This test checks the as_of window and report presentation order
+    only; it does not prove processing-order semantics.
+    """
+    proc, _, report, db = _run_on_copy(tmp_path)
+    assert proc.returncode == 0
+    rows = report["assertion_rows"]
+    keys = [(r["received_at"], r["assertion_id"]) for r in rows]
+    assert keys == sorted(keys)
+    assert all(r["assertion_id"] != "assert-future" for r in rows)
+    assert (
+        query_one(db, "SELECT status FROM assertion_jobs WHERE assertion_id='assert-future'")
+        == "pending"
+    )
+    assert (
+        query_one(db, "SELECT COUNT(*) FROM assertion_results WHERE assertion_id='assert-future'")
+        == 0
+    )
+    assert report["summary"]["pending_future_job_count"] == 1
 
-    def test_j11(self, journal: dict):
-        """Replay rows from an identical second run match the first accepted predictions."""
-        first = next(a for a in journal["rev_traces"] if a["gate_code"] == 0)
-        assert journal["replay_rows"] == first["pred_rows"]
+
+def test_04_credential_identity_user_and_status_binding(tmp_path: Path) -> None:
+    """Unknown, revoked, and disabled-user credentials reject without mutation."""
+    db = copy_fixture_db()
+    insert_challenge(
+        db,
+        challenge_id="chal-synth-unknown",
+        rp_id="example.com",
+        challenge_bytes=b"synth-chal-unknown!!",
+        issued_at="2026-06-01T00:00:00Z",
+        expires_at="2026-07-15T00:00:00Z",
+    )
+    insert_pending_job(
+        db,
+        assertion_id="assert-unknown-cred",
+        received_at="2026-06-13T10:00:00Z",
+        event_seq=900,
+        credential_id="cred-missing",
+        challenge_id="chal-synth-unknown",
+        client_data_json=b"{}",
+        authenticator_data=b"\x00" * 37,
+        signature_der=b"\x30",
+    )
+    _insert_signed_job(
+        db,
+        assertion_id="assert-disabled-user",
+        received_at="2026-06-13T11:00:00Z",
+        event_seq=901,
+        credential_id="cred-disabled-d",
+        challenge_id="chal-revoked",
+        origin="https://example.com",
+        flags=UP,
+        sign_count=2,
+    )
+
+    proc, _, report, _ = _run_on_copy(tmp_path, db)
+    assert proc.returncode == 0
+
+    revoked = assertion_by_id(report, "assert-revoked")
+    assert revoked["reason_or_null"] == "credential_inactive"
+    assert revoked["challenge_consumed"] == 0
+    assert revoked["credential_mutated"] == 0
+    assert revoked["user_present_or_null"] is None
+
+    unknown = assertion_by_id(report, "assert-unknown-cred")
+    assert unknown["reason_or_null"] == "credential_unknown"
+    assert unknown["challenge_consumed"] == 0
+
+    disabled = assertion_by_id(report, "assert-disabled-user")
+    assert disabled["reason_or_null"] == "credential_inactive"
+    assert disabled["challenge_consumed"] == 0
+
+
+def test_05_client_data_utf8_json_and_duplicate_member_handling(tmp_path: Path) -> None:
+    """Malformed clientDataJSON rejects as client_data_malformed without consumption."""
+    cases: list[tuple[str, bytes]] = [
+        ("bad-utf8", b"\xffnot-json"),
+        ("bad-json", b"{not json"),
+        ("bad-top", b"[1,2,3]"),
+        ("bad-type-field", b'{"type":1,"challenge":"x","origin":"https://example.com"}'),
+        ("missing-origin", b'{"type":"webauthn.get","challenge":"abc"}'),
+        (
+            "dup-type",
+            b'{"type":"webauthn.get","type":"webauthn.get","challenge":"abc","origin":"https://example.com"}',
+        ),
+        (
+            "bad-cross",
+            b'{"type":"webauthn.get","challenge":"abc","origin":"https://example.com","crossOrigin":"yes"}',
+        ),
+    ]
+    for suffix, blob in cases:
+        db = copy_fixture_db()
+        update_job(db, "assert-badsig", client_data_json=blob)
+        proc, _, report, _ = _run_on_copy(tmp_path / suffix, db)
+        assert proc.returncode == 0
+        row = assertion_by_id(report, "assert-badsig")
+        assert row["reason_or_null"] == "client_data_malformed", suffix
+        assert row["challenge_consumed"] == 0
+
+
+def test_06_client_data_type_is_webauthn_get(tmp_path: Path) -> None:
+    """Wrong ceremony type rejects as client_data_type_invalid before authentication boundary."""
+    db = copy_fixture_db()
+    cdata, adata, _ = _job_row(db, "assert-badsig")
+    cobj = json.loads(cdata)
+    cobj["type"] = "webauthn.create"
+    new_cdata = json.dumps(cobj, separators=(",", ":"), sort_keys=True, ensure_ascii=True).encode(
+        "utf-8"
+    )
+    _resign_job(db, "assert-badsig", client_data_json=new_cdata, authenticator_data=adata)
+
+    proc, _, report, _ = _run_on_copy(tmp_path, db)
+    assert proc.returncode == 0
+    row = assertion_by_id(report, "assert-badsig")
+    assert row["reason_or_null"] == "client_data_type_invalid"
+    assert row["challenge_consumed"] == 0
+    ch = challenge_by_id(report, "chal-badsig")
+    assert ch["status"] == "available"
+
+
+def test_07_challenge_binding_lifetime_and_replay(tmp_path: Path) -> None:
+    """Challenge unknown, timing, consumed, equality, and byte-mismatch cases follow precedence."""
+    proc, _, report, _ = _run_on_copy(tmp_path)
+    assert proc.returncode == 0
+
+    consumed = assertion_by_id(report, "assert-consumed")
+    assert consumed["reason_or_null"] == "challenge_already_consumed"
+    assert consumed["challenge_consumed"] == 0
+
+    expired = assertion_by_id(report, "assert-expired")
+    assert expired["reason_or_null"] == "challenge_expired"
+    assert expired["challenge_consumed"] == 0
+
+    db = copy_fixture_db()
+    insert_challenge(
+        db,
+        challenge_id="chal-not-yet",
+        rp_id="secure.example",
+        challenge_bytes=b"challenge-not-yet!!",
+        issued_at="2026-06-15T00:00:00Z",
+        expires_at="2026-07-15T00:00:00Z",
+    )
+    _insert_signed_job(
+        db,
+        assertion_id="assert-not-yet",
+        received_at="2026-06-10T14:00:00Z",
+        event_seq=850,
+        credential_id="cred-backup-b",
+        challenge_id="chal-not-yet",
+        origin="https://secure.example",
+        flags=UP | UV | BE,
+        sign_count=21,
+    )
+    proc2, _, report2, _ = _run_on_copy(tmp_path / "not-yet", db)
+    assert proc2.returncode == 0
+    row = assertion_by_id(report2, "assert-not-yet")
+    assert row["reason_or_null"] == "challenge_not_yet_valid"
+    assert row["challenge_consumed"] == 0
+
+    # Inclusive expiration: received_at == expires_at is valid through later gates.
+    db_eq = copy_fixture_db()
+    insert_challenge(
+        db_eq,
+        challenge_id="chal-eq-exp",
+        rp_id="example.com",
+        challenge_bytes=b"chal-equal-expires!",
+        issued_at="2026-06-01T00:00:00Z",
+        expires_at="2026-06-10T12:20:00Z",
+    )
+    _insert_signed_job(
+        db_eq,
+        assertion_id="assert-eq-expires",
+        received_at="2026-06-10T12:20:00Z",
+        event_seq=910,
+        credential_id="cred-device-a",
+        challenge_id="chal-eq-exp",
+        origin="https://example.com",
+        flags=UP,
+        sign_count=7,
+    )
+    proc_eq, _, report_eq, _ = _run_on_copy(tmp_path / "eq-exp", db_eq)
+    assert proc_eq.returncode == 0
+    eq_row = assertion_by_id(report_eq, "assert-eq-expires")
+    assert eq_row["reason_or_null"] != "challenge_expired"
+    assert eq_row["status"] == "accepted"
+    assert eq_row["challenge_consumed"] == 1
+
+    db3 = copy_fixture_db()
+    cdata, adata, _ = _job_row(db3, "assert-badsig")
+    cobj = json.loads(cdata)
+    cobj["challenge"] = "wrong-challenge-bytes"
+    bad = json.dumps(cobj, separators=(",", ":"), sort_keys=True, ensure_ascii=True).encode(
+        "utf-8"
+    )
+    _resign_job(db3, "assert-badsig", client_data_json=bad, authenticator_data=adata)
+    proc3, _, report3, _ = _run_on_copy(tmp_path / "mismatch", db3)
+    assert proc3.returncode == 0
+    mismatch = assertion_by_id(report3, "assert-badsig")
+    assert mismatch["reason_or_null"] == "challenge_mismatch"
+    assert mismatch["challenge_consumed"] == 0
+
+    db4 = copy_fixture_db()
+    insert_pending_job(
+        db4,
+        assertion_id="assert-unknown-chal",
+        received_at="2026-06-11T08:00:00Z",
+        event_seq=902,
+        credential_id="cred-backup-b",
+        challenge_id="chal-does-not-exist",
+        client_data_json=b"{}",
+        authenticator_data=b"\x00" * 37,
+        signature_der=b"\x30",
+    )
+    proc4, _, report4, _ = _run_on_copy(tmp_path / "unknown", db4)
+    assert proc4.returncode == 0
+    unknown = assertion_by_id(report4, "assert-unknown-chal")
+    assert unknown["reason_or_null"] == "challenge_unknown"
+
+
+def test_08_origin_and_cross_origin_policy(tmp_path: Path) -> None:
+    """Exact allowed-origin matching is required; crossOrigin true rejects without consumption."""
+    db = copy_fixture_db()
+    cdata, adata, _ = _job_row(db, "assert-badsig")
+    cobj = json.loads(cdata)
+    cobj["origin"] = "https://evil.example.com"
+    bad_origin = json.dumps(cobj, separators=(",", ":"), sort_keys=True, ensure_ascii=True).encode(
+        "utf-8"
+    )
+    _resign_job(db, "assert-badsig", client_data_json=bad_origin, authenticator_data=adata)
+    proc, _, report, db_after = _run_on_copy(tmp_path / "origin", db)
+    assert proc.returncode == 0
+    row = assertion_by_id(report, "assert-badsig")
+    assert row["reason_or_null"] == "origin_mismatch"
+    assert row["challenge_consumed"] == 0
+    assert challenge_by_id(report, "chal-badsig")["status"] == "available"
+    assert (
+        query_one(
+            db_after, "SELECT sign_count FROM credentials WHERE credential_id='cred-device-a'"
+        )
+        == 6
+    )
+
+    db2 = copy_fixture_db()
+    cdata2, adata2, _ = _job_row(db2, "assert-badsig")
+    cobj2 = json.loads(cdata2)
+    cobj2["crossOrigin"] = True
+    xo = json.dumps(cobj2, separators=(",", ":"), sort_keys=True, ensure_ascii=True).encode(
+        "utf-8"
+    )
+    _resign_job(db2, "assert-badsig", client_data_json=xo, authenticator_data=adata2)
+    proc2, _, report2, _ = _run_on_copy(tmp_path / "xo", db2)
+    assert proc2.returncode == 0
+    row2 = assertion_by_id(report2, "assert-badsig")
+    assert row2["reason_or_null"] == "cross_origin_disallowed"
+    assert row2["challenge_consumed"] == 0
+    assert challenge_by_id(report2, "chal-badsig")["status"] == "available"
+
+
+def test_09_authenticator_data_layout_and_flag_mask(tmp_path: Path) -> None:
+    """Authenticator data must be 37 bytes with supported flags only."""
+    db = copy_fixture_db()
+    _, adata, _ = _job_row(db, "assert-badsig")
+    short = adata[:30]
+    _resign_job(db, "assert-badsig", authenticator_data=short)
+    proc, _, report, _ = _run_on_copy(tmp_path / "short", db)
+    assert proc.returncode == 0
+    assert (
+        assertion_by_id(report, "assert-badsig")["reason_or_null"] == "authenticator_data_malformed"
+    )
+
+    db2 = copy_fixture_db()
+    _, adata2, _ = _job_row(db2, "assert-badsig")
+    reserved = bytearray(adata2)
+    reserved[32] |= 0x40  # AT
+    _resign_job(db2, "assert-badsig", authenticator_data=bytes(reserved))
+    proc2, _, report2, _ = _run_on_copy(tmp_path / "at", db2)
+    assert proc2.returncode == 0
+    assert (
+        assertion_by_id(report2, "assert-badsig")["reason_or_null"]
+        == "authenticator_data_malformed"
+    )
+
+    db3 = copy_fixture_db()
+    _, adata3, _ = _job_row(db3, "assert-badsig")
+    ed = bytearray(adata3)
+    ed[32] |= 0x80  # ED
+    _resign_job(db3, "assert-badsig", authenticator_data=bytes(ed))
+    proc3, _, report3, _ = _run_on_copy(tmp_path / "ed", db3)
+    assert proc3.returncode == 0
+    assert (
+        assertion_by_id(report3, "assert-badsig")["reason_or_null"]
+        == "authenticator_data_malformed"
+    )
+
+
+def test_10_rp_id_hash_binding(tmp_path: Path) -> None:
+    """RP ID hash mismatch rejects before challenge consumption."""
+    db = copy_fixture_db()
+    _, adata, _ = _job_row(db, "assert-badsig")
+    bad = bytearray(adata)
+    bad[0] ^= 0xFF
+    _resign_job(db, "assert-badsig", authenticator_data=bytes(bad))
+    proc, _, report, _ = _run_on_copy(tmp_path, db)
+    assert proc.returncode == 0
+    row = assertion_by_id(report, "assert-badsig")
+    assert row["reason_or_null"] == "rp_id_hash_mismatch"
+    assert row["challenge_consumed"] == 0
+    assert challenge_by_id(report, "chal-badsig")["status"] == "available"
+
+
+def test_11_original_client_data_bytes_are_signed(tmp_path: Path) -> None:
+    """Direct raw-byte hashing anchor: noncanonical whitespace/member-order assertion accepts."""
+    db = copy_fixture_db()
+    cdata, _, _ = _job_row(db, "assert-whitespace")
+    assert b"\n" in cdata or b" " in cdata
+    # Prove stored bytes differ from serde_json compact re-encoding.
+    compact = json.dumps(json.loads(cdata), separators=(",", ":"), sort_keys=True).encode("utf-8")
+    assert cdata != compact
+
+    proc, _, report, _ = _run_on_copy(tmp_path, db)
+    assert proc.returncode == 0
+    row = assertion_by_id(report, "assert-whitespace")
+    assert row["status"] == "accepted"
+    assert row["reason_or_null"] is None
+    assert row["sign_count_or_null"] == 6
+    assert row["challenge_consumed"] == 1
+
+
+def test_12_es256_der_signature_verification(tmp_path: Path) -> None:
+    """ES256 accepts valid DER and rejects tampered/malformed encodings without consumption."""
+    # Normalization-stable valid DER acceptance (independent of Test 11 and batch order).
+    db_ok = copy_fixture_db()
+    cdata_ok, adata_ok, _ = _job_row(db_ok, "assert-badsig")
+    # Advance from the live pre-badsig chronological count (6) with a valid signature.
+    adata_ok = auth_data("example.com", UP, 7)
+    _resign_job(db_ok, "assert-badsig", client_data_json=cdata_ok, authenticator_data=adata_ok)
+    proc_ok, _, report_ok, _ = _run_on_copy(tmp_path / "valid-der", db_ok)
+    assert proc_ok.returncode == 0
+    ok_row = assertion_by_id(report_ok, "assert-badsig")
+    assert ok_row["status"] == "accepted"
+    assert ok_row["reason_or_null"] is None
+    assert ok_row["challenge_consumed"] == 1
+
+    db = copy_fixture_db()
+    cdata, adata, _ = _job_row(db, "assert-badsig")
+    sk = _private_key_for_credential("cred-device-a")
+    good_sig = sign_assertion(sk, adata, cdata)
+    update_job(db, "assert-badsig", signature_der=good_sig)
+    tampered = bytearray(adata)
+    tampered[36] ^= 0x01
+    update_job(db, "assert-badsig", authenticator_data=bytes(tampered))
+    proc2, _, report2, db2 = _run_on_copy(tmp_path / "tamper", db)
+    assert proc2.returncode == 0
+    bad = assertion_by_id(report2, "assert-badsig")
+    assert bad["reason_or_null"] == "invalid_signature"
+    assert bad["challenge_consumed"] == 0
+    assert bad["credential_mutated"] == 0
+    assert challenge_by_id(report2, "chal-badsig")["status"] == "available"
+    assert (
+        query_one(db2, "SELECT sign_count FROM credentials WHERE credential_id='cred-device-a'")
+        == 6
+    )
+
+    db3 = copy_fixture_db()
+    update_job(db3, "assert-badsig", signature_der=b"\x30\x06\x02\x01\x00\x02\x01\x00")
+    proc3, _, report3, _ = _run_on_copy(tmp_path / "malformed", db3)
+    assert proc3.returncode == 0
+    assert assertion_by_id(report3, "assert-badsig")["reason_or_null"] == "invalid_signature"
+    assert assertion_by_id(report3, "assert-badsig")["challenge_consumed"] == 0
+
+    db4 = copy_fixture_db()
+    cdata4, adata4, _ = _job_row(db4, "assert-badsig")
+    good4 = sign_assertion(sk, adata4, cdata4)
+    r, s = decode_dss_signature(good4)
+    raw = r.to_bytes(32, "big") + s.to_bytes(32, "big")
+    update_job(db4, "assert-badsig", signature_der=raw)
+    proc4, _, report4, _ = _run_on_copy(tmp_path / "raw", db4)
+    assert proc4.returncode == 0
+    assert assertion_by_id(report4, "assert-badsig")["reason_or_null"] == "invalid_signature"
+    assert assertion_by_id(report4, "assert-badsig")["challenge_consumed"] == 0
+
+    db5 = copy_fixture_db()
+    cdata5, adata5, _ = _job_row(db5, "assert-badsig")
+    good5 = sign_assertion(sk, adata5, cdata5)
+    update_job(db5, "assert-badsig", signature_der=good5 + b"\x00")
+    proc5, _, report5, _ = _run_on_copy(tmp_path / "trailing", db5)
+    assert proc5.returncode == 0
+    assert assertion_by_id(report5, "assert-badsig")["reason_or_null"] == "invalid_signature"
+    assert assertion_by_id(report5, "assert-badsig")["challenge_consumed"] == 0
+
+
+def test_13_user_presence_policy(tmp_path: Path) -> None:
+    """Missing user presence rejects after authentication with challenge consumption only."""
+    db = copy_fixture_db()
+    cdata, adata, _ = _job_row(db, "assert-badsig")
+    no_up = bytearray(adata)
+    no_up[32] &= ~UP
+    _resign_job(db, "assert-badsig", client_data_json=cdata, authenticator_data=bytes(no_up))
+    proc, _, report, db_after = _run_on_copy(tmp_path, db)
+    assert proc.returncode == 0
+    row = assertion_by_id(report, "assert-badsig")
+    assert row["reason_or_null"] == "user_presence_required"
+    assert row["challenge_consumed"] == 1
+    assert row["credential_mutated"] == 0
+    assert row["sign_count_before_or_null"] == 6
+    assert row["sign_count_after_or_null"] == 6
+    assert (
+        query_one(
+            db_after,
+            "SELECT consumed_by_assertion_id FROM challenges WHERE challenge_id='chal-badsig'",
+        )
+        == "assert-badsig"
+    )
+    cred = credential_by_id(report, "cred-device-a")
+    assert cred["sign_count"] == 6
+    assert (
+        query_one(db_after, "SELECT sign_count FROM credentials WHERE credential_id='cred-device-a'")
+        == 6
+    )
+    assert (
+        query_one(
+            db_after, "SELECT backup_state FROM credentials WHERE credential_id='cred-device-a'"
+        )
+        == cred["backup_state"]
+    )
+    assert (
+        query_one(
+            db_after, "SELECT last_used_at FROM credentials WHERE credential_id='cred-device-a'"
+        )
+        == cred["last_used_at_or_null"]
+    )
+
+
+def test_14_user_verification_policy(tmp_path: Path) -> None:
+    """UV-required RP rejects missing UV after authentication; later UV assertion accepts."""
+    db = copy_fixture_db()
+    # Isolate from earlier backup jobs that can quarantine under wrong ordering.
+    conn = sqlite3.connect(db)
+    for aid in ("assert-backup-risk", "assert-backup-bs"):
+        conn.execute(
+            "UPDATE assertion_jobs SET received_at='2026-07-02T01:00:00Z' WHERE assertion_id=?",
+            (aid,),
+        )
+    conn.commit()
+    conn.close()
+
+    proc, _, report, db_after = _run_on_copy(tmp_path, db)
+    assert proc.returncode == 0
+    miss = assertion_by_id(report, "assert-uv-miss")
+    assert miss["reason_or_null"] == "user_verification_required"
+    assert miss["challenge_consumed"] == 1
+    assert miss["credential_mutated"] == 0
+    assert miss["sign_count_before_or_null"] == 20
+    assert miss["sign_count_after_or_null"] == 20
+    assert (
+        query_one(
+            db_after,
+            "SELECT consumed_by_assertion_id FROM challenges WHERE challenge_id='chal-uv-miss'",
+        )
+        == "assert-uv-miss"
+    )
+
+    ok = assertion_by_id(report, "assert-uv-ok")
+    assert ok["status"] == "accepted"
+    assert ok["user_verified_or_null"] == 1
+    assert ok["sign_count_before_or_null"] == 20
+    assert ok["sign_count_after_or_null"] == 30
+    assert credential_by_id(report, "cred-backup-b")["sign_count"] == 30
+
+
+def test_15_backup_flag_consistency(tmp_path: Path) -> None:
+    """BS without BE rejects after authentication while consuming the challenge."""
+    db = copy_fixture_db()
+    cdata, adata, _ = _job_row(db, "assert-badsig")
+    bad = bytearray(adata)
+    bad[32] = UP | BS
+    _resign_job(db, "assert-badsig", client_data_json=cdata, authenticator_data=bytes(bad))
+    proc, _, report, db_after = _run_on_copy(tmp_path, db)
+    assert proc.returncode == 0
+    row = assertion_by_id(report, "assert-badsig")
+    assert row["reason_or_null"] == "backup_flags_invalid"
+    assert row["challenge_consumed"] == 1
+    assert row["credential_mutated"] == 0
+    assert row["sign_count_before_or_null"] == 6
+    assert row["sign_count_after_or_null"] == 6
+    cred = credential_by_id(report, "cred-device-a")
+    assert cred["backup_state"] == 0
+    assert cred["sign_count"] == 6
+    assert (
+        query_one(db_after, "SELECT sign_count FROM credentials WHERE credential_id='cred-device-a'")
+        == 6
+    )
+    assert (
+        query_one(
+            db_after, "SELECT backup_state FROM credentials WHERE credential_id='cred-device-a'"
+        )
+        == 0
+    )
+    assert (
+        query_one(
+            db_after, "SELECT last_used_at FROM credentials WHERE credential_id='cred-device-a'"
+        )
+        == cred["last_used_at_or_null"]
+    )
+
+
+def test_16_backup_eligibility_is_immutable(tmp_path: Path) -> None:
+    """Incoming BE must match stored backup_eligible; mismatch consumes without mutation."""
+    db = copy_fixture_db()
+    cdata, adata, _ = _job_row(db, "assert-badsig")
+    be_set = bytearray(adata)
+    be_set[32] = UP | BE
+    _resign_job(db, "assert-badsig", client_data_json=cdata, authenticator_data=bytes(be_set))
+    proc, _, report, db_after = _run_on_copy(tmp_path, db)
+    assert proc.returncode == 0
+    row = assertion_by_id(report, "assert-badsig")
+    assert row["reason_or_null"] == "backup_eligibility_changed"
+    assert row["challenge_consumed"] == 1
+    assert row["credential_mutated"] == 0
+    assert row["sign_count_before_or_null"] == 6
+    assert row["sign_count_after_or_null"] == 6
+    cred = credential_by_id(report, "cred-device-a")
+    assert cred["backup_eligible"] == 0
+    assert cred["backup_state"] == 0
+    assert cred["sign_count"] == 6
+    assert (
+        query_one(db_after, "SELECT sign_count FROM credentials WHERE credential_id='cred-device-a'")
+        == 6
+    )
+    assert (
+        query_one(
+            db_after, "SELECT backup_state FROM credentials WHERE credential_id='cred-device-a'"
+        )
+        == 0
+    )
+    assert (
+        query_one(
+            db_after, "SELECT last_used_at FROM credentials WHERE credential_id='cred-device-a'"
+        )
+        == cred["last_used_at_or_null"]
+    )
+
+
+def test_17_valid_signature_counter_advancement(tmp_path: Path) -> None:
+    """Advancing counters accept, update credential state, and consume challenges."""
+    proc, _, report, _ = _run_on_copy(tmp_path)
+    assert proc.returncode == 0
+    adv = assertion_by_id(report, "assert-zero-advance")
+    assert adv["status"] == "accepted"
+    assert adv["sign_count_before_or_null"] == 0
+    assert adv["sign_count_after_or_null"] == 5
+    assert adv["challenge_consumed"] == 1
+    assert adv["credential_mutated"] == 1
+    cred = credential_by_id(report, "cred-device-a")
+    assert cred["sign_count"] == 6
+    assert cred["last_used_at_or_null"] == "2026-06-10T12:00:00Z"
+
+
+def test_18_zero_signature_counter_semantics(tmp_path: Path) -> None:
+    """Stored and received zero counters mean unsupported counter, not replay risk."""
+    proc, _, report, _ = _run_on_copy(tmp_path)
+    assert proc.returncode == 0
+    zero = assertion_by_id(report, "assert-zero-zero")
+    assert zero["status"] == "accepted"
+    assert zero["sign_count_or_null"] == 0
+    assert zero["sign_count_before_or_null"] == 0
+    assert zero["sign_count_after_or_null"] == 0
+    assert zero["risk_or_null"] is None
+
+    adv = assertion_by_id(report, "assert-zero-advance")
+    assert adv["status"] == "accepted"
+    assert adv["sign_count_before_or_null"] == 0
+    assert adv["sign_count_after_or_null"] == 5
+
+
+def test_19_single_device_counter_replay_quarantines(tmp_path: Path) -> None:
+    """Strict non-increasing nonzero counters quarantine without changing sign_count."""
+    proc, _, report, _ = _run_on_copy(tmp_path)
+    assert proc.returncode == 0
+    replay = assertion_by_id(report, "assert-replay")
+    assert replay["reason_or_null"] == "signature_counter_replay"
+    assert replay["challenge_consumed"] == 1
+    assert replay["credential_mutated"] == 1
+    assert replay["sign_count_before_or_null"] == 6
+    assert replay["sign_count_after_or_null"] == 6
+    cred = credential_by_id(report, "cred-device-a")
+    assert cred["status"] == "quarantined"
+    assert cred["sign_count"] == 6
+    assert cred["last_used_at_or_null"] == "2026-06-10T12:00:00Z"
+
+
+def test_20_backup_aware_nonmonotonic_counter_acceptance(tmp_path: Path) -> None:
+    """Backup-aware accepts non-monotonic counters with risk; strict still quarantines."""
+    proc, _, report, _ = _run_on_copy(tmp_path)
+    assert proc.returncode == 0
+    risk = assertion_by_id(report, "assert-backup-risk")
+    assert risk["status"] == "accepted"
+    assert risk["risk_or_null"] == "non_monotonic_backup_counter"
+    assert risk["sign_count_before_or_null"] == 20
+    assert risk["sign_count_after_or_null"] == 20
+    cred_b = credential_by_id(report, "cred-backup-b")
+    assert cred_b["status"] == "active"
+    assert cred_b["sign_count"] == 30
+
+    db = copy_fixture_db()
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE rp_policies SET backup_counter_policy='strict' WHERE rp_id='secure.example'"
+    )
+    conn.commit()
+    conn.close()
+    proc2, _, report2, _ = _run_on_copy(tmp_path / "strict", db)
+    assert proc2.returncode == 0
+    strict_row = assertion_by_id(report2, "assert-backup-risk")
+    assert strict_row["reason_or_null"] == "signature_counter_replay"
+    assert credential_by_id(report2, "cred-backup-b")["status"] == "quarantined"
+
+
+def test_21_dynamic_signed_mutation_locality_and_atomicity(tmp_path: Path) -> None:
+    """Three-job chronological interaction: advance, UV-consume, then challenge replay."""
+    db = copy_fixture_db()
+    # Isolate cred-backup-b from later canonical secure.example jobs.
+    conn = sqlite3.connect(db)
+    for aid in (
+        "assert-backup-risk",
+        "assert-backup-bs",
+        "assert-uv-miss",
+        "assert-uv-ok",
+    ):
+        conn.execute(
+            "UPDATE assertion_jobs SET received_at='2026-07-02T01:00:00Z' WHERE assertion_id=?",
+            (aid,),
+        )
+    conn.commit()
+    conn.close()
+
+    insert_challenge(
+        db,
+        challenge_id="chal-t21-a",
+        rp_id="secure.example",
+        challenge_bytes=b"t21-chal-A-bytes!!",
+        issued_at="2026-06-01T00:00:00Z",
+        expires_at="2026-07-15T00:00:00Z",
+    )
+    insert_challenge(
+        db,
+        challenge_id="chal-t21-b",
+        rp_id="secure.example",
+        challenge_bytes=b"t21-chal-B-bytes!!",
+        issued_at="2026-06-01T00:00:00Z",
+        expires_at="2026-07-15T00:00:00Z",
+    )
+
+    shared_received = "2026-06-11T08:00:00Z"
+    # Lexicographic assertion_id order is reverse of event_seq order.
+    # Physical insert order intentionally differs from event_seq order.
+    _insert_signed_job(
+        db,
+        assertion_id="assert-t21-c",
+        received_at=shared_received,
+        event_seq=100,
+        credential_id="cred-backup-b",
+        challenge_id="chal-t21-a",
+        origin="https://secure.example",
+        flags=UP | UV | BE,
+        sign_count=21,
+    )
+    _insert_signed_job(
+        db,
+        assertion_id="assert-t21-a",
+        received_at=shared_received,
+        event_seq=300,
+        credential_id="cred-backup-b",
+        challenge_id="chal-t21-b",
+        origin="https://secure.example",
+        flags=UP | UV | BE,
+        sign_count=22,
+    )
+    _insert_signed_job(
+        db,
+        assertion_id="assert-t21-b",
+        received_at=shared_received,
+        event_seq=200,
+        credential_id="cred-backup-b",
+        challenge_id="chal-t21-b",
+        origin="https://secure.example",
+        flags=UP | BE,  # UV clear
+        sign_count=22,
+    )
+
+    ids = ["assert-t21-a", "assert-t21-b", "assert-t21-c"]
+    assert ids == sorted(ids)
+    seqs = [
+        query_one(db, "SELECT event_seq FROM assertion_jobs WHERE assertion_id=?", (i,))
+        for i in ids
+    ]
+    assert seqs == [300, 200, 100]
+
+    before_summary_pending = query_one(
+        db, "SELECT COUNT(*) FROM assertion_jobs WHERE status='pending' AND received_at<=?", (AS_OF,)
+    )
+
+    proc, _, report, db_after = _run_on_copy(tmp_path, db)
+    assert proc.returncode == 0
+
+    step1 = assertion_by_id(report, "assert-t21-c")
+    assert step1["status"] == "accepted"
+    assert step1["risk_or_null"] is None
+    assert step1["sign_count_before_or_null"] == 20
+    assert step1["sign_count_after_or_null"] == 21
+    assert step1["challenge_consumed"] == 1
+    assert step1["credential_mutated"] == 1
+    assert challenge_by_id(report, "chal-t21-a")["consumed_by_assertion_id_or_null"] == "assert-t21-c"
+
+    step2 = assertion_by_id(report, "assert-t21-b")
+    assert step2["reason_or_null"] == "user_verification_required"
+    assert step2["sign_count_before_or_null"] == 21
+    assert step2["sign_count_after_or_null"] == 21
+    assert step2["challenge_consumed"] == 1
+    assert step2["credential_mutated"] == 0
+    assert challenge_by_id(report, "chal-t21-b")["consumed_by_assertion_id_or_null"] == "assert-t21-b"
+
+    step3 = assertion_by_id(report, "assert-t21-a")
+    assert step3["reason_or_null"] == "challenge_already_consumed"
+    assert step3["sign_count_before_or_null"] == 21
+    assert step3["sign_count_after_or_null"] == 21
+    assert step3["challenge_consumed"] == 0
+    assert step3["credential_mutated"] == 0
+
+    cred = credential_by_id(report, "cred-backup-b")
+    assert cred["sign_count"] == 21
+    assert cred["status"] == "active"
+    assert (
+        query_one(db_after, "SELECT sign_count FROM credentials WHERE credential_id='cred-backup-b'")
+        == 21
+    )
+
+    # Summary deltas implied by the three synthetic jobs among newly eligible work.
+    assert report["summary"]["pending_future_job_count"] == 5  # future + 4 deferred secure jobs
+    assert before_summary_pending >= 3
+
+
+def test_22_five_seed_sqlite_insertion_order_invariance(tmp_path: Path) -> None:
+    """Physical SQLite row order does not change semantic report output for five shuffle seeds."""
+    proc0, _, baseline, _ = _run_on_copy(tmp_path / "baseline")
+    assert proc0.returncode == 0
+
+    for seed in PERMUTATION_SEEDS:
+        db = copy_fixture_db()
+        reinsert_shuffled(db, seed)
+        proc, _, report, _ = _run_on_copy(tmp_path / f"seed-{seed}", db)
+        assert proc.returncode == 0, seed
+        if report != baseline:
+            diffs = json_diff(baseline, report)
+            pytest.fail(f"seed {seed} mismatch: {diffs}")
+
+
+def test_23_one_strict_complete_parsed_report_comparison(tmp_path: Path) -> None:
+    """Only complete comparison: verify golden SHA-256 then require strict equality."""
+    golden_bytes = GOLDEN_PATH.read_bytes()
+    expect_hash = GOLDEN_HASH_PATH.read_text(encoding="utf-8").strip().split()[0]
+    assert hashlib.sha256(golden_bytes).hexdigest() == expect_hash
+    golden = json.loads(golden_bytes.decode("utf-8"))
+
+    proc, _, report, _ = _run_on_copy(tmp_path)
+    assert proc.returncode == 0
+    diffs = json_diff(golden, report)
+    if diffs:
+        pytest.fail("report mismatch; first diffs: " + json.dumps(diffs, indent=2))
+
+
+def test_24_byte_identical_rerun_idempotence_and_batch_failure_cleanup(tmp_path: Path) -> None:
+    """Reruns are byte-identical; fatal batch failures roll back and clean outputs."""
+    db = copy_fixture_db()
+    out_parent = tmp_path / "idem"
+    out_parent.mkdir()
+    out = out_parent / "report.json"
+
+    proc1 = run_worker(db, out, AS_OF)
+    assert proc1.returncode == 0
+    bytes1 = out.read_bytes()
+
+    db2 = copy_fixture_db()
+    proc2 = run_worker(db2, out_parent / "report2.json", AS_OF)
+    assert proc2.returncode == 0
+    bytes2 = (out_parent / "report2.json").read_bytes()
+    assert bytes1 == bytes2
+    assert bytes1.endswith(b"\n")
+    assert b"  " in bytes1
+    assert not bytes1.endswith(b" \n")
+
+    report1 = json.loads(bytes1.decode("utf-8"))
+    assert bytes1 == pretty_report_bytes(report1)
+
+    summary = report1["summary"]
+    rows = report1["assertion_rows"]
+    assert summary["processed_assertion_count"] == len(rows)
+    assert summary["accepted_assertion_count"] == sum(1 for r in rows if r["status"] == "accepted")
+    assert summary["rejected_assertion_count"] == sum(1 for r in rows if r["status"] == "rejected")
+    assert summary["risk_assertion_count"] == sum(1 for r in rows if r["risk_or_null"] is not None)
+
+    fatal_db = copy_fixture_db()
+    fatal_out_parent = tmp_path / "fatal-out"
+    fatal_out_parent.mkdir()
+    fatal_out = fatal_out_parent / "report.json"
+    fatal_out.write_text("stale\n", encoding="utf-8")
+    Path(str(fatal_out) + ".tmp").write_text("tmp\n", encoding="utf-8")
+    conn = sqlite3.connect(fatal_db)
+    conn.execute(
+        """INSERT INTO assertion_results
+           (assertion_id, status, reason_or_null, risk_or_null, credential_id,
+            challenge_id, received_at, user_present_or_null, user_verified_or_null,
+            backup_eligible_or_null, backup_state_or_null, sign_count_or_null,
+            sign_count_before_or_null, sign_count_after_or_null, challenge_consumed,
+            credential_mutated)
+           VALUES ('assert-zero-zero','rejected','invalid_signature',NULL,
+                   'cred-device-a','chal-zero','2026-06-10T10:00:00Z',
+                   NULL,NULL,NULL,NULL,NULL,0,0,0,0)"""
+    )
+    conn.commit()
+    conn.close()
+    before_fatal = _db_fingerprint(fatal_db)
+    fatal_proc = run_worker(fatal_db, fatal_out, AS_OF)
+    assert fatal_proc.returncode != 0
+    assert fatal_proc.stderr.strip()
+    assert not fatal_out.exists()
+    assert not Path(str(fatal_out) + ".tmp").exists()
+    assert _db_fingerprint(fatal_db) == before_fatal

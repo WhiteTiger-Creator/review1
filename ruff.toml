@@ -1,0 +1,12 @@
+# Task-local Ruff config for Edition 2 static checks (`ruff check <task-dir>`).
+extend-exclude = [
+    "**/.pytest_cache",
+    "**/.mypy_cache",
+    "**/.ruff_cache",
+    "**/__pycache__",
+]
+
+line-length = 100
+
+[lint]
+ignore = ["E501"]

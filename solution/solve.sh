@@ -1,54 +1,81 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-install -m 0644 "$ROOT_DIR/fixed/nx_k.rs" /app/environment/nx/nx_k.rs
-install -m 0644 "$ROOT_DIR/fixed/fy_m.rs" /app/environment/fy/fy_m.rs
-install -m 0644 "$ROOT_DIR/fixed/gz_p.rs" /app/environment/gz/gz_p.rs
-install -m 0644 "$ROOT_DIR/fixed/hw_n.rs" /app/environment/hw/hw_n.rs
-python3 - <<'PY'
+
+# Copy the independent native Rust Oracle over /app and rebuild offline.
+
+APP_ROOT="${APP_ROOT:-/app}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORACLE_SRC="${SCRIPT_DIR}/oracle_src"
+
+CARGO_HOME="${CARGO_HOME:-/usr/local/cargo}"
+RUSTUP_HOME="${RUSTUP_HOME:-/usr/local/rustup}"
+export CARGO_HOME RUSTUP_HOME
+export PATH="${CARGO_HOME}/bin:${RUSTUP_HOME}/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+if [[ ! -d "${ORACLE_SRC}/src" ]]; then
+  echo "oracle_src missing at ${ORACLE_SRC}" >&2
+  exit 1
+fi
+
+rm -rf "${APP_ROOT}/src"
+mkdir -p "${APP_ROOT}/src"
+# Copy library/bin sources without author-only self_check binary.
+shopt -s nullglob
+for f in "${ORACLE_SRC}/src"/*.rs; do
+  cp -a "$f" "${APP_ROOT}/src/"
+done
+shopt -u nullglob
+
+cp -f "${ORACLE_SRC}/Cargo.toml" "${APP_ROOT}/Cargo.toml"
+python3 - "${APP_ROOT}/Cargo.toml" <<'PY'
 from pathlib import Path
-
-targets = [
-    (Path("/app/environment/nx/nx_k.rs"), "nx_k_bind"),
-    (Path("/app/environment/fy/fy_m.rs"), "fy_m_fill"),
-    (Path("/app/environment/gz/gz_p.rs"), "gz_p_gate"),
-    (Path("/app/environment/hw/hw_n.rs"), "hw_n_align"),
-]
-
-line_total = 0
-for path, symbol in targets:
-    if not path.is_file():
-        raise SystemExit(f"missing shipped module: {path}")
-    text = path.read_text(encoding="utf-8")
-    if symbol not in text:
-        raise SystemExit(f"missing symbol {symbol} in {path}")
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    if len(lines) < 5:
-        raise SystemExit(f"module too small: {path}")
-    line_total += len(lines)
-
-if line_total < 40:
-    raise SystemExit("installed modules look truncated")
-
-required_roots = ["nx", "fy", "gz", "hw"]
-env = Path("/app/environment")
-for root in required_roots:
-    if not (env / root).is_dir():
-        raise SystemExit(f"missing root {root}")
-
-digest_marks = 0
-for path, _symbol in targets:
-    blob = path.read_bytes()
-    digest_marks ^= len(blob)
-    digest_marks = (digest_marks * 131) & 0xFFFFFFFF
-if digest_marks == 0:
-    raise SystemExit("degenerate install digest")
-
-sanity = 0
-for idx, (path, symbol) in enumerate(targets):
-    sanity += idx + len(symbol) + path.stat().st_size
-if sanity <= 0:
-    raise SystemExit("sanity counter failed")
+import re
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+text = re.sub(
+    r'\n\[\[bin\]\]\nname = "oracle-self-check"\npath = "src/bin/self_check.rs"\n',
+    "\n",
+    text,
+)
+p.write_text(text)
 PY
-bash /app/environment/scripts/refresh_join.sh
-/app/environment/tools/skew_probe/skew_probe --catalog /app/environment/cfgs/join_policy.toml --suite full --journal-out /app/output/skew_journal.json
+if [[ -f "${ORACLE_SRC}/Cargo.lock" ]]; then
+  cp -f "${ORACLE_SRC}/Cargo.lock" "${APP_ROOT}/Cargo.lock"
+fi
+
+find "${APP_ROOT}/src" -type f -name '*.rs' -exec touch {} +
+rm -f "${APP_ROOT}/target/release/webauthn-assertion-worker" \
+      "${APP_ROOT}/target/release/webauthn-assertion-worker.d" 2>/dev/null || true
+find "${APP_ROOT}/target/release/.fingerprint" "${APP_ROOT}/target/release/deps" \
+  -maxdepth 1 \( \
+    -name 'webauthn-assertion-worker-*' \
+    -o -name 'webauthn_assertion_worker-*' \
+    -o -name 'libwebauthn_assertion_worker-*' \
+  \) -exec rm -rf {} + 2>/dev/null || true
+
+cd "${APP_ROOT}"
+cargo build --release --locked --offline
+
+BIN="${APP_ROOT}/target/release/webauthn-assertion-worker"
+if [[ ! -x "${BIN}" ]]; then
+  mapfile -t bins < <(find "${APP_ROOT}/target/release" -maxdepth 1 -type f -executable ! -name '*.d' ! -name '.*')
+  if [[ ${#bins[@]} -ne 1 ]]; then
+    echo "expected exactly one release binary, found: ${bins[*]:-none}" >&2
+    exit 1
+  fi
+  BIN="${bins[0]}"
+fi
+
+mkdir -p "${APP_ROOT}/output"
+DB_BACKUP="$(mktemp)"
+cp "${APP_ROOT}/data/audit.sqlite" "${DB_BACKUP}"
+"${BIN}" \
+  --database "${APP_ROOT}/data/audit.sqlite" \
+  --as-of "2026-07-01T12:00:00Z" \
+  --output "${APP_ROOT}/output/report.json"
+
+cp "${DB_BACKUP}" "${APP_ROOT}/data/audit.sqlite"
+rm -f "${DB_BACKUP}"
+
+echo "Oracle wrote ${APP_ROOT}/output/report.json"
