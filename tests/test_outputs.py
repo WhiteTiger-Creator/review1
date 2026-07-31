@@ -1,693 +1,421 @@
-"""Verifier for Tak road/flat championship report output."""
-
 from __future__ import annotations
 
+import copy
 import hashlib
+import itertools
 import json
+import math
 import subprocess
 from pathlib import Path
 
-SCENARIOS = Path("/app/scenarios")
-OUTPUT = Path("/app/output/championship_report.json")
-CONTRACT = Path("/app/contracts/championship-ruleset.md")
-PROFILE = Path("/app/config/profiles/champ-v3/rules.toml")
-PROFILE_NAME = Path("/app/config/profile.name")
-RUNTIME_OVERLAY = Path("/app/config/runtime/champ-v3.floor.toml")
-BINARY = Path("/app/bin/tak-road")
+import jsonschema
+import pytest
 
-RUN_ID = "tak-champ-v1"
-CORRECT_SEAL = "cc7af441d8baf8187d315a615cbcb3f4424cc5499d54c65e4b590b9a7f4264a8"
-CORRECT = {
-    "run_id": RUN_ID,
-    "board_size": 5,
-    "road_ortho": 1,
-    "caps_on_road": 1,
-    "caps_on_flat": 1,
-    "walls_on_flat": 0,
-    "flat_margin": 3,
-    "win_points": 3,
-    "draw_points": 1,
-}
-
-SCENARIO_SHA256 = {
-    "m01.json": "44e90cf75f3ab9c2885fe5dceb053d9788cce9839eb9039c69ebceb1c8d3fd73",
-    "m02.json": "0e7985dde2b7fb98771b34b094c740766607128a96850bf8538b23d5f6f78387",
-    "m03.json": "0922ae068807eed3158f0806dc54e61c2c54389a2a80d527c537c69cdf95235b",
-    "m04.json": "027002af459ce6b0338af47e3508b973750d6d42f194e3090ba0e1d6c6068d65",
-    "m05.json": "b55355b2a61f08b4ab8eeb33150ed6aba4759f59047ce4907a2ed9e8cd43e6c3",
-    "m06.json": "d0f081f705964a96bd0ae22ce0456bac5988d1c7a9a5096b7bcff3c2a0825564",
-    "m07.json": "20f9ecc9e9900498f0687ad22b9997a9e6770c0d7cb324d33be9dc38c40ecf69",
-    "m08.json": "191cd9990c9c6c14d4289724d02738077888b92dd7c54772e66315ab65f4e8c2",
-    "m09.json": "668338801c250c1738eebab461c847d8c57e289dfcca5d60d7bc5f2c2ce95017",
-    "m10.json": "03241c86d1d3b995854c3b9ab6d56009246ed5d2385929544c2cb0a24bf3f619",
-    "m11.json": "7e1fb981563f73e58348c717510d68e0f125d8a5616d52f1e8f3e345f5887943",
-    "m12.json": "42d9afbb367138cb1485f3ccaee973d7f4b5af4f1d351ec6e80d1e1efc797136"
-}
-
-_GOLDEN = json.loads(
-    r'''{
-  "schema_version": "1.0",
-  "run_id": "tak-champ-v1",
-  "matches_played": 12,
-  "matches": [
-    {
-      "match_id": "m01",
-      "player_a": "stone_north",
-      "player_b": "tide_east",
-      "winner": "A",
-      "reason": "road_complete",
-      "flats_a": 5,
-      "flats_b": 0,
-      "road_a": 1,
-      "road_b": 0,
-      "points_a": 3,
-      "points_b": 0,
-      "severity": "critical",
-      "priority_score": 92,
-      "related_ids": [
-        "m02",
-        "m03",
-        "m04",
-        "m06",
-        "m07",
-        "m10",
-        "m11"
-      ]
-    },
-    {
-      "match_id": "m02",
-      "player_a": "stone_north",
-      "player_b": "tide_east",
-      "winner": "B",
-      "reason": "road_complete",
-      "flats_a": 0,
-      "flats_b": 5,
-      "road_a": 0,
-      "road_b": 1,
-      "points_a": 0,
-      "points_b": 3,
-      "severity": "critical",
-      "priority_score": 92,
-      "related_ids": [
-        "m01",
-        "m03",
-        "m04",
-        "m06",
-        "m07",
-        "m10",
-        "m11"
-      ]
-    },
-    {
-      "match_id": "m03",
-      "player_a": "cap_ridge",
-      "player_b": "tide_east",
-      "winner": "A",
-      "reason": "road_complete",
-      "flats_a": 5,
-      "flats_b": 0,
-      "road_a": 1,
-      "road_b": 0,
-      "points_a": 3,
-      "points_b": 0,
-      "severity": "critical",
-      "priority_score": 92,
-      "related_ids": [
-        "m01",
-        "m02",
-        "m05",
-        "m06",
-        "m07",
-        "m09",
-        "m11"
-      ]
-    },
-    {
-      "match_id": "m04",
-      "player_a": "stone_north",
-      "player_b": "wall_guild",
-      "winner": "A",
-      "reason": "flat_majority",
-      "flats_a": 4,
-      "flats_b": 2,
-      "road_a": 0,
-      "road_b": 0,
-      "points_a": 3,
-      "points_b": 0,
-      "severity": "medium",
-      "priority_score": 48,
-      "related_ids": [
-        "m01",
-        "m02",
-        "m05",
-        "m06",
-        "m08",
-        "m10"
-      ]
-    },
-    {
-      "match_id": "m05",
-      "player_a": "cap_ridge",
-      "player_b": "wall_guild",
-      "winner": "A",
-      "reason": "flat_majority",
-      "flats_a": 3,
-      "flats_b": 2,
-      "road_a": 0,
-      "road_b": 0,
-      "points_a": 3,
-      "points_b": 0,
-      "severity": "medium",
-      "priority_score": 48,
-      "related_ids": [
-        "m03",
-        "m04",
-        "m08",
-        "m09",
-        "m10"
-      ]
-    },
-    {
-      "match_id": "m06",
-      "player_a": "stone_north",
-      "player_b": "tide_east",
-      "winner": "draw",
-      "reason": "mutual_draw",
-      "flats_a": 2,
-      "flats_b": 2,
-      "road_a": 0,
-      "road_b": 0,
-      "points_a": 1,
-      "points_b": 1,
-      "severity": "low",
-      "priority_score": 20,
-      "related_ids": [
-        "m01",
-        "m02",
-        "m03",
-        "m04",
-        "m07",
-        "m10",
-        "m11"
-      ]
-    },
-    {
-      "match_id": "m07",
-      "player_a": "flat_manor",
-      "player_b": "tide_east",
-      "winner": "B",
-      "reason": "road_complete",
-      "flats_a": 9,
-      "flats_b": 5,
-      "road_a": 0,
-      "road_b": 1,
-      "points_a": 0,
-      "points_b": 3,
-      "severity": "critical",
-      "priority_score": 92,
-      "related_ids": [
-        "m01",
-        "m02",
-        "m03",
-        "m06",
-        "m09",
-        "m11",
-        "m12"
-      ]
-    },
-    {
-      "match_id": "m08",
-      "player_a": "stack_ward",
-      "player_b": "wall_guild",
-      "winner": "A",
-      "reason": "road_complete",
-      "flats_a": 5,
-      "flats_b": 0,
-      "road_a": 1,
-      "road_b": 0,
-      "points_a": 3,
-      "points_b": 0,
-      "severity": "critical",
-      "priority_score": 92,
-      "related_ids": [
-        "m04",
-        "m05",
-        "m10"
-      ]
-    },
-    {
-      "match_id": "m09",
-      "player_a": "cap_ridge",
-      "player_b": "flat_manor",
-      "winner": "A",
-      "reason": "flat_clear",
-      "flats_a": 4,
-      "flats_b": 1,
-      "road_a": 0,
-      "road_b": 0,
-      "points_a": 3,
-      "points_b": 0,
-      "severity": "high",
-      "priority_score": 70,
-      "related_ids": [
-        "m03",
-        "m05",
-        "m07",
-        "m12"
-      ]
-    },
-    {
-      "match_id": "m10",
-      "player_a": "stone_north",
-      "player_b": "wall_guild",
-      "winner": "A",
-      "reason": "flat_majority",
-      "flats_a": 2,
-      "flats_b": 1,
-      "road_a": 0,
-      "road_b": 0,
-      "points_a": 3,
-      "points_b": 0,
-      "severity": "medium",
-      "priority_score": 48,
-      "related_ids": [
-        "m01",
-        "m02",
-        "m04",
-        "m05",
-        "m06",
-        "m08"
-      ]
-    },
-    {
-      "match_id": "m11",
-      "player_a": "diag_club",
-      "player_b": "tide_east",
-      "winner": "A",
-      "reason": "flat_clear",
-      "flats_a": 5,
-      "flats_b": 1,
-      "road_a": 0,
-      "road_b": 0,
-      "points_a": 3,
-      "points_b": 0,
-      "severity": "high",
-      "priority_score": 70,
-      "related_ids": [
-        "m01",
-        "m02",
-        "m03",
-        "m06",
-        "m07",
-        "m12"
-      ]
-    },
-    {
-      "match_id": "m12",
-      "player_a": "flat_manor",
-      "player_b": "diag_club",
-      "winner": "A",
-      "reason": "flat_clear",
-      "flats_a": 4,
-      "flats_b": 1,
-      "road_a": 0,
-      "road_b": 0,
-      "points_a": 3,
-      "points_b": 0,
-      "severity": "high",
-      "priority_score": 70,
-      "related_ids": [
-        "m07",
-        "m09",
-        "m11"
-      ]
-    }
-  ],
-  "standings": [
-    {
-      "player_id": "stone_north",
-      "points": 10,
-      "wins": 3,
-      "draws": 1,
-      "losses": 1,
-      "flat_diff": 3,
-      "rank": 1
-    },
-    {
-      "player_id": "cap_ridge",
-      "points": 9,
-      "wins": 3,
-      "draws": 0,
-      "losses": 0,
-      "flat_diff": 9,
-      "rank": 2
-    },
-    {
-      "player_id": "tide_east",
-      "points": 7,
-      "wins": 2,
-      "draws": 1,
-      "losses": 3,
-      "flat_diff": -13,
-      "rank": 3
-    },
-    {
-      "player_id": "stack_ward",
-      "points": 3,
-      "wins": 1,
-      "draws": 0,
-      "losses": 0,
-      "flat_diff": 5,
-      "rank": 4
-    },
-    {
-      "player_id": "flat_manor",
-      "points": 3,
-      "wins": 1,
-      "draws": 0,
-      "losses": 2,
-      "flat_diff": 4,
-      "rank": 5
-    },
-    {
-      "player_id": "diag_club",
-      "points": 3,
-      "wins": 1,
-      "draws": 0,
-      "losses": 1,
-      "flat_diff": 1,
-      "rank": 6
-    },
-    {
-      "player_id": "wall_guild",
-      "points": 0,
-      "wins": 0,
-      "draws": 0,
-      "losses": 4,
-      "flat_diff": -9,
-      "rank": 7
-    }
-  ],
-  "summary": {
-    "aggregate_priority": 83,
-    "max_severity": "critical",
-    "decisive_matches": 11,
-    "draw_matches": 1
-  }
-}
-'''
-)
+APP = Path("/app")
+CONFIG = APP / "data" / "lattice_config.json"
+OBS = APP / "data" / "observations.json"
+VALID = APP / "data" / "validation_cases.json"
+SCORING = APP / "data" / "scoring_cases.json"
+SCHEMA = APP / "api" / "calibration.schema.json"
+COMMAND = APP / "bin" / "lattice-calibrate"
+OUT = APP / "out" / "calibration.json"
+TSV = APP / "out" / "current_model.tsv"
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _load(path: Path) -> object:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _config_seal(cfg: dict) -> str:
-    keys = [
-        "run_id",
-        "board_size",
-        "road_ortho",
-        "caps_on_road",
-        "caps_on_flat",
-        "walls_on_flat",
-        "flat_margin",
-        "win_points",
-        "draw_points",
-    ]
-    payload = "".join(f"{k}={cfg[k]}\n" for k in keys)
-    return hashlib.sha256(payload.encode()).hexdigest()
+def _write(path: Path, data: object) -> None:
+    path.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
-def _parse_profile(text: str) -> dict:
-    out = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        out[k.strip()] = v.strip().strip('"')
-    return out
+def _validate_levels(rows: list[dict], severity: list[str], recency: list[str]) -> None:
+    for row in rows:
+        assert row["severity"] in severity
+        assert row["recency"] in recency
 
 
-def _score(reason: str) -> tuple[str, int]:
+def _rate(block: dict, alpha: float) -> float:
+    denom = block["trials"] + 2.0 * alpha * len(block["cells"])
+    if denom == 0:
+        return 0.5
+    return (block["events"] + alpha * len(block["cells"])) / denom
+
+
+def _fit_surface(
+    severity: list[str],
+    recency: list[str],
+    observations: list[dict],
+    alpha: float,
+) -> tuple[dict[tuple[str, str], dict], dict[tuple[str, str], float]]:
+    cells = {(sev, rec): {"events": 0, "trials": 0} for sev in severity for rec in recency}
+    for row in observations:
+        cells[(row["severity"], row["recency"])]["events"] += row["events"]
+        cells[(row["severity"], row["recency"])]["trials"] += row["trials"]
+
+    block_for: dict[tuple[str, str], dict] = {}
+    blocks: list[dict] = []
+    for key, counts in cells.items():
+        block = {"cells": [key], "events": counts["events"], "trials": counts["trials"]}
+        blocks.append(block)
+        block_for[key] = block
+
+    sev_index = {value: idx for idx, value in enumerate(severity)}
+    rec_index = {value: idx for idx, value in enumerate(recency)}
+    changed = True
+    while changed:
+        changed = False
+        for si, sev in enumerate(severity):
+            for ri, rec in enumerate(recency):
+                neighbors = []
+                if si + 1 < len(severity):
+                    neighbors.append((severity[si + 1], rec))
+                if ri + 1 < len(recency):
+                    neighbors.append((sev, recency[ri + 1]))
+                for neighbor in neighbors:
+                    left = block_for[(sev, rec)]
+                    right = block_for[neighbor]
+                    if left is right or _rate(left, alpha) <= _rate(right, alpha):
+                        continue
+                    merged = {
+                        "cells": sorted(
+                            left["cells"] + right["cells"],
+                            key=lambda cell: (sev_index[cell[0]], rec_index[cell[1]]),
+                        ),
+                        "events": left["events"] + right["events"],
+                        "trials": left["trials"] + right["trials"],
+                    }
+                    for cell in merged["cells"]:
+                        block_for[cell] = merged
+                    blocks = [block for block in blocks if block is not left and block is not right]
+                    blocks.append(merged)
+                    changed = True
+    probabilities = {key: _rate(block_for[key], alpha) for key in cells}
+    return cells, probabilities
+
+
+def _nll(probabilities: dict[tuple[str, str], float], validation: list[dict]) -> float:
+    total = 0.0
+    for row in validation:
+        p = min(max(probabilities[(row["severity"], row["recency"])], 1e-15), 1.0 - 1e-15)
+        label = row["label"]
+        weight = float(row.get("weight", 1))
+        total += weight * -(label * math.log(p) + (1 - label) * math.log(1.0 - p))
+    return total
+
+
+def _clip(probability: float) -> float:
+    return min(max(probability, 1e-15), 1.0 - 1e-15)
+
+
+def _logit(probability: float) -> float:
+    safe = _clip(probability)
+    return math.log(safe / (1.0 - safe))
+
+
+def _sigmoid(value: float) -> float:
+    return 1.0 / (1.0 + math.exp(-value))
+
+
+def _shrink_surface(
+    probabilities: dict[tuple[str, str], float],
+    observations: list[dict],
+    alpha: float,
+    shrinkage: float,
+) -> dict[tuple[str, str], float]:
+    total_events = sum(row["events"] for row in observations)
+    total_trials = sum(row["trials"] for row in observations)
+    denom = total_trials + 2.0 * alpha
+    base = 0.5 if denom == 0 else (total_events + alpha) / denom
+    base_logit = _logit(base)
     return {
-        "road_complete": ("critical", 92),
-        "flat_clear": ("high", 70),
-        "flat_majority": ("medium", 48),
-        "mutual_draw": ("low", 20),
-    }[reason]
-
-
-def _run_engine() -> None:
-    assert BINARY.is_file(), "tak-road binary missing"
-    subprocess.run(
-        [
-            str(BINARY),
-            "--scenarios",
-            "/app/scenarios",
-            "--config",
-            "/app/config",
-            "--out",
-            "/app/output",
-        ],
-        check=True,
-    )
-
-
-def test_scenario_fixtures_unchanged():
-    """Scenario JSON fixtures must keep their original SHA-256 digests."""
-    for name, digest in SCENARIO_SHA256.items():
-        assert _sha256(SCENARIOS / name) == digest
-
-
-def test_contract_and_profile_name_present():
-    """Ruleset contract and profile.name pointer must exist for championship ops."""
-    assert CONTRACT.is_file()
-    assert PROFILE_NAME.read_text().strip() == "champ-v3"
-
-
-def test_sealed_profile_floors_and_seal():
-    """Sealed champ-v3 profile must carry championship floors and matching seal."""
-    raw = PROFILE.read_text()
-    assert 'run_id = "tak-champ-v1"' in raw
-    assert "board_size = 5" in raw
-    assert "road_ortho = 1" in raw
-    assert "caps_on_road = 1" in raw
-    assert "caps_on_flat = 1" in raw
-    assert "walls_on_flat = 0" in raw
-    assert "flat_margin = 3" in raw
-    assert "win_points = 3" in raw
-    assert "draw_points = 1" in raw
-    assert f'config_seal = "{CORRECT_SEAL}"' in raw
-    parsed = _parse_profile(raw)
-    cfg = {
-        "run_id": parsed["run_id"],
-        "board_size": int(parsed["board_size"]),
-        "road_ortho": int(parsed["road_ortho"]),
-        "caps_on_road": int(parsed["caps_on_road"]),
-        "caps_on_flat": int(parsed["caps_on_flat"]),
-        "walls_on_flat": int(parsed["walls_on_flat"]),
-        "flat_margin": int(parsed["flat_margin"]),
-        "win_points": int(parsed["win_points"]),
-        "draw_points": int(parsed["draw_points"]),
+        key: _sigmoid((1.0 - shrinkage) * _logit(probability) + shrinkage * base_logit)
+        for key, probability in probabilities.items()
     }
-    assert cfg == CORRECT
-    assert parsed["config_seal"] == CORRECT_SEAL
-    assert _config_seal(cfg) == CORRECT_SEAL
 
 
-def test_heat_overlay_does_not_override_sealed_floors():
-    """Conflicting runtime overlay must not change sealed-floor championship outcomes."""
-    RUNTIME_OVERLAY.parent.mkdir(parents=True, exist_ok=True)
-    prior = RUNTIME_OVERLAY.read_text() if RUNTIME_OVERLAY.exists() else None
-    RUNTIME_OVERLAY.write_text(
-        "road_ortho = 0\ncaps_on_road = 0\ncaps_on_flat = 0\n"
-        "walls_on_flat = 1\nflat_margin = 8\nwin_points = 2\ndraw_points = 0\n"
-    )
-    try:
-        _run_engine()
-        rep = json.loads(OUTPUT.read_text())
-        assert rep == _GOLDEN
-    finally:
-        if prior is None:
-            if RUNTIME_OVERLAY.exists():
-                RUNTIME_OVERLAY.unlink()
-        else:
-            RUNTIME_OVERLAY.write_text(prior)
-        _run_engine()
-
-
-def test_missing_overlay_does_not_activate_weekend_fallback():
-    """Removing the runtime overlay must not activate a weekend club fallback."""
-    RUNTIME_OVERLAY.parent.mkdir(parents=True, exist_ok=True)
-    prior = RUNTIME_OVERLAY.read_text() if RUNTIME_OVERLAY.exists() else None
-    if RUNTIME_OVERLAY.exists():
-        RUNTIME_OVERLAY.unlink()
-    try:
-        _run_engine()
-        rep = json.loads(OUTPUT.read_text())
-        assert rep == _GOLDEN
-    finally:
-        if prior is not None:
-            RUNTIME_OVERLAY.write_text(prior)
-        _run_engine()
-
-
-def test_seal_mismatch_uses_championship_baseline():
-    """Invalid config_seal must fall back to the in-code baseline and still emit the golden report."""
-    original = PROFILE.read_text()
-    fields = _parse_profile(original)
-    assert fields.get("config_seal"), "sealed profile missing config_seal"
-    corrupted = original.replace(fields["config_seal"], "0" * 64)
-    assert fields["config_seal"] not in corrupted
-    PROFILE.write_text(corrupted)
-    try:
-        _run_engine()
-        rep = json.loads(OUTPUT.read_text())
-        assert rep == _GOLDEN
-    finally:
-        PROFILE.write_text(original)
-        _run_engine()
-
-
-def test_report_schema_and_run_id():
-    """Report must expose the documented schema keys and sealed run_id."""
-    rep = json.loads(OUTPUT.read_text())
-    assert rep["schema_version"] == "1.0"
-    assert rep["run_id"] == RUN_ID
-    assert isinstance(rep["matches_played"], int)
-    assert isinstance(rep["matches"], list)
-    assert isinstance(rep["standings"], list)
-    assert set(rep["summary"]) == {
-        "aggregate_priority",
-        "max_severity",
-        "decisive_matches",
-        "draw_matches",
-    }
-    for m in rep["matches"]:
-        assert set(m) >= {
-            "match_id",
-            "player_a",
-            "player_b",
-            "winner",
-            "reason",
-            "flats_a",
-            "flats_b",
-            "road_a",
-            "road_b",
-            "points_a",
-            "points_b",
-            "severity",
-            "priority_score",
-            "related_ids",
-        }
-
-
-def test_report_matches_golden_championship_outcomes():
-    """Engine output must match the golden championship report for the sealed fixtures."""
-    rep = json.loads(OUTPUT.read_text())
-    assert rep["matches_played"] == _GOLDEN["matches_played"] == 12
-    assert rep == _GOLDEN
-
-
-def test_matches_sorted_by_match_id():
-    """Match rows must be emitted sorted ascending by match_id with matches_played equal to count."""
-    rep = json.loads(OUTPUT.read_text())
-    ids = [m["match_id"] for m in rep["matches"]]
-    assert ids == sorted(ids)
-    assert rep["matches_played"] == len(rep["matches"])
-
-
-def test_standings_points_then_flat_diff_order():
-    """Standings must rank by points desc, then flat_diff desc, then player_id asc."""
-    rep = json.loads(OUTPUT.read_text())
-    rows = rep["standings"]
-    assert [r["rank"] for r in rows] == list(range(1, len(rows) + 1))
-    for i in range(len(rows) - 1):
-        a, b = rows[i], rows[i + 1]
-        if a["points"] != b["points"]:
-            assert a["points"] > b["points"]
-        elif a["flat_diff"] != b["flat_diff"]:
-            assert a["flat_diff"] > b["flat_diff"]
-        else:
-            assert a["player_id"] < b["player_id"]
-
-
-def test_related_ids_sorted():
-    """related_ids must be sorted ascending on every match row."""
-    rep = json.loads(OUTPUT.read_text())
-    for m in rep["matches"]:
-        assert m["related_ids"] == sorted(m["related_ids"])
-
-
-def test_no_legacy_point_remap():
-    """Wins must award win_points=3 and draws draw_points=1, not legacy 2/0."""
-    rep = json.loads(OUTPUT.read_text())
-    for m in rep["matches"]:
-        if m["winner"] == "A":
-            assert m["points_a"] == 3 and m["points_b"] == 0
-        elif m["winner"] == "B":
-            assert m["points_a"] == 0 and m["points_b"] == 3
-        else:
-            assert m["points_a"] == 1 and m["points_b"] == 1
-
-
-def test_aggregate_priority_formula():
-    """summary.aggregate_priority must use mean priority_score times 1.20 rounded."""
-    rep = json.loads(OUTPUT.read_text())
-    scores = [m["priority_score"] for m in rep["matches"]]
-    mean = sum(scores) / len(scores)
-    expected = min(100, round(mean * 1.20))
-    assert rep["summary"]["aggregate_priority"] == expected == 83
-
-
-def test_reason_token_vocabulary():
-    """Every match reason must be a championship token with matching severity scores."""
-    allowed = {
-        "road_complete",
-        "flat_clear",
-        "flat_majority",
-        "mutual_draw",
-    }
-    rep = json.loads(OUTPUT.read_text())
-    reasons = {m["reason"] for m in rep["matches"]}
-    assert "road_complete" in reasons
-    assert "flat_clear" in reasons
-    assert "flat_majority" in reasons
-    for m in rep["matches"]:
-        assert m["reason"] in allowed
-        sev, score = _score(m["reason"])
-        assert m["severity"] == sev
-        assert m["priority_score"] == score
-
-
-def test_default_profile_root_ignores_legacy_tree():
-    """Default load must use config/profiles, not a diverging profiles.legacy tree."""
-    legacy = Path("/app/config/profiles.legacy/champ-v3/rules.toml")
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    prior = legacy.read_text() if legacy.exists() else None
-    legacy.write_text(
-        'run_id = "tak-legacy"\nboard_size = 5\nroad_ortho = 0\n'
-        "caps_on_road = 0\ncaps_on_flat = 0\nwalls_on_flat = 1\n"
-        "flat_margin = 6\nwin_points = 2\ndraw_points = 0\n"
-        'config_seal = "0" * 64\n'.replace('"0" * 64', '"' + ("0" * 64) + '"')
-    )
-    try:
-        env = dict(**{k: v for k, v in __import__("os").environ.items() if k != "TAK_PROFILE_ROOT"})
-        subprocess.run(
-            [str(BINARY), "--scenarios", "/app/scenarios", "--config", "/app/config", "--out", "/app/output"],
-            check=True,
-            env=env,
+def _fit_calibrator(probabilities: dict[tuple[str, str], float], validation: list[dict]) -> list[dict]:
+    blocks = []
+    for row in sorted(validation, key=lambda item: (probabilities[(item["severity"], item["recency"])], item["case_id"])):
+        raw = probabilities[(row["severity"], row["recency"])]
+        weight = float(row.get("weight", 1))
+        blocks.append(
+            {
+                "min_raw": raw,
+                "max_raw": raw,
+                "weight": weight,
+                "weighted_events": weight * row["label"],
+            }
         )
-        rep = json.loads(OUTPUT.read_text())
-        assert rep == _GOLDEN
-    finally:
-        if prior is None:
-            if legacy.exists():
-                legacy.unlink()
+    index = 0
+    while index < len(blocks) - 1:
+        current_rate = blocks[index]["weighted_events"] / blocks[index]["weight"]
+        next_rate = blocks[index + 1]["weighted_events"] / blocks[index + 1]["weight"]
+        if current_rate > next_rate:
+            merged = {
+                "min_raw": min(blocks[index]["min_raw"], blocks[index + 1]["min_raw"]),
+                "max_raw": max(blocks[index]["max_raw"], blocks[index + 1]["max_raw"]),
+                "weight": blocks[index]["weight"] + blocks[index + 1]["weight"],
+                "weighted_events": blocks[index]["weighted_events"] + blocks[index + 1]["weighted_events"],
+            }
+            blocks[index : index + 2] = [merged]
+            index = max(index - 1, 0)
         else:
-            legacy.write_text(prior)
-        _run_engine()
+            index += 1
+    return blocks
+
+
+def _calibrate_probability(probability: float, blocks: list[dict]) -> float:
+    if not blocks:
+        return probability
+    for block in blocks:
+        if probability <= block["max_raw"]:
+            return block["weighted_events"] / block["weight"]
+    return blocks[-1]["weighted_events"] / blocks[-1]["weight"]
+
+
+def _calibrate_surface(probabilities: dict[tuple[str, str], float], blocks: list[dict]) -> dict[tuple[str, str], float]:
+    return {key: _calibrate_probability(probability, blocks) for key, probability in probabilities.items()}
+
+
+def _decision(probability: float, thresholds: dict) -> str:
+    if probability >= float(thresholds["alert"]):
+        return "alert"
+    if probability >= float(thresholds["monitor"]):
+        return "monitor"
+    return "clear"
+
+
+def _expected() -> dict:
+    config = _load(CONFIG)
+    observations = _load(OBS)
+    validation = _load(VALID)
+    scoring = _load(SCORING)
+    severity = config["severity"]
+    recency = config["recency"]
+    _validate_levels(observations, severity, recency)
+    _validate_levels(validation, severity, recency)
+    _validate_levels(scoring, severity, recency)
+
+    fits = []
+    for alpha_value in config["candidate_alpha"]:
+        alpha = float(alpha_value)
+        _cells, probabilities = _fit_surface(severity, recency, observations, alpha)
+        for shrinkage_value in config["candidate_shrinkage"]:
+            shrinkage = float(shrinkage_value)
+            shrunk = _shrink_surface(probabilities, observations, alpha, shrinkage)
+            blocks = _fit_calibrator(shrunk, validation)
+            calibrated = _calibrate_surface(shrunk, blocks)
+            fits.append(
+                {
+                    "alpha": alpha,
+                    "shrinkage": shrinkage,
+                    "probabilities": calibrated,
+                    "calibration_blocks": blocks,
+                    "raw_validation_nll": _nll(shrunk, validation),
+                    "calibrated_validation_nll": _nll(calibrated, validation),
+                }
+            )
+    best = min(fits, key=lambda fit: (fit["calibrated_validation_nll"], fit["alpha"], fit["shrinkage"]))
+    cells, pooled = _fit_surface(severity, recency, observations, best["alpha"])
+    shrunk = _shrink_surface(pooled, observations, best["alpha"], best["shrinkage"])
+    probabilities = _calibrate_surface(shrunk, best["calibration_blocks"])
+    thresholds = config["decision_thresholds"]
+    input_sha = hashlib.sha256(b"".join(path.read_bytes() for path in [CONFIG, OBS, VALID, SCORING])).hexdigest()
+    return {
+        "schema_version": "monotone-lattice/v1",
+        "generated_at": "2026-07-28T00:00:00Z",
+        "selected_alpha": round(best["alpha"], 6),
+        "selected_shrinkage": round(best["shrinkage"], 6),
+        "validation_nll": round(best["calibrated_validation_nll"], 6),
+        "levels": {"severity": severity, "recency": recency},
+        "candidate_scores": [
+            {
+                "alpha": round(fit["alpha"], 6),
+                "shrinkage": round(fit["shrinkage"], 6),
+                "raw_validation_nll": round(fit["raw_validation_nll"], 6),
+                "calibrated_validation_nll": round(fit["calibrated_validation_nll"], 6),
+            }
+            for fit in sorted(fits, key=lambda fit: (fit["alpha"], fit["shrinkage"]))
+        ],
+        "calibration_blocks": [
+            {
+                "min_raw_probability": round(block["min_raw"], 6),
+                "max_raw_probability": round(block["max_raw"], 6),
+                "calibrated_probability": round(block["weighted_events"] / block["weight"], 6),
+                "weight": round(block["weight"], 6),
+            }
+            for block in best["calibration_blocks"]
+        ],
+        "cells": [
+            {
+                "severity": sev,
+                "recency": rec,
+                "events": cells[(sev, rec)]["events"],
+                "trials": cells[(sev, rec)]["trials"],
+                "probability": round(probabilities[(sev, rec)], 6),
+            }
+            for sev in severity
+            for rec in recency
+        ],
+        "scoring": [
+            {
+                "case_id": row["case_id"],
+                "severity": row["severity"],
+                "recency": row["recency"],
+                "probability": round(probabilities[(row["severity"], row["recency"])], 6),
+                "decision": _decision(round(probabilities[(row["severity"], row["recency"])], 6), thresholds),
+            }
+            for row in sorted(scoring, key=lambda item: item["case_id"])
+        ],
+        "input_sha256": input_sha,
+    }
+
+
+@pytest.fixture(scope="session")
+def result() -> dict:
+    """Run the submitted calibrator after verifier-only data changes that static answers cannot know."""
+    config = _load(CONFIG)
+    config["candidate_shrinkage"] = [0, 0.2, 0.45, 0.7]
+    _write(CONFIG, config)
+    observations = _load(OBS)
+    observations.extend(
+        [
+            {"severity": "guarded", "recency": "fresh", "events": 8, "trials": 14},
+            {"severity": "critical", "recency": "warm", "events": 7, "trials": 9},
+        ]
+    )
+    _write(OBS, observations)
+    validation = _load(VALID)
+    validation.extend(
+        [
+            {"case_id": "v-dynamic-a", "severity": "guarded", "recency": "fresh", "label": 1, "weight": 1.7},
+            {"case_id": "v-dynamic-b", "severity": "critical", "recency": "warm", "label": 1, "weight": 1.3},
+        ]
+    )
+    _write(VALID, validation)
+    scoring = _load(SCORING)
+    scoring.append({"case_id": "s-verifier", "severity": "guarded", "recency": "fresh"})
+    _write(SCORING, scoring)
+
+    (APP / "out").mkdir(exist_ok=True)
+    OUT.write_text('{"stale": true}\n', encoding="utf-8")
+    TSV.write_text("stale\tmodel\n", encoding="utf-8")
+    assert COMMAND.exists(), "missing /app/bin/lattice-calibrate"
+    completed = subprocess.run(
+        [str(COMMAND)],
+        cwd=APP,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    assert OUT.exists(), "calibration JSON was not written"
+    assert TSV.exists(), "current model TSV was not written"
+    return json.loads(OUT.read_text(encoding="utf-8"))
+
+
+def test_json_schema_and_exact_report(result: dict) -> None:
+    """The report validates against the visible schema and matches an independent implementation."""
+    jsonschema.validate(result, _load(SCHEMA))
+    assert result == _expected()
+
+
+def test_monotone_surface_and_dynamic_scoring_case(result: dict) -> None:
+    """The fitted lattice is monotone in both configured dimensions and includes verifier-added scoring."""
+    config = _load(CONFIG)
+    probs = {(cell["severity"], cell["recency"]): cell["probability"] for cell in result["cells"]}
+    for si, sev in enumerate(config["severity"]):
+        for ri, rec in enumerate(config["recency"]):
+            if si + 1 < len(config["severity"]):
+                assert probs[(sev, rec)] <= probs[(config["severity"][si + 1], rec)]
+            if ri + 1 < len(config["recency"]):
+                assert probs[(sev, rec)] <= probs[(sev, config["recency"][ri + 1])]
+    scoring_ids = [item["case_id"] for item in result["scoring"]]
+    assert scoring_ids == sorted(scoring_ids)
+    assert "s-verifier" in scoring_ids
+
+
+def test_candidate_selection_uses_unrounded_validation_nll(result: dict) -> None:
+    """The chosen smoothing/shrinkage pair follows validation NLL with documented tie-breaks."""
+    config = _load(CONFIG)
+    scores = result["candidate_scores"]
+    assert len(scores) == len(config["candidate_alpha"]) * len(config["candidate_shrinkage"])
+    assert scores == sorted(scores, key=lambda row: (row["alpha"], row["shrinkage"]))
+    assert any(row["shrinkage"] == 0.7 for row in scores)
+    best = min(scores, key=lambda row: (row["calibrated_validation_nll"], row["alpha"], row["shrinkage"]))
+    assert result["selected_alpha"] == best["alpha"]
+    assert result["selected_shrinkage"] == best["shrinkage"]
+    assert result["validation_nll"] == best["calibrated_validation_nll"]
+
+
+def test_selected_isotonic_calibration_blocks_are_used(result: dict) -> None:
+    """The selected second-stage calibrator is monotone and changes the final lattice probabilities."""
+    blocks = result["calibration_blocks"]
+    assert len(blocks) >= 2
+    assert blocks == sorted(blocks, key=lambda row: (row["min_raw_probability"], row["max_raw_probability"]))
+    for left, right in itertools.pairwise(blocks):
+        assert left["max_raw_probability"] <= right["max_raw_probability"]
+        assert left["calibrated_probability"] <= right["calibrated_probability"]
+    expected = _expected()
+    assert result["calibration_blocks"] == expected["calibration_blocks"]
+
+
+def test_tsv_matches_sorted_cells_and_cell_decisions(result: dict) -> None:
+    """The TSV current model is sorted by lattice order and uses cell-level rounded probabilities."""
+    config = _load(CONFIG)
+    lines = TSV.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "severity\trecency\tprobability\tdecision"
+    expected_lines = ["severity\trecency\tprobability\tdecision"]
+    for cell in result["cells"]:
+        expected_lines.append(
+            "\t".join(
+                [
+                    cell["severity"],
+                    cell["recency"],
+                    f"{cell['probability']:.6f}",
+                    _decision(cell["probability"], config["decision_thresholds"]),
+                ]
+            )
+        )
+    assert lines == expected_lines
+
+
+def test_rerun_replaces_outputs_for_changed_live_data(result: dict) -> None:
+    """A later valid input change recomputes the current artifacts and removes stale bytes."""
+    before = copy.deepcopy(result)
+    original_observations = OBS.read_text(encoding="utf-8")
+    try:
+        OUT.write_text(json.dumps(before, sort_keys=True, indent=2) + "\nSTALE\n", encoding="utf-8")
+        observations = _load(OBS)
+        observations.append({"severity": "high", "recency": "fresh", "events": 6, "trials": 7})
+        _write(OBS, observations)
+        completed = subprocess.run([str(COMMAND)], cwd=APP, text=True, capture_output=True, timeout=60, check=False)
+        assert completed.returncode == 0, completed.stderr + completed.stdout
+        after = json.loads(OUT.read_text(encoding="utf-8"))
+        assert after == _expected()
+        assert after["input_sha256"] != before["input_sha256"]
+        assert "STALE" not in OUT.read_text(encoding="utf-8")
+    finally:
+        OBS.write_text(original_observations, encoding="utf-8")
+        completed = subprocess.run([str(COMMAND)], cwd=APP, text=True, capture_output=True, timeout=60, check=False)
+        assert completed.returncode == 0, completed.stderr + completed.stdout
+
+
+def test_invalid_data_preserves_last_good_outputs(result: dict) -> None:
+    """Invalid live data fails without clobbering the most recent successful model files."""
+    original_observations = OBS.read_text(encoding="utf-8")
+    last_good_json = OUT.read_text(encoding="utf-8")
+    last_good_tsv = TSV.read_text(encoding="utf-8")
+    try:
+        observations = _load(OBS)
+        observations.append({"severity": "critical", "recency": "fresh", "events": 12, "trials": 4})
+        _write(OBS, observations)
+        completed = subprocess.run([str(COMMAND)], cwd=APP, text=True, capture_output=True, timeout=60, check=False)
+        assert completed.returncode != 0
+        assert OUT.read_text(encoding="utf-8") == last_good_json
+        assert TSV.read_text(encoding="utf-8") == last_good_tsv
+    finally:
+        OBS.write_text(original_observations, encoding="utf-8")
