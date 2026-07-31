@@ -1,7 +1,0 @@
-{
-  "graph_id": "hetero-poison",
-  "variant_id": "v-hetero-poison",
-  "overrides": {
-    "blk_affine": {"dtype": "int8", "scale": 0.018, "zero_point": 0, "w_q": 30, "b_q": -2}
-  }
-}

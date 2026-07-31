@@ -1,0 +1,9 @@
+run_id = "tak-legacy"
+board_size = 5
+road_ortho = 0
+caps_on_road = 0
+caps_on_flat = 0
+walls_on_flat = 1
+flat_margin = 6
+win_points = 2
+draw_points = 0

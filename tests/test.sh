@@ -1,26 +1,41 @@
 #!/bin/bash
 set -uo pipefail
 
-export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
-
-/usr/bin/mkdir -p /logs/verifier /tmp/pytest_cache
-echo 0 > /logs/verifier/reward.txt
-printf '%s\n' '{"version":"1.0.0","results":{"summary":{"tests":0,"passed":0,"failed":0,"pending":0,"skipped":0,"other":0}}}}' > /logs/verifier/ctrf.json
-
 if [ "$PWD" = "/" ]; then
-  echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile."
-  exit 1
+  echo "Error: No working directory set."
+  mkdir -p /logs/verifier
+  echo 0 > /logs/verifier/reward.txt
+  exit 0
 fi
 
-set +e
-/app/rebuild-qbound-analyzer.sh
+mkdir -p /logs/verifier /app/output
+
+export PATH="/app/bin:${PATH}"
+
+cd /app
+go build -o /app/bin/tak-road /app/cmd/tak-road
+rc_build=$?
+if [ "$rc_build" -ne 0 ]; then
+  echo "go build failed"
+  echo 0 > /logs/verifier/reward.txt
+  exit 0
+fi
+
+/app/bin/tak-road --scenarios /app/scenarios --config /app/config --out /app/output
+rc_run=$?
+if [ "$rc_run" -ne 0 ]; then
+  echo "tak-road run failed"
+  echo 0 > /logs/verifier/reward.txt
+  exit 0
+fi
+
 cd /tests
-/opt/verifier-venv/bin/python -m pytest \
-  -o cache_dir=/tmp/pytest_cache \
-  --ctrf /logs/verifier/ctrf.json \
-  /tests/test_outputs.py \
-  -rA
+env -u PYTHONPATH -u PYTHONHOME \
+  PYTHONNOUSERSITE=1 \
+  PATH="/usr/sbin:/usr/bin:/bin:/app/bin" \
+  python3 -I -m pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -v -rA
 rc=$?
+
 if [ "$rc" -eq 0 ]; then
   echo 1 > /logs/verifier/reward.txt
 else

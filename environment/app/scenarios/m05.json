@@ -1,0 +1,37 @@
+{
+  "cells": {
+    "0,0": [
+      {
+        "color": "A",
+        "kind": "flat"
+      }
+    ],
+    "0,1": [
+      {
+        "color": "A",
+        "kind": "flat"
+      }
+    ],
+    "0,2": [
+      {
+        "color": "A",
+        "kind": "flat"
+      }
+    ],
+    "1,0": [
+      {
+        "color": "B",
+        "kind": "flat"
+      }
+    ],
+    "1,1": [
+      {
+        "color": "B",
+        "kind": "flat"
+      }
+    ]
+  },
+  "match_id": "m05",
+  "player_a": "cap_ridge",
+  "player_b": "wall_guild"
+}

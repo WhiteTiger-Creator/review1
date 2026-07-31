@@ -1,0 +1,49 @@
+{
+  "cells": {
+    "2,2": [
+      {
+        "color": "A",
+        "kind": "flat"
+      }
+    ],
+    "2,3": [
+      {
+        "color": "A",
+        "kind": "flat"
+      }
+    ],
+    "3,0": [
+      {
+        "color": "B",
+        "kind": "wall"
+      }
+    ],
+    "3,1": [
+      {
+        "color": "B",
+        "kind": "wall"
+      }
+    ],
+    "3,2": [
+      {
+        "color": "B",
+        "kind": "wall"
+      }
+    ],
+    "3,3": [
+      {
+        "color": "B",
+        "kind": "wall"
+      }
+    ],
+    "3,4": [
+      {
+        "color": "B",
+        "kind": "flat"
+      }
+    ]
+  },
+  "match_id": "m10",
+  "player_a": "stone_north",
+  "player_b": "wall_guild"
+}

@@ -1,4 +1,4 @@
-"""INT8 model compression certification — feature interval propagation verifier."""
+"""Verifier for Tak road/flat championship report output."""
 
 from __future__ import annotations
 
@@ -7,367 +7,687 @@ import json
 import subprocess
 from pathlib import Path
 
-from quant_interval_ref import (
-    BIN,
-    POISON_ROOT,
-    STAGING,
-    independent_violations,
-    invoke,
-    load_report,
-    read_publish_seq,
-    read_walk_witness,
-    reference_walk,
-    run_pipeline,
-    walk_witness_digest,
+SCENARIOS = Path("/app/scenarios")
+OUTPUT = Path("/app/output/championship_report.json")
+CONTRACT = Path("/app/contracts/championship-ruleset.md")
+PROFILE = Path("/app/config/profiles/champ-v3/rules.toml")
+PROFILE_NAME = Path("/app/config/profile.name")
+RUNTIME_OVERLAY = Path("/app/config/runtime/champ-v3.floor.toml")
+BINARY = Path("/app/bin/tak-road")
+
+RUN_ID = "tak-champ-v1"
+CORRECT_SEAL = "cc7af441d8baf8187d315a615cbcb3f4424cc5499d54c65e4b590b9a7f4264a8"
+CORRECT = {
+    "run_id": RUN_ID,
+    "board_size": 5,
+    "road_ortho": 1,
+    "caps_on_road": 1,
+    "caps_on_flat": 1,
+    "walls_on_flat": 0,
+    "flat_margin": 3,
+    "win_points": 3,
+    "draw_points": 1,
+}
+
+SCENARIO_SHA256 = {
+    "m01.json": "44e90cf75f3ab9c2885fe5dceb053d9788cce9839eb9039c69ebceb1c8d3fd73",
+    "m02.json": "0e7985dde2b7fb98771b34b094c740766607128a96850bf8538b23d5f6f78387",
+    "m03.json": "0922ae068807eed3158f0806dc54e61c2c54389a2a80d527c537c69cdf95235b",
+    "m04.json": "027002af459ce6b0338af47e3508b973750d6d42f194e3090ba0e1d6c6068d65",
+    "m05.json": "b55355b2a61f08b4ab8eeb33150ed6aba4759f59047ce4907a2ed9e8cd43e6c3",
+    "m06.json": "d0f081f705964a96bd0ae22ce0456bac5988d1c7a9a5096b7bcff3c2a0825564",
+    "m07.json": "20f9ecc9e9900498f0687ad22b9997a9e6770c0d7cb324d33be9dc38c40ecf69",
+    "m08.json": "191cd9990c9c6c14d4289724d02738077888b92dd7c54772e66315ab65f4e8c2",
+    "m09.json": "668338801c250c1738eebab461c847d8c57e289dfcca5d60d7bc5f2c2ce95017",
+    "m10.json": "03241c86d1d3b995854c3b9ab6d56009246ed5d2385929544c2cb0a24bf3f619",
+    "m11.json": "7e1fb981563f73e58348c717510d68e0f125d8a5616d52f1e8f3e345f5887943",
+    "m12.json": "42d9afbb367138cb1485f3ccaee973d7f4b5af4f1d351ec6e80d1e1efc797136"
+}
+
+_GOLDEN = json.loads(
+    r'''{
+  "schema_version": "1.0",
+  "run_id": "tak-champ-v1",
+  "matches_played": 12,
+  "matches": [
+    {
+      "match_id": "m01",
+      "player_a": "stone_north",
+      "player_b": "tide_east",
+      "winner": "A",
+      "reason": "road_complete",
+      "flats_a": 5,
+      "flats_b": 0,
+      "road_a": 1,
+      "road_b": 0,
+      "points_a": 3,
+      "points_b": 0,
+      "severity": "critical",
+      "priority_score": 92,
+      "related_ids": [
+        "m02",
+        "m03",
+        "m04",
+        "m06",
+        "m07",
+        "m10",
+        "m11"
+      ]
+    },
+    {
+      "match_id": "m02",
+      "player_a": "stone_north",
+      "player_b": "tide_east",
+      "winner": "B",
+      "reason": "road_complete",
+      "flats_a": 0,
+      "flats_b": 5,
+      "road_a": 0,
+      "road_b": 1,
+      "points_a": 0,
+      "points_b": 3,
+      "severity": "critical",
+      "priority_score": 92,
+      "related_ids": [
+        "m01",
+        "m03",
+        "m04",
+        "m06",
+        "m07",
+        "m10",
+        "m11"
+      ]
+    },
+    {
+      "match_id": "m03",
+      "player_a": "cap_ridge",
+      "player_b": "tide_east",
+      "winner": "A",
+      "reason": "road_complete",
+      "flats_a": 5,
+      "flats_b": 0,
+      "road_a": 1,
+      "road_b": 0,
+      "points_a": 3,
+      "points_b": 0,
+      "severity": "critical",
+      "priority_score": 92,
+      "related_ids": [
+        "m01",
+        "m02",
+        "m05",
+        "m06",
+        "m07",
+        "m09",
+        "m11"
+      ]
+    },
+    {
+      "match_id": "m04",
+      "player_a": "stone_north",
+      "player_b": "wall_guild",
+      "winner": "A",
+      "reason": "flat_majority",
+      "flats_a": 4,
+      "flats_b": 2,
+      "road_a": 0,
+      "road_b": 0,
+      "points_a": 3,
+      "points_b": 0,
+      "severity": "medium",
+      "priority_score": 48,
+      "related_ids": [
+        "m01",
+        "m02",
+        "m05",
+        "m06",
+        "m08",
+        "m10"
+      ]
+    },
+    {
+      "match_id": "m05",
+      "player_a": "cap_ridge",
+      "player_b": "wall_guild",
+      "winner": "A",
+      "reason": "flat_majority",
+      "flats_a": 3,
+      "flats_b": 2,
+      "road_a": 0,
+      "road_b": 0,
+      "points_a": 3,
+      "points_b": 0,
+      "severity": "medium",
+      "priority_score": 48,
+      "related_ids": [
+        "m03",
+        "m04",
+        "m08",
+        "m09",
+        "m10"
+      ]
+    },
+    {
+      "match_id": "m06",
+      "player_a": "stone_north",
+      "player_b": "tide_east",
+      "winner": "draw",
+      "reason": "mutual_draw",
+      "flats_a": 2,
+      "flats_b": 2,
+      "road_a": 0,
+      "road_b": 0,
+      "points_a": 1,
+      "points_b": 1,
+      "severity": "low",
+      "priority_score": 20,
+      "related_ids": [
+        "m01",
+        "m02",
+        "m03",
+        "m04",
+        "m07",
+        "m10",
+        "m11"
+      ]
+    },
+    {
+      "match_id": "m07",
+      "player_a": "flat_manor",
+      "player_b": "tide_east",
+      "winner": "B",
+      "reason": "road_complete",
+      "flats_a": 9,
+      "flats_b": 5,
+      "road_a": 0,
+      "road_b": 1,
+      "points_a": 0,
+      "points_b": 3,
+      "severity": "critical",
+      "priority_score": 92,
+      "related_ids": [
+        "m01",
+        "m02",
+        "m03",
+        "m06",
+        "m09",
+        "m11",
+        "m12"
+      ]
+    },
+    {
+      "match_id": "m08",
+      "player_a": "stack_ward",
+      "player_b": "wall_guild",
+      "winner": "A",
+      "reason": "road_complete",
+      "flats_a": 5,
+      "flats_b": 0,
+      "road_a": 1,
+      "road_b": 0,
+      "points_a": 3,
+      "points_b": 0,
+      "severity": "critical",
+      "priority_score": 92,
+      "related_ids": [
+        "m04",
+        "m05",
+        "m10"
+      ]
+    },
+    {
+      "match_id": "m09",
+      "player_a": "cap_ridge",
+      "player_b": "flat_manor",
+      "winner": "A",
+      "reason": "flat_clear",
+      "flats_a": 4,
+      "flats_b": 1,
+      "road_a": 0,
+      "road_b": 0,
+      "points_a": 3,
+      "points_b": 0,
+      "severity": "high",
+      "priority_score": 70,
+      "related_ids": [
+        "m03",
+        "m05",
+        "m07",
+        "m12"
+      ]
+    },
+    {
+      "match_id": "m10",
+      "player_a": "stone_north",
+      "player_b": "wall_guild",
+      "winner": "A",
+      "reason": "flat_majority",
+      "flats_a": 2,
+      "flats_b": 1,
+      "road_a": 0,
+      "road_b": 0,
+      "points_a": 3,
+      "points_b": 0,
+      "severity": "medium",
+      "priority_score": 48,
+      "related_ids": [
+        "m01",
+        "m02",
+        "m04",
+        "m05",
+        "m06",
+        "m08"
+      ]
+    },
+    {
+      "match_id": "m11",
+      "player_a": "diag_club",
+      "player_b": "tide_east",
+      "winner": "A",
+      "reason": "flat_clear",
+      "flats_a": 5,
+      "flats_b": 1,
+      "road_a": 0,
+      "road_b": 0,
+      "points_a": 3,
+      "points_b": 0,
+      "severity": "high",
+      "priority_score": 70,
+      "related_ids": [
+        "m01",
+        "m02",
+        "m03",
+        "m06",
+        "m07",
+        "m12"
+      ]
+    },
+    {
+      "match_id": "m12",
+      "player_a": "flat_manor",
+      "player_b": "diag_club",
+      "winner": "A",
+      "reason": "flat_clear",
+      "flats_a": 4,
+      "flats_b": 1,
+      "road_a": 0,
+      "road_b": 0,
+      "points_a": 3,
+      "points_b": 0,
+      "severity": "high",
+      "priority_score": 70,
+      "related_ids": [
+        "m07",
+        "m09",
+        "m11"
+      ]
+    }
+  ],
+  "standings": [
+    {
+      "player_id": "stone_north",
+      "points": 10,
+      "wins": 3,
+      "draws": 1,
+      "losses": 1,
+      "flat_diff": 3,
+      "rank": 1
+    },
+    {
+      "player_id": "cap_ridge",
+      "points": 9,
+      "wins": 3,
+      "draws": 0,
+      "losses": 0,
+      "flat_diff": 9,
+      "rank": 2
+    },
+    {
+      "player_id": "tide_east",
+      "points": 7,
+      "wins": 2,
+      "draws": 1,
+      "losses": 3,
+      "flat_diff": -13,
+      "rank": 3
+    },
+    {
+      "player_id": "stack_ward",
+      "points": 3,
+      "wins": 1,
+      "draws": 0,
+      "losses": 0,
+      "flat_diff": 5,
+      "rank": 4
+    },
+    {
+      "player_id": "flat_manor",
+      "points": 3,
+      "wins": 1,
+      "draws": 0,
+      "losses": 2,
+      "flat_diff": 4,
+      "rank": 5
+    },
+    {
+      "player_id": "diag_club",
+      "points": 3,
+      "wins": 1,
+      "draws": 0,
+      "losses": 1,
+      "flat_diff": 1,
+      "rank": 6
+    },
+    {
+      "player_id": "wall_guild",
+      "points": 0,
+      "wins": 0,
+      "draws": 0,
+      "losses": 4,
+      "flat_diff": -9,
+      "rank": 7
+    }
+  ],
+  "summary": {
+    "aggregate_priority": 83,
+    "max_severity": "critical",
+    "decisive_matches": 11,
+    "draw_matches": 1
+  }
+}
+'''
 )
 
-_PROBE_REFERENCE = reference_walk
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _read_snap(graph_id: str) -> dict:
-    return json.loads((STAGING / graph_id / "layer-intervals.json").read_text(encoding="utf-8"))
-
-
-def _pick_layer(snap: dict, layer_id: str) -> dict:
-    return next(row for row in snap["layers"] if row["layer_id"] == layer_id)
-
-
-def test_qboundcert_compilegate_analyzer_smoke_rc0():
-    """Verifies rebuild-qbound-analyzer.sh leaves the qbound-analyzer binary at /app/build."""
-    assert BIN.is_file()
-    proc = subprocess.run([str(BIN), "smoke-publish"], capture_output=True, text=True, check=False)
-    assert proc.returncode == 0
-
-
-def test_qboundcert_loadpack_stderrbanner_clean_qbound_ingest_ok():
-    """Verifies ingest-pack succeeds and prints QBOUND_INGEST_OK per qdrift-cli-surface.md."""
-    proc = invoke(
-        [
-            "ingest-pack",
-            "--graph-root",
-            "/app/fixtures/static-graphs",
-            "--graph",
-            "linear-clean",
-            "--variant-root",
-            "/app/fixtures/quant-variants",
-            "--variant",
-            "v-int8-tight",
-            "--scenario-root",
-            "/app/fixtures/drift-scenarios",
-            "--scenario",
-            "scenario-tight",
-        ]
-    )
-    assert proc.returncode == 0
-    assert "QBOUND_INGEST_OK" in proc.stderr
-
-
-def test_qboundcert_staging_context_graph_variant_scenario():
-    """Verifies pack-context.json records graph, variant, and scenario ids after ingest-pack."""
-    run_pipeline("linear-clean", "v-int8-tight", "scenario-tight")
-    pack_context = json.loads((STAGING / "linear-clean" / "pack-context.json").read_text(encoding="utf-8"))
-    assert pack_context["graph_id"] == "linear-clean"
-    assert pack_context["variant_id"] == "v-int8-tight"
-    assert pack_context["scenario_id"] == "scenario-tight"
-
-
-def test_qboundcert_walkpass_stderrbanner_hetero_qbound_walk_ok():
-    """Verifies walk-intervals succeeds and prints QBOUND_WALK_OK for linear-mixed."""
-    invoke(
-        [
-            "ingest-pack",
-            "--graph-root",
-            "/app/fixtures/static-graphs",
-            "--graph",
-            "linear-mixed",
-            "--variant-root",
-            "/app/fixtures/quant-variants",
-            "--variant",
-            "v-int8-loose",
-            "--scenario-root",
-            "/app/fixtures/drift-scenarios",
-            "--scenario",
-            "scenario-standard",
-        ]
-    )
-    proc = invoke(["walk-intervals", "--graph", "linear-mixed"])
-    assert proc.returncode == 0
-    assert "QBOUND_WALK_OK" in proc.stderr
-
-
-def test_qboundcert_topo_layer_sequence_in_snap():
-    """Verifies layer-intervals.json lists layers in topological dependency order."""
-    run_pipeline("linear-clean", "v-int8-tight", "scenario-tight")
-    snap = _read_snap("linear-clean")
-    assert [row["layer_id"] for row in snap["layers"]] == [
-        "input",
-        "aff1",
-        "relu1",
-        "aff2",
-        "output",
+def _config_seal(cfg: dict) -> str:
+    keys = [
+        "run_id",
+        "board_size",
+        "road_ortho",
+        "caps_on_road",
+        "caps_on_flat",
+        "walls_on_flat",
+        "flat_margin",
+        "win_points",
+        "draw_points",
     ]
+    payload = "".join(f"{k}={cfg[k]}\n" for k in keys)
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def test_qboundcert_tight_linear_sealed_zero_overruns():
-    """Verifies certified model export has zero eval drift metric violations on tight INT8 inference pack."""
-    run_pipeline("linear-clean", "v-int8-tight", "scenario-tight")
-    ledger = load_report()
-    assert ledger["certified"] is True
-    assert ledger["violations"] == []
-    assert ledger["graph_id"] == "linear-clean"
+def _parse_profile(text: str) -> dict:
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip().strip('"')
+    return out
 
 
-def test_qboundcert_hetero_overrun_layers_align_refmath():
-    """Verifies violation layer ids match independent feature interval walk eval reference."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    ledger = load_report()
-    ref_layers = sorted(
-        v["layer_id"] for v in independent_violations("linear-mixed", "v-int8-loose", "scenario-standard")
+def _score(reason: str) -> tuple[str, int]:
+    return {
+        "road_complete": ("critical", 92),
+        "flat_clear": ("high", 70),
+        "flat_majority": ("medium", 48),
+        "mutual_draw": ("low", 20),
+    }[reason]
+
+
+def _run_engine() -> None:
+    assert BINARY.is_file(), "tak-road binary missing"
+    subprocess.run(
+        [
+            str(BINARY),
+            "--scenarios",
+            "/app/scenarios",
+            "--config",
+            "/app/config",
+            "--out",
+            "/app/output",
+        ],
+        check=True,
     )
-    got_layers = sorted(v["layer_id"] for v in ledger["violations"])
-    assert got_layers == ref_layers
 
 
-def test_qboundcert_overrun_drift_aligns_fp32_walk():
-    """Verifies each violation measured_drift eval metric matches independent feature propagation math."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    ledger = load_report()
-    ref_map = {
-        v["layer_id"]: v
-        for v in independent_violations("linear-mixed", "v-int8-loose", "scenario-standard")
+def test_scenario_fixtures_unchanged():
+    """Scenario JSON fixtures must keep their original SHA-256 digests."""
+    for name, digest in SCENARIO_SHA256.items():
+        assert _sha256(SCENARIOS / name) == digest
+
+
+def test_contract_and_profile_name_present():
+    """Ruleset contract and profile.name pointer must exist for championship ops."""
+    assert CONTRACT.is_file()
+    assert PROFILE_NAME.read_text().strip() == "champ-v3"
+
+
+def test_sealed_profile_floors_and_seal():
+    """Sealed champ-v3 profile must carry championship floors and matching seal."""
+    raw = PROFILE.read_text()
+    assert 'run_id = "tak-champ-v1"' in raw
+    assert "board_size = 5" in raw
+    assert "road_ortho = 1" in raw
+    assert "caps_on_road = 1" in raw
+    assert "caps_on_flat = 1" in raw
+    assert "walls_on_flat = 0" in raw
+    assert "flat_margin = 3" in raw
+    assert "win_points = 3" in raw
+    assert "draw_points = 1" in raw
+    assert f'config_seal = "{CORRECT_SEAL}"' in raw
+    parsed = _parse_profile(raw)
+    cfg = {
+        "run_id": parsed["run_id"],
+        "board_size": int(parsed["board_size"]),
+        "road_ortho": int(parsed["road_ortho"]),
+        "caps_on_road": int(parsed["caps_on_road"]),
+        "caps_on_flat": int(parsed["caps_on_flat"]),
+        "walls_on_flat": int(parsed["walls_on_flat"]),
+        "flat_margin": int(parsed["flat_margin"]),
+        "win_points": int(parsed["win_points"]),
+        "draw_points": int(parsed["draw_points"]),
     }
-    for row in ledger["violations"]:
-        expect = ref_map[row["layer_id"]]["measured_drift"]
-        assert abs(row["measured_drift"] - expect) < 1e-5
+    assert cfg == CORRECT
+    assert parsed["config_seal"] == CORRECT_SEAL
+    assert _config_seal(cfg) == CORRECT_SEAL
 
 
-def test_qboundcert_overrun_bounds_align_scenario_ceiling():
-    """Verifies each violation row bound equals report drift_bound from scenario pack."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    ledger = load_report()
-    for row in ledger["violations"]:
-        assert abs(row["bound"] - ledger["drift_bound"]) < 1e-9
-
-
-def test_qboundcert_sha256seal_aligns_fp32_walk():
-    """Verifies model export digest matches drift-report-contract schema sha256 composition."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    ledger = load_report()
-    ref_v = independent_violations("linear-mixed", "v-int8-loose", "scenario-standard")
-    seal_src = (
-        f"{ledger['graph_id']}{ledger['variant_id']}{ledger['scenario_id']}"
-        + "".join(f"{v['layer_id']}{v['measured_drift']:.6f}" for v in ref_v)
+def test_heat_overlay_does_not_override_sealed_floors():
+    """Conflicting runtime overlay must not change sealed-floor championship outcomes."""
+    RUNTIME_OVERLAY.parent.mkdir(parents=True, exist_ok=True)
+    prior = RUNTIME_OVERLAY.read_text() if RUNTIME_OVERLAY.exists() else None
+    RUNTIME_OVERLAY.write_text(
+        "road_ortho = 0\ncaps_on_road = 0\ncaps_on_flat = 0\n"
+        "walls_on_flat = 1\nflat_margin = 8\nwin_points = 2\ndraw_points = 0\n"
     )
-    assert ledger["digest"] == hashlib.sha256(seal_src.encode()).hexdigest()
+    try:
+        _run_engine()
+        rep = json.loads(OUTPUT.read_text())
+        assert rep == _GOLDEN
+    finally:
+        if prior is None:
+            if RUNTIME_OVERLAY.exists():
+                RUNTIME_OVERLAY.unlink()
+        else:
+            RUNTIME_OVERLAY.write_text(prior)
+        _run_engine()
 
 
-def test_qboundcert_emit_stderrbanner_qbound_publish_ok():
-    """Verifies publish-report export stage prints QBOUND_PUBLISH_OK on success."""
-    run_pipeline("linear-clean", "v-int8-tight", "scenario-tight")
-    proc = invoke(["publish-report", "--graph", "linear-clean"])
-    assert proc.returncode == 0
-    assert "QBOUND_PUBLISH_OK" in proc.stderr
+def test_missing_overlay_does_not_activate_weekend_fallback():
+    """Removing the runtime overlay must not activate a weekend club fallback."""
+    RUNTIME_OVERLAY.parent.mkdir(parents=True, exist_ok=True)
+    prior = RUNTIME_OVERLAY.read_text() if RUNTIME_OVERLAY.exists() else None
+    if RUNTIME_OVERLAY.exists():
+        RUNTIME_OVERLAY.unlink()
+    try:
+        _run_engine()
+        rep = json.loads(OUTPUT.read_text())
+        assert rep == _GOLDEN
+    finally:
+        if prior is not None:
+            RUNTIME_OVERLAY.write_text(prior)
+        _run_engine()
 
 
-def test_qboundcert_aff1_envelope_under_tight_ceiling():
-    """Verifies aff1 drift stays below tight scenario ceiling on linear-clean."""
-    run_pipeline("linear-clean", "v-int8-tight", "scenario-tight")
-    aff1 = _pick_layer(_read_snap("linear-clean"), "aff1")
-    assert aff1["drift"] < 0.02
+def test_seal_mismatch_uses_championship_baseline():
+    """Invalid config_seal must fall back to the in-code baseline and still emit the golden report."""
+    original = PROFILE.read_text()
+    fields = _parse_profile(original)
+    assert fields.get("config_seal"), "sealed profile missing config_seal"
+    corrupted = original.replace(fields["config_seal"], "0" * 64)
+    assert fields["config_seal"] not in corrupted
+    PROFILE.write_text(corrupted)
+    try:
+        _run_engine()
+        rep = json.loads(OUTPUT.read_text())
+        assert rep == _GOLDEN
+    finally:
+        PROFILE.write_text(original)
+        _run_engine()
 
 
-def test_qboundcert_aff2_overrun_exceeds_standard_ceiling():
-    """Verifies aff2 measured_drift exceeds scenario bound on linear-mixed loose variant."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    aff2_v = next(v for v in load_report()["violations"] if v["layer_id"] == "aff2")
-    assert aff2_v["measured_drift"] > aff2_v["bound"]
+def test_report_schema_and_run_id():
+    """Report must expose the documented schema keys and sealed run_id."""
+    rep = json.loads(OUTPUT.read_text())
+    assert rep["schema_version"] == "1.0"
+    assert rep["run_id"] == RUN_ID
+    assert isinstance(rep["matches_played"], int)
+    assert isinstance(rep["matches"], list)
+    assert isinstance(rep["standings"], list)
+    assert set(rep["summary"]) == {
+        "aggregate_priority",
+        "max_severity",
+        "decisive_matches",
+        "draw_matches",
+    }
+    for m in rep["matches"]:
+        assert set(m) >= {
+            "match_id",
+            "player_a",
+            "player_b",
+            "winner",
+            "reason",
+            "flats_a",
+            "flats_b",
+            "road_a",
+            "road_b",
+            "points_a",
+            "points_b",
+            "severity",
+            "priority_score",
+            "related_ids",
+        }
 
 
-def test_qboundcert_relu_quant_lows_nonnegative():
-    """Verifies relu1 ref and quant interval lows are nonnegative after interval walk."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    relu_row = _pick_layer(_read_snap("linear-mixed"), "relu1")
-    assert relu_row["ref"]["lo"] >= 0.0
-    assert relu_row["quant"]["lo"] >= 0.0
+def test_report_matches_golden_championship_outcomes():
+    """Engine output must match the golden championship report for the sealed fixtures."""
+    rep = json.loads(OUTPUT.read_text())
+    assert rep["matches_played"] == _GOLDEN["matches_played"] == 12
+    assert rep == _GOLDEN
 
 
-def test_qboundcert_smoke_publish_subcmd_rc_zero():
-    """Verifies smoke-publish subcommand exits zero for bundled regression path."""
-    proc = invoke(["smoke-publish"])
-    assert proc.returncode == 0
+def test_matches_sorted_by_match_id():
+    """Match rows must be emitted sorted ascending by match_id with matches_played equal to count."""
+    rep = json.loads(OUTPUT.read_text())
+    ids = [m["match_id"] for m in rep["matches"]]
+    assert ids == sorted(ids)
+    assert rep["matches_played"] == len(rep["matches"])
 
 
-def test_qboundcert_terminal_snap_drift_equals_overrun_row():
-    """Verifies output layer snapshot drift equals violation row measured_drift."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    terminal_snap = _pick_layer(_read_snap("linear-mixed"), "output")
-    terminal_v = next(v for v in load_report()["violations"] if v["layer_id"] == "output")
-    assert abs(terminal_snap["drift"] - terminal_v["measured_drift"]) < 1e-5
+def test_standings_points_then_flat_diff_order():
+    """Standings must rank by points desc, then flat_diff desc, then player_id asc."""
+    rep = json.loads(OUTPUT.read_text())
+    rows = rep["standings"]
+    assert [r["rank"] for r in rows] == list(range(1, len(rows) + 1))
+    for i in range(len(rows) - 1):
+        a, b = rows[i], rows[i + 1]
+        if a["points"] != b["points"]:
+            assert a["points"] > b["points"]
+        elif a["flat_diff"] != b["flat_diff"]:
+            assert a["flat_diff"] > b["flat_diff"]
+        else:
+            assert a["player_id"] < b["player_id"]
 
 
-def test_qboundcert_hetero_unsealed_when_overruns_present():
-    """Verifies certified false when linear-mixed loose variant has bound overruns."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    ledger = load_report()
-    assert ledger["certified"] is False
-    assert len(ledger["violations"]) >= 2
+def test_related_ids_sorted():
+    """related_ids must be sorted ascending on every match row."""
+    rep = json.loads(OUTPUT.read_text())
+    for m in rep["matches"]:
+        assert m["related_ids"] == sorted(m["related_ids"])
 
 
-def test_qboundcert_ledger_variant_field_from_loadpack():
-    """Verifies drift_certification_report.json inference variant_id schema field from ingest pack."""
-    run_pipeline("linear-clean", "v-int8-tight", "scenario-tight")
-    assert load_report()["variant_id"] == "v-int8-tight"
+def test_no_legacy_point_remap():
+    """Wins must award win_points=3 and draws draw_points=1, not legacy 2/0."""
+    rep = json.loads(OUTPUT.read_text())
+    for m in rep["matches"]:
+        if m["winner"] == "A":
+            assert m["points_a"] == 3 and m["points_b"] == 0
+        elif m["winner"] == "B":
+            assert m["points_a"] == 0 and m["points_b"] == 3
+        else:
+            assert m["points_a"] == 1 and m["points_b"] == 1
 
 
-def test_qboundcert_negweight_affine_ref_lo_le_hi():
-    """Verifies aff2 float interval lo does not exceed hi with negative weights."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    aff2 = _pick_layer(_read_snap("linear-mixed"), "aff2")
-    assert aff2["ref"]["lo"] <= aff2["ref"]["hi"]
+def test_aggregate_priority_formula():
+    """summary.aggregate_priority must use mean priority_score times 1.20 rounded."""
+    rep = json.loads(OUTPUT.read_text())
+    scores = [m["priority_score"] for m in rep["matches"]]
+    mean = sum(scores) / len(scores)
+    expected = min(100, round(mean * 1.20))
+    assert rep["summary"]["aggregate_priority"] == expected == 83
 
 
-def test_qboundcert_ledger_scenario_fields_from_pack():
-    """Verifies report scenario_id and drift_bound match scenario-standard pack."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    ledger = load_report()
-    assert ledger["scenario_id"] == "scenario-standard"
-    assert abs(ledger["drift_bound"] - 0.08) < 1e-9
+def test_reason_token_vocabulary():
+    """Every match reason must be a championship token with matching severity scores."""
+    allowed = {
+        "road_complete",
+        "flat_clear",
+        "flat_majority",
+        "mutual_draw",
+    }
+    rep = json.loads(OUTPUT.read_text())
+    reasons = {m["reason"] for m in rep["matches"]}
+    assert "road_complete" in reasons
+    assert "flat_clear" in reasons
+    assert "flat_majority" in reasons
+    for m in rep["matches"]:
+        assert m["reason"] in allowed
+        sev, score = _score(m["reason"])
+        assert m["severity"] == sev
+        assert m["priority_score"] == score
 
 
-def test_qboundcert_hetero_overruns_include_aff2_terminal():
-    """Verifies linear-mixed loose violations include aff2 and output per instruction."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    layers = {v["layer_id"] for v in load_report()["violations"]}
-    assert {"aff2", "output"}.issubset(layers)
-
-
-POISON = POISON_ROOT
-
-
-def _run_poison_pipeline() -> None:
-    invoke(
-        [
-            "ingest-pack",
-            "--graph-root",
-            str(POISON),
-            "--graph",
-            "linear-poison",
-            "--variant-root",
-            str(POISON),
-            "--variant",
-            "v-poison-int8",
-            "--scenario-root",
-            str(POISON),
-            "--scenario",
-            "scenario-tight",
-        ]
+def test_default_profile_root_ignores_legacy_tree():
+    """Default load must use config/profiles, not a diverging profiles.legacy tree."""
+    legacy = Path("/app/config/profiles.legacy/champ-v3/rules.toml")
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    prior = legacy.read_text() if legacy.exists() else None
+    legacy.write_text(
+        'run_id = "tak-legacy"\nboard_size = 5\nroad_ortho = 0\n'
+        "caps_on_road = 0\ncaps_on_flat = 0\nwalls_on_flat = 1\n"
+        "flat_margin = 6\nwin_points = 2\ndraw_points = 0\n"
+        'config_seal = "0" * 64\n'.replace('"0" * 64', '"' + ("0" * 64) + '"')
     )
-    invoke(["walk-intervals", "--graph", "linear-poison"])
-    invoke(["publish-report", "--graph", "linear-poison"])
-
-
-def test_qboundcert_tb3hidden_loadpack_from_opt_fixtures():
-    """Verifies TB3 poison-pack ingest-pack succeeds from /opt/verifier-fixtures/tb3/poison-pack."""
-    proc = invoke(
-        [
-            "ingest-pack",
-            "--graph-root",
-            str(POISON),
-            "--graph",
-            "linear-poison",
-            "--variant-root",
-            str(POISON),
-            "--variant",
-            "v-poison-int8",
-            "--scenario-root",
-            str(POISON),
-            "--scenario",
-            "scenario-tight",
-        ]
-    )
-    assert proc.returncode == 0
-
-
-def test_qboundcert_gatepass_two_strict_overruns_tb3hidden():
-    """Verifies epoch-two strict bound flags poison linear-poison violations per policy."""
-    assert Path("/opt/verifier-fixtures/tb3/poison-pack") == POISON
-    _run_poison_pipeline()
-    ledger = load_report()
-    ref = independent_violations(
-        "linear-poison",
-        "v-poison-int8",
-        "scenario-tight",
-        graph_root=POISON,
-        variant_root=POISON,
-        scenario_root=POISON,
-    )
-    assert len(ledger["violations"]) == len(ref)
-    assert ledger["certified"] == (len(ref) == 0)
-
-
-def test_qboundcert_walk_witness_matches_topo_snap_order():
-    """Verifies walk-witness.json layer_order_digest matches topological snap order reference."""
-    run_pipeline("linear-clean", "v-int8-tight", "scenario-tight")
-    snap = _read_snap("linear-clean")
-    got = read_walk_witness(STAGING / "linear-clean")
-    expect = walk_witness_digest(snap)
-    assert got == expect
-
-
-def test_qboundcert_publish_ledger_sequence_bumps_after_export():
-    """Verifies publish-seq.json increments after successful publish-report."""
-    run_pipeline("linear-clean", "v-int8-tight", "scenario-tight")
-    before = read_publish_seq("linear-clean")
-    invoke(["publish-report", "--graph", "linear-clean"])
-    after = read_publish_seq("linear-clean")
-    assert after == before + 1
-
-
-def _run_hetero_poison_pipeline() -> None:
-    invoke(
-        [
-            "ingest-pack",
-            "--graph-root",
-            str(POISON),
-            "--graph",
-            "hetero-poison",
-            "--variant-root",
-            str(POISON),
-            "--variant",
-            "v-hetero-poison",
-            "--scenario-root",
-            str(POISON),
-            "--scenario",
-            "scenario-tight",
-        ]
-    )
-    invoke(["walk-intervals", "--graph", "hetero-poison"])
-    invoke(["publish-report", "--graph", "hetero-poison"])
-
-
-def test_qboundcert_tb3hidden_hetero_poison_custom_weight_key():
-    """Verifies hetero-poison custom inference weight key loads and eval metric matches reference."""
-    _run_hetero_poison_pipeline()
-    ledger = load_report()
-    ref = independent_violations(
-        "hetero-poison",
-        "v-hetero-poison",
-        "scenario-tight",
-        graph_root=POISON,
-        variant_root=POISON,
-        scenario_root=POISON,
-    )
-    got_layers = sorted(v["layer_id"] for v in ledger["violations"])
-    ref_layers = sorted(v["layer_id"] for v in ref)
-    assert got_layers == ref_layers
-    assert ledger["certified"] == (len(ref) == 0)
-
-
-def test_qboundcert_stale_witness_blocks_republish_without_rewalk():
-    """Verifies publish-report refuses when walk-witness digest disagrees with snapshot order."""
-    run_pipeline("linear-mixed", "v-int8-loose", "scenario-standard")
-    staging = STAGING / "linear-mixed"
-    witness_path = staging / "walk-witness.json"
-    witness_path.write_text('{"layer_order_digest":"deadbeef"}\n', encoding="utf-8")
-    proc = invoke(["publish-report", "--graph", "linear-mixed"])
-    assert proc.returncode != 0
+    try:
+        env = dict(**{k: v for k, v in __import__("os").environ.items() if k != "TAK_PROFILE_ROOT"})
+        subprocess.run(
+            [str(BINARY), "--scenarios", "/app/scenarios", "--config", "/app/config", "--out", "/app/output"],
+            check=True,
+            env=env,
+        )
+        rep = json.loads(OUTPUT.read_text())
+        assert rep == _GOLDEN
+    finally:
+        if prior is None:
+            if legacy.exists():
+                legacy.unlink()
+        else:
+            legacy.write_text(prior)
+        _run_engine()

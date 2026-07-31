@@ -1,0 +1,31 @@
+{
+  "cells": {
+    "0,0": [
+      {
+        "color": "A",
+        "kind": "flat"
+      }
+    ],
+    "0,1": [
+      {
+        "color": "A",
+        "kind": "flat"
+      }
+    ],
+    "4,3": [
+      {
+        "color": "B",
+        "kind": "flat"
+      }
+    ],
+    "4,4": [
+      {
+        "color": "B",
+        "kind": "flat"
+      }
+    ]
+  },
+  "match_id": "m06",
+  "player_a": "stone_north",
+  "player_b": "tide_east"
+}

@@ -1,0 +1,37 @@
+{
+  "cells": {
+    "0,0": [
+      {
+        "color": "A",
+        "kind": "flat"
+      }
+    ],
+    "0,1": [
+      {
+        "color": "A",
+        "kind": "flat"
+      }
+    ],
+    "0,2": [
+      {
+        "color": "A",
+        "kind": "flat"
+      }
+    ],
+    "0,3": [
+      {
+        "color": "A",
+        "kind": "flat"
+      }
+    ],
+    "1,4": [
+      {
+        "color": "B",
+        "kind": "flat"
+      }
+    ]
+  },
+  "match_id": "m12",
+  "player_a": "flat_manor",
+  "player_b": "diag_club"
+}
