@@ -1,0 +1,1544 @@
+{
+ "bouts": [
+  {
+   "name": "bout-001",
+   "left": {
+    "power": 2,
+    "guile": 7,
+    "armour": 4
+   },
+   "right": {
+    "power": 6,
+    "guile": 4,
+    "armour": 5
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-002",
+   "left": {
+    "power": 6,
+    "guile": 9,
+    "armour": 2
+   },
+   "right": {
+    "power": 1,
+    "guile": 4,
+    "armour": 5
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-003",
+   "left": {
+    "power": 4,
+    "guile": 8,
+    "armour": 3
+   },
+   "right": {
+    "power": 1,
+    "guile": 1,
+    "armour": 3
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-004",
+   "left": {
+    "power": 1,
+    "guile": 2,
+    "armour": 5
+   },
+   "right": {
+    "power": 3,
+    "guile": 1,
+    "armour": 4
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-005",
+   "left": {
+    "power": 1,
+    "guile": 6,
+    "armour": 1
+   },
+   "right": {
+    "power": 4,
+    "guile": 8,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-006",
+   "left": {
+    "power": 7,
+    "guile": 9,
+    "armour": 4
+   },
+   "right": {
+    "power": 1,
+    "guile": 2,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-007",
+   "left": {
+    "power": 5,
+    "guile": 1,
+    "armour": 4
+   },
+   "right": {
+    "power": 2,
+    "guile": 2,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-008",
+   "left": {
+    "power": 9,
+    "guile": 4,
+    "armour": 1
+   },
+   "right": {
+    "power": 7,
+    "guile": 4,
+    "armour": 5
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-009",
+   "left": {
+    "power": 2,
+    "guile": 5,
+    "armour": 6
+   },
+   "right": {
+    "power": 2,
+    "guile": 3,
+    "armour": 4
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-010",
+   "left": {
+    "power": 9,
+    "guile": 4,
+    "armour": 3
+   },
+   "right": {
+    "power": 7,
+    "guile": 2,
+    "armour": 5
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-011",
+   "left": {
+    "power": 6,
+    "guile": 6,
+    "armour": 3
+   },
+   "right": {
+    "power": 8,
+    "guile": 4,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-012",
+   "left": {
+    "power": 2,
+    "guile": 4,
+    "armour": 4
+   },
+   "right": {
+    "power": 6,
+    "guile": 1,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-013",
+   "left": {
+    "power": 7,
+    "guile": 2,
+    "armour": 5
+   },
+   "right": {
+    "power": 6,
+    "guile": 6,
+    "armour": 2
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-014",
+   "left": {
+    "power": 6,
+    "guile": 7,
+    "armour": 5
+   },
+   "right": {
+    "power": 8,
+    "guile": 2,
+    "armour": 6
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-015",
+   "left": {
+    "power": 8,
+    "guile": 6,
+    "armour": 4
+   },
+   "right": {
+    "power": 6,
+    "guile": 2,
+    "armour": 3
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-016",
+   "left": {
+    "power": 5,
+    "guile": 2,
+    "armour": 4
+   },
+   "right": {
+    "power": 9,
+    "guile": 8,
+    "armour": 4
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-017",
+   "left": {
+    "power": 2,
+    "guile": 2,
+    "armour": 5
+   },
+   "right": {
+    "power": 9,
+    "guile": 1,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-018",
+   "left": {
+    "power": 6,
+    "guile": 5,
+    "armour": 1
+   },
+   "right": {
+    "power": 8,
+    "guile": 1,
+    "armour": 6
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-019",
+   "left": {
+    "power": 6,
+    "guile": 8,
+    "armour": 3
+   },
+   "right": {
+    "power": 4,
+    "guile": 5,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-020",
+   "left": {
+    "power": 5,
+    "guile": 1,
+    "armour": 3
+   },
+   "right": {
+    "power": 7,
+    "guile": 5,
+    "armour": 4
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-021",
+   "left": {
+    "power": 5,
+    "guile": 5,
+    "armour": 2
+   },
+   "right": {
+    "power": 3,
+    "guile": 5,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-022",
+   "left": {
+    "power": 2,
+    "guile": 8,
+    "armour": 6
+   },
+   "right": {
+    "power": 8,
+    "guile": 7,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-023",
+   "left": {
+    "power": 3,
+    "guile": 3,
+    "armour": 2
+   },
+   "right": {
+    "power": 3,
+    "guile": 3,
+    "armour": 6
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-024",
+   "left": {
+    "power": 9,
+    "guile": 8,
+    "armour": 4
+   },
+   "right": {
+    "power": 8,
+    "guile": 7,
+    "armour": 6
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-025",
+   "left": {
+    "power": 7,
+    "guile": 6,
+    "armour": 3
+   },
+   "right": {
+    "power": 6,
+    "guile": 6,
+    "armour": 6
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-026",
+   "left": {
+    "power": 5,
+    "guile": 4,
+    "armour": 2
+   },
+   "right": {
+    "power": 7,
+    "guile": 1,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-027",
+   "left": {
+    "power": 4,
+    "guile": 5,
+    "armour": 1
+   },
+   "right": {
+    "power": 8,
+    "guile": 6,
+    "armour": 2
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-028",
+   "left": {
+    "power": 4,
+    "guile": 3,
+    "armour": 2
+   },
+   "right": {
+    "power": 7,
+    "guile": 6,
+    "armour": 1
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-029",
+   "left": {
+    "power": 3,
+    "guile": 4,
+    "armour": 1
+   },
+   "right": {
+    "power": 4,
+    "guile": 7,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-030",
+   "left": {
+    "power": 5,
+    "guile": 2,
+    "armour": 4
+   },
+   "right": {
+    "power": 6,
+    "guile": 8,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-031",
+   "left": {
+    "power": 6,
+    "guile": 9,
+    "armour": 6
+   },
+   "right": {
+    "power": 6,
+    "guile": 1,
+    "armour": 6
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-032",
+   "left": {
+    "power": 8,
+    "guile": 7,
+    "armour": 6
+   },
+   "right": {
+    "power": 5,
+    "guile": 6,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-033",
+   "left": {
+    "power": 6,
+    "guile": 8,
+    "armour": 4
+   },
+   "right": {
+    "power": 1,
+    "guile": 6,
+    "armour": 4
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-034",
+   "left": {
+    "power": 1,
+    "guile": 5,
+    "armour": 2
+   },
+   "right": {
+    "power": 4,
+    "guile": 9,
+    "armour": 6
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-035",
+   "left": {
+    "power": 4,
+    "guile": 6,
+    "armour": 4
+   },
+   "right": {
+    "power": 1,
+    "guile": 6,
+    "armour": 6
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-036",
+   "left": {
+    "power": 6,
+    "guile": 4,
+    "armour": 4
+   },
+   "right": {
+    "power": 2,
+    "guile": 3,
+    "armour": 3
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-037",
+   "left": {
+    "power": 9,
+    "guile": 4,
+    "armour": 2
+   },
+   "right": {
+    "power": 4,
+    "guile": 3,
+    "armour": 4
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-038",
+   "left": {
+    "power": 3,
+    "guile": 5,
+    "armour": 1
+   },
+   "right": {
+    "power": 6,
+    "guile": 6,
+    "armour": 1
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-039",
+   "left": {
+    "power": 3,
+    "guile": 5,
+    "armour": 3
+   },
+   "right": {
+    "power": 4,
+    "guile": 9,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-040",
+   "left": {
+    "power": 7,
+    "guile": 2,
+    "armour": 3
+   },
+   "right": {
+    "power": 6,
+    "guile": 4,
+    "armour": 5
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-041",
+   "left": {
+    "power": 7,
+    "guile": 8,
+    "armour": 5
+   },
+   "right": {
+    "power": 4,
+    "guile": 3,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-042",
+   "left": {
+    "power": 5,
+    "guile": 6,
+    "armour": 3
+   },
+   "right": {
+    "power": 2,
+    "guile": 7,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-043",
+   "left": {
+    "power": 3,
+    "guile": 3,
+    "armour": 6
+   },
+   "right": {
+    "power": 2,
+    "guile": 4,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-044",
+   "left": {
+    "power": 1,
+    "guile": 3,
+    "armour": 3
+   },
+   "right": {
+    "power": 6,
+    "guile": 5,
+    "armour": 5
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-045",
+   "left": {
+    "power": 3,
+    "guile": 6,
+    "armour": 5
+   },
+   "right": {
+    "power": 2,
+    "guile": 8,
+    "armour": 1
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-046",
+   "left": {
+    "power": 4,
+    "guile": 8,
+    "armour": 4
+   },
+   "right": {
+    "power": 9,
+    "guile": 7,
+    "armour": 5
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-047",
+   "left": {
+    "power": 4,
+    "guile": 5,
+    "armour": 3
+   },
+   "right": {
+    "power": 5,
+    "guile": 1,
+    "armour": 6
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-048",
+   "left": {
+    "power": 2,
+    "guile": 9,
+    "armour": 4
+   },
+   "right": {
+    "power": 8,
+    "guile": 9,
+    "armour": 5
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-049",
+   "left": {
+    "power": 9,
+    "guile": 8,
+    "armour": 2
+   },
+   "right": {
+    "power": 1,
+    "guile": 5,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-050",
+   "left": {
+    "power": 2,
+    "guile": 4,
+    "armour": 6
+   },
+   "right": {
+    "power": 6,
+    "guile": 3,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-051",
+   "left": {
+    "power": 5,
+    "guile": 9,
+    "armour": 1
+   },
+   "right": {
+    "power": 7,
+    "guile": 5,
+    "armour": 4
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-052",
+   "left": {
+    "power": 5,
+    "guile": 2,
+    "armour": 3
+   },
+   "right": {
+    "power": 1,
+    "guile": 2,
+    "armour": 5
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-053",
+   "left": {
+    "power": 9,
+    "guile": 5,
+    "armour": 2
+   },
+   "right": {
+    "power": 5,
+    "guile": 7,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-054",
+   "left": {
+    "power": 2,
+    "guile": 4,
+    "armour": 2
+   },
+   "right": {
+    "power": 7,
+    "guile": 5,
+    "armour": 4
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-055",
+   "left": {
+    "power": 4,
+    "guile": 1,
+    "armour": 2
+   },
+   "right": {
+    "power": 1,
+    "guile": 1,
+    "armour": 3
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-056",
+   "left": {
+    "power": 3,
+    "guile": 7,
+    "armour": 5
+   },
+   "right": {
+    "power": 2,
+    "guile": 4,
+    "armour": 5
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-057",
+   "left": {
+    "power": 5,
+    "guile": 5,
+    "armour": 5
+   },
+   "right": {
+    "power": 6,
+    "guile": 5,
+    "armour": 6
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-058",
+   "left": {
+    "power": 6,
+    "guile": 1,
+    "armour": 2
+   },
+   "right": {
+    "power": 3,
+    "guile": 2,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-059",
+   "left": {
+    "power": 6,
+    "guile": 7,
+    "armour": 4
+   },
+   "right": {
+    "power": 4,
+    "guile": 6,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-060",
+   "left": {
+    "power": 4,
+    "guile": 2,
+    "armour": 2
+   },
+   "right": {
+    "power": 8,
+    "guile": 2,
+    "armour": 2
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-061",
+   "left": {
+    "power": 7,
+    "guile": 1,
+    "armour": 5
+   },
+   "right": {
+    "power": 6,
+    "guile": 4,
+    "armour": 6
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-062",
+   "left": {
+    "power": 5,
+    "guile": 1,
+    "armour": 5
+   },
+   "right": {
+    "power": 3,
+    "guile": 2,
+    "armour": 1
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-063",
+   "left": {
+    "power": 4,
+    "guile": 7,
+    "armour": 3
+   },
+   "right": {
+    "power": 6,
+    "guile": 5,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-064",
+   "left": {
+    "power": 3,
+    "guile": 9,
+    "armour": 5
+   },
+   "right": {
+    "power": 5,
+    "guile": 7,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-065",
+   "left": {
+    "power": 2,
+    "guile": 9,
+    "armour": 4
+   },
+   "right": {
+    "power": 8,
+    "guile": 4,
+    "armour": 6
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-066",
+   "left": {
+    "power": 3,
+    "guile": 6,
+    "armour": 2
+   },
+   "right": {
+    "power": 7,
+    "guile": 1,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-067",
+   "left": {
+    "power": 8,
+    "guile": 5,
+    "armour": 1
+   },
+   "right": {
+    "power": 7,
+    "guile": 4,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-068",
+   "left": {
+    "power": 8,
+    "guile": 4,
+    "armour": 1
+   },
+   "right": {
+    "power": 8,
+    "guile": 8,
+    "armour": 6
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-069",
+   "left": {
+    "power": 8,
+    "guile": 1,
+    "armour": 1
+   },
+   "right": {
+    "power": 3,
+    "guile": 4,
+    "armour": 1
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-070",
+   "left": {
+    "power": 2,
+    "guile": 9,
+    "armour": 3
+   },
+   "right": {
+    "power": 9,
+    "guile": 5,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-071",
+   "left": {
+    "power": 3,
+    "guile": 9,
+    "armour": 5
+   },
+   "right": {
+    "power": 4,
+    "guile": 6,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-072",
+   "left": {
+    "power": 8,
+    "guile": 5,
+    "armour": 2
+   },
+   "right": {
+    "power": 4,
+    "guile": 8,
+    "armour": 4
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-073",
+   "left": {
+    "power": 4,
+    "guile": 7,
+    "armour": 2
+   },
+   "right": {
+    "power": 4,
+    "guile": 5,
+    "armour": 6
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-074",
+   "left": {
+    "power": 7,
+    "guile": 7,
+    "armour": 3
+   },
+   "right": {
+    "power": 7,
+    "guile": 7,
+    "armour": 5
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-075",
+   "left": {
+    "power": 6,
+    "guile": 4,
+    "armour": 1
+   },
+   "right": {
+    "power": 5,
+    "guile": 5,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-076",
+   "left": {
+    "power": 4,
+    "guile": 7,
+    "armour": 2
+   },
+   "right": {
+    "power": 9,
+    "guile": 4,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-077",
+   "left": {
+    "power": 1,
+    "guile": 6,
+    "armour": 1
+   },
+   "right": {
+    "power": 6,
+    "guile": 3,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-078",
+   "left": {
+    "power": 9,
+    "guile": 5,
+    "armour": 2
+   },
+   "right": {
+    "power": 3,
+    "guile": 6,
+    "armour": 5
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-079",
+   "left": {
+    "power": 1,
+    "guile": 9,
+    "armour": 6
+   },
+   "right": {
+    "power": 5,
+    "guile": 6,
+    "armour": 5
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-080",
+   "left": {
+    "power": 7,
+    "guile": 1,
+    "armour": 2
+   },
+   "right": {
+    "power": 3,
+    "guile": 6,
+    "armour": 6
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-081",
+   "left": {
+    "power": 6,
+    "guile": 8,
+    "armour": 3
+   },
+   "right": {
+    "power": 3,
+    "guile": 8,
+    "armour": 6
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-082",
+   "left": {
+    "power": 8,
+    "guile": 7,
+    "armour": 1
+   },
+   "right": {
+    "power": 5,
+    "guile": 4,
+    "armour": 6
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-083",
+   "left": {
+    "power": 7,
+    "guile": 2,
+    "armour": 5
+   },
+   "right": {
+    "power": 1,
+    "guile": 9,
+    "armour": 2
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-084",
+   "left": {
+    "power": 1,
+    "guile": 8,
+    "armour": 5
+   },
+   "right": {
+    "power": 6,
+    "guile": 4,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-085",
+   "left": {
+    "power": 6,
+    "guile": 1,
+    "armour": 3
+   },
+   "right": {
+    "power": 2,
+    "guile": 6,
+    "armour": 6
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-086",
+   "left": {
+    "power": 8,
+    "guile": 7,
+    "armour": 3
+   },
+   "right": {
+    "power": 7,
+    "guile": 9,
+    "armour": 6
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-087",
+   "left": {
+    "power": 1,
+    "guile": 2,
+    "armour": 6
+   },
+   "right": {
+    "power": 8,
+    "guile": 7,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-088",
+   "left": {
+    "power": 5,
+    "guile": 2,
+    "armour": 1
+   },
+   "right": {
+    "power": 1,
+    "guile": 9,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-089",
+   "left": {
+    "power": 6,
+    "guile": 2,
+    "armour": 1
+   },
+   "right": {
+    "power": 4,
+    "guile": 8,
+    "armour": 1
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-090",
+   "left": {
+    "power": 7,
+    "guile": 8,
+    "armour": 2
+   },
+   "right": {
+    "power": 4,
+    "guile": 1,
+    "armour": 3
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-091",
+   "left": {
+    "power": 6,
+    "guile": 7,
+    "armour": 2
+   },
+   "right": {
+    "power": 8,
+    "guile": 4,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-092",
+   "left": {
+    "power": 9,
+    "guile": 6,
+    "armour": 1
+   },
+   "right": {
+    "power": 4,
+    "guile": 1,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-093",
+   "left": {
+    "power": 9,
+    "guile": 7,
+    "armour": 5
+   },
+   "right": {
+    "power": 4,
+    "guile": 4,
+    "armour": 4
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-094",
+   "left": {
+    "power": 1,
+    "guile": 8,
+    "armour": 6
+   },
+   "right": {
+    "power": 4,
+    "guile": 8,
+    "armour": 4
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-095",
+   "left": {
+    "power": 5,
+    "guile": 8,
+    "armour": 2
+   },
+   "right": {
+    "power": 4,
+    "guile": 5,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-096",
+   "left": {
+    "power": 7,
+    "guile": 5,
+    "armour": 6
+   },
+   "right": {
+    "power": 9,
+    "guile": 7,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-097",
+   "left": {
+    "power": 5,
+    "guile": 3,
+    "armour": 1
+   },
+   "right": {
+    "power": 8,
+    "guile": 4,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-098",
+   "left": {
+    "power": 6,
+    "guile": 7,
+    "armour": 3
+   },
+   "right": {
+    "power": 1,
+    "guile": 4,
+    "armour": 5
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-099",
+   "left": {
+    "power": 9,
+    "guile": 2,
+    "armour": 2
+   },
+   "right": {
+    "power": 6,
+    "guile": 7,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-100",
+   "left": {
+    "power": 5,
+    "guile": 5,
+    "armour": 5
+   },
+   "right": {
+    "power": 7,
+    "guile": 4,
+    "armour": 4
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-101",
+   "left": {
+    "power": 4,
+    "guile": 9,
+    "armour": 4
+   },
+   "right": {
+    "power": 9,
+    "guile": 9,
+    "armour": 4
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-102",
+   "left": {
+    "power": 5,
+    "guile": 6,
+    "armour": 6
+   },
+   "right": {
+    "power": 7,
+    "guile": 2,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-103",
+   "left": {
+    "power": 3,
+    "guile": 2,
+    "armour": 4
+   },
+   "right": {
+    "power": 2,
+    "guile": 8,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-104",
+   "left": {
+    "power": 8,
+    "guile": 4,
+    "armour": 1
+   },
+   "right": {
+    "power": 4,
+    "guile": 7,
+    "armour": 4
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-105",
+   "left": {
+    "power": 6,
+    "guile": 8,
+    "armour": 2
+   },
+   "right": {
+    "power": 5,
+    "guile": 1,
+    "armour": 3
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-106",
+   "left": {
+    "power": 9,
+    "guile": 4,
+    "armour": 1
+   },
+   "right": {
+    "power": 8,
+    "guile": 1,
+    "armour": 2
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-107",
+   "left": {
+    "power": 5,
+    "guile": 4,
+    "armour": 2
+   },
+   "right": {
+    "power": 9,
+    "guile": 3,
+    "armour": 1
+   },
+   "winner": "left"
+  },
+  {
+   "name": "bout-108",
+   "left": {
+    "power": 3,
+    "guile": 7,
+    "armour": 4
+   },
+   "right": {
+    "power": 5,
+    "guile": 8,
+    "armour": 3
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-109",
+   "left": {
+    "power": 4,
+    "guile": 4,
+    "armour": 3
+   },
+   "right": {
+    "power": 1,
+    "guile": 6,
+    "armour": 4
+   },
+   "winner": "right"
+  },
+  {
+   "name": "bout-110",
+   "left": {
+    "power": 4,
+    "guile": 4,
+    "armour": 6
+   },
+   "right": {
+    "power": 2,
+    "guile": 6,
+    "armour": 6
+   },
+   "winner": "left"
+  }
+ ]
+}

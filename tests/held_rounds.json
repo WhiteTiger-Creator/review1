@@ -1,0 +1,2014 @@
+{
+ "rounds": [
+  {
+   "name": "round-01",
+   "mine": [
+    {
+     "power": 9,
+     "guile": 4,
+     "armour": 1
+    },
+    {
+     "power": 8,
+     "guile": 4,
+     "armour": 4
+    },
+    {
+     "power": 8,
+     "guile": 8,
+     "armour": 2
+    },
+    {
+     "power": 3,
+     "guile": 9,
+     "armour": 6
+    },
+    {
+     "power": 8,
+     "guile": 8,
+     "armour": 6
+    },
+    {
+     "power": 6,
+     "guile": 8,
+     "armour": 2
+    }
+   ],
+   "rivals": [
+    {
+     "power": 8,
+     "guile": 4,
+     "armour": 2
+    },
+    {
+     "power": 7,
+     "guile": 2,
+     "armour": 4
+    },
+    {
+     "power": 7,
+     "guile": 6,
+     "armour": 1
+    },
+    {
+     "power": 6,
+     "guile": 9,
+     "armour": 2
+    },
+    {
+     "power": 2,
+     "guile": 1,
+     "armour": 4
+    },
+    {
+     "power": 1,
+     "guile": 5,
+     "armour": 3
+    }
+   ]
+  },
+  {
+   "name": "round-02",
+   "mine": [
+    {
+     "power": 3,
+     "guile": 8,
+     "armour": 6
+    },
+    {
+     "power": 9,
+     "guile": 1,
+     "armour": 5
+    },
+    {
+     "power": 7,
+     "guile": 2,
+     "armour": 1
+    },
+    {
+     "power": 4,
+     "guile": 5,
+     "armour": 2
+    },
+    {
+     "power": 3,
+     "guile": 3,
+     "armour": 1
+    },
+    {
+     "power": 8,
+     "guile": 6,
+     "armour": 5
+    }
+   ],
+   "rivals": [
+    {
+     "power": 5,
+     "guile": 9,
+     "armour": 2
+    },
+    {
+     "power": 2,
+     "guile": 7,
+     "armour": 6
+    },
+    {
+     "power": 1,
+     "guile": 1,
+     "armour": 5
+    },
+    {
+     "power": 5,
+     "guile": 7,
+     "armour": 5
+    },
+    {
+     "power": 1,
+     "guile": 5,
+     "armour": 2
+    },
+    {
+     "power": 2,
+     "guile": 4,
+     "armour": 3
+    }
+   ]
+  },
+  {
+   "name": "round-03",
+   "mine": [
+    {
+     "power": 8,
+     "guile": 7,
+     "armour": 5
+    },
+    {
+     "power": 5,
+     "guile": 3,
+     "armour": 6
+    },
+    {
+     "power": 4,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 8,
+     "guile": 3,
+     "armour": 3
+    },
+    {
+     "power": 8,
+     "guile": 9,
+     "armour": 4
+    },
+    {
+     "power": 1,
+     "guile": 5,
+     "armour": 2
+    }
+   ],
+   "rivals": [
+    {
+     "power": 5,
+     "guile": 2,
+     "armour": 6
+    },
+    {
+     "power": 8,
+     "guile": 4,
+     "armour": 4
+    },
+    {
+     "power": 6,
+     "guile": 1,
+     "armour": 4
+    },
+    {
+     "power": 5,
+     "guile": 7,
+     "armour": 1
+    },
+    {
+     "power": 6,
+     "guile": 8,
+     "armour": 6
+    },
+    {
+     "power": 8,
+     "guile": 6,
+     "armour": 2
+    }
+   ]
+  },
+  {
+   "name": "round-04",
+   "mine": [
+    {
+     "power": 5,
+     "guile": 2,
+     "armour": 5
+    },
+    {
+     "power": 9,
+     "guile": 5,
+     "armour": 5
+    },
+    {
+     "power": 9,
+     "guile": 5,
+     "armour": 2
+    },
+    {
+     "power": 3,
+     "guile": 6,
+     "armour": 1
+    },
+    {
+     "power": 2,
+     "guile": 2,
+     "armour": 4
+    },
+    {
+     "power": 2,
+     "guile": 3,
+     "armour": 1
+    }
+   ],
+   "rivals": [
+    {
+     "power": 8,
+     "guile": 3,
+     "armour": 1
+    },
+    {
+     "power": 8,
+     "guile": 6,
+     "armour": 6
+    },
+    {
+     "power": 1,
+     "guile": 3,
+     "armour": 2
+    },
+    {
+     "power": 7,
+     "guile": 2,
+     "armour": 2
+    },
+    {
+     "power": 8,
+     "guile": 6,
+     "armour": 2
+    },
+    {
+     "power": 2,
+     "guile": 1,
+     "armour": 6
+    }
+   ]
+  },
+  {
+   "name": "round-05",
+   "mine": [
+    {
+     "power": 3,
+     "guile": 8,
+     "armour": 3
+    },
+    {
+     "power": 4,
+     "guile": 5,
+     "armour": 5
+    },
+    {
+     "power": 1,
+     "guile": 6,
+     "armour": 4
+    },
+    {
+     "power": 1,
+     "guile": 5,
+     "armour": 1
+    },
+    {
+     "power": 1,
+     "guile": 9,
+     "armour": 3
+    },
+    {
+     "power": 3,
+     "guile": 9,
+     "armour": 1
+    }
+   ],
+   "rivals": [
+    {
+     "power": 9,
+     "guile": 4,
+     "armour": 2
+    },
+    {
+     "power": 6,
+     "guile": 6,
+     "armour": 5
+    },
+    {
+     "power": 2,
+     "guile": 8,
+     "armour": 4
+    },
+    {
+     "power": 4,
+     "guile": 4,
+     "armour": 4
+    },
+    {
+     "power": 8,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 7,
+     "guile": 6,
+     "armour": 3
+    }
+   ]
+  },
+  {
+   "name": "round-06",
+   "mine": [
+    {
+     "power": 7,
+     "guile": 5,
+     "armour": 5
+    },
+    {
+     "power": 3,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 2,
+     "guile": 4,
+     "armour": 3
+    },
+    {
+     "power": 6,
+     "guile": 2,
+     "armour": 1
+    },
+    {
+     "power": 4,
+     "guile": 8,
+     "armour": 1
+    },
+    {
+     "power": 7,
+     "guile": 6,
+     "armour": 2
+    }
+   ],
+   "rivals": [
+    {
+     "power": 9,
+     "guile": 4,
+     "armour": 5
+    },
+    {
+     "power": 6,
+     "guile": 7,
+     "armour": 3
+    },
+    {
+     "power": 9,
+     "guile": 6,
+     "armour": 3
+    },
+    {
+     "power": 9,
+     "guile": 1,
+     "armour": 4
+    },
+    {
+     "power": 6,
+     "guile": 9,
+     "armour": 2
+    },
+    {
+     "power": 4,
+     "guile": 8,
+     "armour": 4
+    }
+   ]
+  },
+  {
+   "name": "round-07",
+   "mine": [
+    {
+     "power": 9,
+     "guile": 3,
+     "armour": 6
+    },
+    {
+     "power": 2,
+     "guile": 8,
+     "armour": 1
+    },
+    {
+     "power": 2,
+     "guile": 3,
+     "armour": 5
+    },
+    {
+     "power": 2,
+     "guile": 7,
+     "armour": 6
+    },
+    {
+     "power": 2,
+     "guile": 5,
+     "armour": 6
+    },
+    {
+     "power": 9,
+     "guile": 2,
+     "armour": 1
+    }
+   ],
+   "rivals": [
+    {
+     "power": 3,
+     "guile": 9,
+     "armour": 6
+    },
+    {
+     "power": 7,
+     "guile": 1,
+     "armour": 3
+    },
+    {
+     "power": 4,
+     "guile": 3,
+     "armour": 2
+    },
+    {
+     "power": 1,
+     "guile": 5,
+     "armour": 2
+    },
+    {
+     "power": 9,
+     "guile": 4,
+     "armour": 5
+    },
+    {
+     "power": 3,
+     "guile": 7,
+     "armour": 2
+    }
+   ]
+  },
+  {
+   "name": "round-08",
+   "mine": [
+    {
+     "power": 7,
+     "guile": 5,
+     "armour": 3
+    },
+    {
+     "power": 3,
+     "guile": 9,
+     "armour": 6
+    },
+    {
+     "power": 9,
+     "guile": 4,
+     "armour": 6
+    },
+    {
+     "power": 9,
+     "guile": 7,
+     "armour": 4
+    },
+    {
+     "power": 6,
+     "guile": 5,
+     "armour": 5
+    },
+    {
+     "power": 4,
+     "guile": 5,
+     "armour": 5
+    }
+   ],
+   "rivals": [
+    {
+     "power": 4,
+     "guile": 5,
+     "armour": 2
+    },
+    {
+     "power": 4,
+     "guile": 4,
+     "armour": 6
+    },
+    {
+     "power": 6,
+     "guile": 6,
+     "armour": 2
+    },
+    {
+     "power": 6,
+     "guile": 3,
+     "armour": 5
+    },
+    {
+     "power": 9,
+     "guile": 2,
+     "armour": 5
+    },
+    {
+     "power": 1,
+     "guile": 8,
+     "armour": 3
+    }
+   ]
+  },
+  {
+   "name": "round-09",
+   "mine": [
+    {
+     "power": 1,
+     "guile": 7,
+     "armour": 5
+    },
+    {
+     "power": 6,
+     "guile": 9,
+     "armour": 4
+    },
+    {
+     "power": 8,
+     "guile": 3,
+     "armour": 1
+    },
+    {
+     "power": 7,
+     "guile": 6,
+     "armour": 3
+    },
+    {
+     "power": 4,
+     "guile": 3,
+     "armour": 4
+    },
+    {
+     "power": 9,
+     "guile": 7,
+     "armour": 1
+    }
+   ],
+   "rivals": [
+    {
+     "power": 6,
+     "guile": 7,
+     "armour": 2
+    },
+    {
+     "power": 2,
+     "guile": 5,
+     "armour": 4
+    },
+    {
+     "power": 6,
+     "guile": 9,
+     "armour": 2
+    },
+    {
+     "power": 6,
+     "guile": 9,
+     "armour": 4
+    },
+    {
+     "power": 8,
+     "guile": 3,
+     "armour": 1
+    },
+    {
+     "power": 5,
+     "guile": 6,
+     "armour": 2
+    }
+   ]
+  },
+  {
+   "name": "round-10",
+   "mine": [
+    {
+     "power": 2,
+     "guile": 8,
+     "armour": 5
+    },
+    {
+     "power": 4,
+     "guile": 6,
+     "armour": 1
+    },
+    {
+     "power": 4,
+     "guile": 4,
+     "armour": 4
+    },
+    {
+     "power": 5,
+     "guile": 4,
+     "armour": 6
+    },
+    {
+     "power": 5,
+     "guile": 9,
+     "armour": 4
+    },
+    {
+     "power": 1,
+     "guile": 1,
+     "armour": 5
+    }
+   ],
+   "rivals": [
+    {
+     "power": 6,
+     "guile": 8,
+     "armour": 5
+    },
+    {
+     "power": 2,
+     "guile": 4,
+     "armour": 6
+    },
+    {
+     "power": 8,
+     "guile": 7,
+     "armour": 1
+    },
+    {
+     "power": 6,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 4,
+     "guile": 9,
+     "armour": 3
+    },
+    {
+     "power": 7,
+     "guile": 6,
+     "armour": 4
+    }
+   ]
+  },
+  {
+   "name": "round-11",
+   "mine": [
+    {
+     "power": 3,
+     "guile": 6,
+     "armour": 1
+    },
+    {
+     "power": 4,
+     "guile": 7,
+     "armour": 3
+    },
+    {
+     "power": 2,
+     "guile": 7,
+     "armour": 4
+    },
+    {
+     "power": 1,
+     "guile": 7,
+     "armour": 1
+    },
+    {
+     "power": 7,
+     "guile": 8,
+     "armour": 4
+    },
+    {
+     "power": 2,
+     "guile": 2,
+     "armour": 1
+    }
+   ],
+   "rivals": [
+    {
+     "power": 7,
+     "guile": 2,
+     "armour": 5
+    },
+    {
+     "power": 5,
+     "guile": 2,
+     "armour": 4
+    },
+    {
+     "power": 1,
+     "guile": 2,
+     "armour": 4
+    },
+    {
+     "power": 7,
+     "guile": 1,
+     "armour": 4
+    },
+    {
+     "power": 9,
+     "guile": 6,
+     "armour": 1
+    },
+    {
+     "power": 5,
+     "guile": 8,
+     "armour": 6
+    }
+   ]
+  },
+  {
+   "name": "round-12",
+   "mine": [
+    {
+     "power": 6,
+     "guile": 7,
+     "armour": 2
+    },
+    {
+     "power": 7,
+     "guile": 8,
+     "armour": 4
+    },
+    {
+     "power": 7,
+     "guile": 1,
+     "armour": 5
+    },
+    {
+     "power": 3,
+     "guile": 8,
+     "armour": 3
+    },
+    {
+     "power": 4,
+     "guile": 2,
+     "armour": 6
+    },
+    {
+     "power": 9,
+     "guile": 1,
+     "armour": 4
+    }
+   ],
+   "rivals": [
+    {
+     "power": 8,
+     "guile": 9,
+     "armour": 1
+    },
+    {
+     "power": 1,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 4,
+     "guile": 2,
+     "armour": 1
+    },
+    {
+     "power": 6,
+     "guile": 6,
+     "armour": 6
+    },
+    {
+     "power": 7,
+     "guile": 1,
+     "armour": 3
+    },
+    {
+     "power": 5,
+     "guile": 5,
+     "armour": 4
+    }
+   ]
+  },
+  {
+   "name": "round-13",
+   "mine": [
+    {
+     "power": 8,
+     "guile": 2,
+     "armour": 1
+    },
+    {
+     "power": 9,
+     "guile": 4,
+     "armour": 3
+    },
+    {
+     "power": 4,
+     "guile": 5,
+     "armour": 2
+    },
+    {
+     "power": 8,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 1,
+     "guile": 7,
+     "armour": 6
+    },
+    {
+     "power": 6,
+     "guile": 4,
+     "armour": 5
+    }
+   ],
+   "rivals": [
+    {
+     "power": 1,
+     "guile": 5,
+     "armour": 2
+    },
+    {
+     "power": 8,
+     "guile": 5,
+     "armour": 1
+    },
+    {
+     "power": 3,
+     "guile": 8,
+     "armour": 1
+    },
+    {
+     "power": 6,
+     "guile": 2,
+     "armour": 5
+    },
+    {
+     "power": 3,
+     "guile": 6,
+     "armour": 5
+    },
+    {
+     "power": 6,
+     "guile": 1,
+     "armour": 2
+    }
+   ]
+  },
+  {
+   "name": "round-14",
+   "mine": [
+    {
+     "power": 8,
+     "guile": 8,
+     "armour": 1
+    },
+    {
+     "power": 9,
+     "guile": 7,
+     "armour": 3
+    },
+    {
+     "power": 4,
+     "guile": 3,
+     "armour": 3
+    },
+    {
+     "power": 2,
+     "guile": 6,
+     "armour": 1
+    },
+    {
+     "power": 3,
+     "guile": 8,
+     "armour": 2
+    },
+    {
+     "power": 2,
+     "guile": 6,
+     "armour": 1
+    }
+   ],
+   "rivals": [
+    {
+     "power": 1,
+     "guile": 7,
+     "armour": 5
+    },
+    {
+     "power": 5,
+     "guile": 9,
+     "armour": 6
+    },
+    {
+     "power": 9,
+     "guile": 9,
+     "armour": 2
+    },
+    {
+     "power": 4,
+     "guile": 3,
+     "armour": 5
+    },
+    {
+     "power": 3,
+     "guile": 5,
+     "armour": 5
+    },
+    {
+     "power": 4,
+     "guile": 2,
+     "armour": 6
+    }
+   ]
+  },
+  {
+   "name": "round-15",
+   "mine": [
+    {
+     "power": 6,
+     "guile": 5,
+     "armour": 6
+    },
+    {
+     "power": 5,
+     "guile": 5,
+     "armour": 2
+    },
+    {
+     "power": 5,
+     "guile": 3,
+     "armour": 5
+    },
+    {
+     "power": 2,
+     "guile": 9,
+     "armour": 2
+    },
+    {
+     "power": 7,
+     "guile": 7,
+     "armour": 6
+    },
+    {
+     "power": 1,
+     "guile": 6,
+     "armour": 3
+    }
+   ],
+   "rivals": [
+    {
+     "power": 8,
+     "guile": 2,
+     "armour": 4
+    },
+    {
+     "power": 7,
+     "guile": 7,
+     "armour": 4
+    },
+    {
+     "power": 2,
+     "guile": 4,
+     "armour": 6
+    },
+    {
+     "power": 4,
+     "guile": 7,
+     "armour": 4
+    },
+    {
+     "power": 5,
+     "guile": 4,
+     "armour": 2
+    },
+    {
+     "power": 8,
+     "guile": 7,
+     "armour": 6
+    }
+   ]
+  },
+  {
+   "name": "round-16",
+   "mine": [
+    {
+     "power": 4,
+     "guile": 4,
+     "armour": 6
+    },
+    {
+     "power": 3,
+     "guile": 7,
+     "armour": 3
+    },
+    {
+     "power": 2,
+     "guile": 2,
+     "armour": 3
+    },
+    {
+     "power": 6,
+     "guile": 3,
+     "armour": 4
+    },
+    {
+     "power": 7,
+     "guile": 3,
+     "armour": 5
+    },
+    {
+     "power": 6,
+     "guile": 8,
+     "armour": 2
+    }
+   ],
+   "rivals": [
+    {
+     "power": 3,
+     "guile": 2,
+     "armour": 1
+    },
+    {
+     "power": 7,
+     "guile": 5,
+     "armour": 3
+    },
+    {
+     "power": 6,
+     "guile": 5,
+     "armour": 4
+    },
+    {
+     "power": 7,
+     "guile": 3,
+     "armour": 6
+    },
+    {
+     "power": 8,
+     "guile": 5,
+     "armour": 5
+    },
+    {
+     "power": 9,
+     "guile": 9,
+     "armour": 4
+    }
+   ]
+  },
+  {
+   "name": "round-17",
+   "mine": [
+    {
+     "power": 5,
+     "guile": 4,
+     "armour": 4
+    },
+    {
+     "power": 8,
+     "guile": 3,
+     "armour": 6
+    },
+    {
+     "power": 6,
+     "guile": 7,
+     "armour": 4
+    },
+    {
+     "power": 9,
+     "guile": 7,
+     "armour": 3
+    },
+    {
+     "power": 4,
+     "guile": 7,
+     "armour": 2
+    },
+    {
+     "power": 5,
+     "guile": 7,
+     "armour": 2
+    }
+   ],
+   "rivals": [
+    {
+     "power": 2,
+     "guile": 2,
+     "armour": 5
+    },
+    {
+     "power": 6,
+     "guile": 2,
+     "armour": 6
+    },
+    {
+     "power": 3,
+     "guile": 9,
+     "armour": 2
+    },
+    {
+     "power": 4,
+     "guile": 4,
+     "armour": 3
+    },
+    {
+     "power": 5,
+     "guile": 4,
+     "armour": 1
+    },
+    {
+     "power": 6,
+     "guile": 4,
+     "armour": 1
+    }
+   ]
+  },
+  {
+   "name": "round-18",
+   "mine": [
+    {
+     "power": 5,
+     "guile": 8,
+     "armour": 5
+    },
+    {
+     "power": 6,
+     "guile": 2,
+     "armour": 6
+    },
+    {
+     "power": 5,
+     "guile": 1,
+     "armour": 4
+    },
+    {
+     "power": 2,
+     "guile": 7,
+     "armour": 6
+    },
+    {
+     "power": 7,
+     "guile": 2,
+     "armour": 5
+    },
+    {
+     "power": 6,
+     "guile": 6,
+     "armour": 2
+    }
+   ],
+   "rivals": [
+    {
+     "power": 8,
+     "guile": 1,
+     "armour": 5
+    },
+    {
+     "power": 8,
+     "guile": 5,
+     "armour": 3
+    },
+    {
+     "power": 1,
+     "guile": 1,
+     "armour": 2
+    },
+    {
+     "power": 6,
+     "guile": 2,
+     "armour": 1
+    },
+    {
+     "power": 8,
+     "guile": 5,
+     "armour": 2
+    },
+    {
+     "power": 8,
+     "guile": 1,
+     "armour": 2
+    }
+   ]
+  },
+  {
+   "name": "round-19",
+   "mine": [
+    {
+     "power": 3,
+     "guile": 2,
+     "armour": 2
+    },
+    {
+     "power": 6,
+     "guile": 1,
+     "armour": 3
+    },
+    {
+     "power": 7,
+     "guile": 4,
+     "armour": 2
+    },
+    {
+     "power": 7,
+     "guile": 1,
+     "armour": 3
+    },
+    {
+     "power": 2,
+     "guile": 3,
+     "armour": 6
+    },
+    {
+     "power": 6,
+     "guile": 8,
+     "armour": 2
+    }
+   ],
+   "rivals": [
+    {
+     "power": 9,
+     "guile": 9,
+     "armour": 6
+    },
+    {
+     "power": 6,
+     "guile": 4,
+     "armour": 5
+    },
+    {
+     "power": 8,
+     "guile": 3,
+     "armour": 6
+    },
+    {
+     "power": 7,
+     "guile": 8,
+     "armour": 6
+    },
+    {
+     "power": 6,
+     "guile": 6,
+     "armour": 2
+    },
+    {
+     "power": 5,
+     "guile": 2,
+     "armour": 2
+    }
+   ]
+  },
+  {
+   "name": "round-20",
+   "mine": [
+    {
+     "power": 7,
+     "guile": 5,
+     "armour": 2
+    },
+    {
+     "power": 8,
+     "guile": 7,
+     "armour": 4
+    },
+    {
+     "power": 9,
+     "guile": 4,
+     "armour": 5
+    },
+    {
+     "power": 9,
+     "guile": 8,
+     "armour": 2
+    },
+    {
+     "power": 9,
+     "guile": 8,
+     "armour": 3
+    },
+    {
+     "power": 9,
+     "guile": 6,
+     "armour": 5
+    }
+   ],
+   "rivals": [
+    {
+     "power": 5,
+     "guile": 6,
+     "armour": 5
+    },
+    {
+     "power": 7,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 4,
+     "guile": 6,
+     "armour": 4
+    },
+    {
+     "power": 3,
+     "guile": 5,
+     "armour": 3
+    },
+    {
+     "power": 3,
+     "guile": 6,
+     "armour": 4
+    },
+    {
+     "power": 3,
+     "guile": 2,
+     "armour": 5
+    }
+   ]
+  },
+  {
+   "name": "round-21",
+   "mine": [
+    {
+     "power": 3,
+     "guile": 2,
+     "armour": 3
+    },
+    {
+     "power": 4,
+     "guile": 1,
+     "armour": 5
+    },
+    {
+     "power": 3,
+     "guile": 3,
+     "armour": 2
+    },
+    {
+     "power": 1,
+     "guile": 2,
+     "armour": 2
+    },
+    {
+     "power": 7,
+     "guile": 1,
+     "armour": 4
+    },
+    {
+     "power": 7,
+     "guile": 6,
+     "armour": 5
+    }
+   ],
+   "rivals": [
+    {
+     "power": 2,
+     "guile": 8,
+     "armour": 5
+    },
+    {
+     "power": 3,
+     "guile": 1,
+     "armour": 3
+    },
+    {
+     "power": 2,
+     "guile": 4,
+     "armour": 4
+    },
+    {
+     "power": 6,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 3,
+     "guile": 8,
+     "armour": 4
+    },
+    {
+     "power": 3,
+     "guile": 9,
+     "armour": 1
+    }
+   ]
+  },
+  {
+   "name": "round-22",
+   "mine": [
+    {
+     "power": 5,
+     "guile": 3,
+     "armour": 1
+    },
+    {
+     "power": 8,
+     "guile": 9,
+     "armour": 3
+    },
+    {
+     "power": 9,
+     "guile": 1,
+     "armour": 2
+    },
+    {
+     "power": 9,
+     "guile": 9,
+     "armour": 4
+    },
+    {
+     "power": 8,
+     "guile": 7,
+     "armour": 6
+    },
+    {
+     "power": 8,
+     "guile": 6,
+     "armour": 3
+    }
+   ],
+   "rivals": [
+    {
+     "power": 4,
+     "guile": 7,
+     "armour": 4
+    },
+    {
+     "power": 1,
+     "guile": 8,
+     "armour": 6
+    },
+    {
+     "power": 1,
+     "guile": 8,
+     "armour": 6
+    },
+    {
+     "power": 4,
+     "guile": 6,
+     "armour": 4
+    },
+    {
+     "power": 7,
+     "guile": 1,
+     "armour": 5
+    },
+    {
+     "power": 1,
+     "guile": 2,
+     "armour": 5
+    }
+   ]
+  },
+  {
+   "name": "round-23",
+   "mine": [
+    {
+     "power": 8,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 6,
+     "guile": 2,
+     "armour": 1
+    },
+    {
+     "power": 5,
+     "guile": 3,
+     "armour": 6
+    },
+    {
+     "power": 4,
+     "guile": 8,
+     "armour": 3
+    },
+    {
+     "power": 2,
+     "guile": 2,
+     "armour": 2
+    },
+    {
+     "power": 2,
+     "guile": 3,
+     "armour": 4
+    }
+   ],
+   "rivals": [
+    {
+     "power": 9,
+     "guile": 5,
+     "armour": 3
+    },
+    {
+     "power": 7,
+     "guile": 8,
+     "armour": 3
+    },
+    {
+     "power": 8,
+     "guile": 2,
+     "armour": 2
+    },
+    {
+     "power": 8,
+     "guile": 3,
+     "armour": 1
+    },
+    {
+     "power": 6,
+     "guile": 6,
+     "armour": 4
+    },
+    {
+     "power": 1,
+     "guile": 2,
+     "armour": 6
+    }
+   ]
+  },
+  {
+   "name": "round-24",
+   "mine": [
+    {
+     "power": 7,
+     "guile": 2,
+     "armour": 3
+    },
+    {
+     "power": 8,
+     "guile": 2,
+     "armour": 1
+    },
+    {
+     "power": 8,
+     "guile": 9,
+     "armour": 2
+    },
+    {
+     "power": 6,
+     "guile": 4,
+     "armour": 4
+    },
+    {
+     "power": 3,
+     "guile": 3,
+     "armour": 4
+    },
+    {
+     "power": 8,
+     "guile": 5,
+     "armour": 1
+    }
+   ],
+   "rivals": [
+    {
+     "power": 9,
+     "guile": 9,
+     "armour": 2
+    },
+    {
+     "power": 6,
+     "guile": 7,
+     "armour": 2
+    },
+    {
+     "power": 1,
+     "guile": 7,
+     "armour": 2
+    },
+    {
+     "power": 3,
+     "guile": 4,
+     "armour": 2
+    },
+    {
+     "power": 9,
+     "guile": 1,
+     "armour": 5
+    },
+    {
+     "power": 2,
+     "guile": 8,
+     "armour": 6
+    }
+   ]
+  },
+  {
+   "name": "round-25",
+   "mine": [
+    {
+     "power": 2,
+     "guile": 3,
+     "armour": 2
+    },
+    {
+     "power": 9,
+     "guile": 3,
+     "armour": 6
+    },
+    {
+     "power": 4,
+     "guile": 5,
+     "armour": 1
+    },
+    {
+     "power": 7,
+     "guile": 6,
+     "armour": 1
+    },
+    {
+     "power": 7,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 2,
+     "guile": 1,
+     "armour": 1
+    }
+   ],
+   "rivals": [
+    {
+     "power": 4,
+     "guile": 1,
+     "armour": 5
+    },
+    {
+     "power": 6,
+     "guile": 6,
+     "armour": 2
+    },
+    {
+     "power": 8,
+     "guile": 7,
+     "armour": 6
+    },
+    {
+     "power": 8,
+     "guile": 5,
+     "armour": 6
+    },
+    {
+     "power": 1,
+     "guile": 8,
+     "armour": 6
+    },
+    {
+     "power": 8,
+     "guile": 5,
+     "armour": 6
+    }
+   ]
+  },
+  {
+   "name": "round-26",
+   "mine": [
+    {
+     "power": 7,
+     "guile": 9,
+     "armour": 1
+    },
+    {
+     "power": 2,
+     "guile": 1,
+     "armour": 1
+    },
+    {
+     "power": 8,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 3,
+     "guile": 1,
+     "armour": 3
+    },
+    {
+     "power": 2,
+     "guile": 4,
+     "armour": 4
+    },
+    {
+     "power": 8,
+     "guile": 8,
+     "armour": 6
+    }
+   ],
+   "rivals": [
+    {
+     "power": 9,
+     "guile": 7,
+     "armour": 1
+    },
+    {
+     "power": 2,
+     "guile": 8,
+     "armour": 1
+    },
+    {
+     "power": 7,
+     "guile": 6,
+     "armour": 6
+    },
+    {
+     "power": 9,
+     "guile": 6,
+     "armour": 2
+    },
+    {
+     "power": 5,
+     "guile": 4,
+     "armour": 4
+    },
+    {
+     "power": 1,
+     "guile": 8,
+     "armour": 3
+    }
+   ]
+  },
+  {
+   "name": "round-27",
+   "mine": [
+    {
+     "power": 4,
+     "guile": 1,
+     "armour": 1
+    },
+    {
+     "power": 7,
+     "guile": 3,
+     "armour": 2
+    },
+    {
+     "power": 1,
+     "guile": 4,
+     "armour": 4
+    },
+    {
+     "power": 8,
+     "guile": 4,
+     "armour": 6
+    },
+    {
+     "power": 9,
+     "guile": 1,
+     "armour": 4
+    },
+    {
+     "power": 2,
+     "guile": 7,
+     "armour": 2
+    }
+   ],
+   "rivals": [
+    {
+     "power": 5,
+     "guile": 9,
+     "armour": 6
+    },
+    {
+     "power": 3,
+     "guile": 5,
+     "armour": 1
+    },
+    {
+     "power": 1,
+     "guile": 6,
+     "armour": 5
+    },
+    {
+     "power": 7,
+     "guile": 5,
+     "armour": 3
+    },
+    {
+     "power": 8,
+     "guile": 1,
+     "armour": 5
+    },
+    {
+     "power": 6,
+     "guile": 9,
+     "armour": 1
+    }
+   ]
+  },
+  {
+   "name": "round-28",
+   "mine": [
+    {
+     "power": 5,
+     "guile": 8,
+     "armour": 2
+    },
+    {
+     "power": 3,
+     "guile": 3,
+     "armour": 5
+    },
+    {
+     "power": 1,
+     "guile": 5,
+     "armour": 3
+    },
+    {
+     "power": 9,
+     "guile": 6,
+     "armour": 2
+    },
+    {
+     "power": 3,
+     "guile": 3,
+     "armour": 1
+    },
+    {
+     "power": 4,
+     "guile": 8,
+     "armour": 3
+    }
+   ],
+   "rivals": [
+    {
+     "power": 1,
+     "guile": 8,
+     "armour": 4
+    },
+    {
+     "power": 1,
+     "guile": 5,
+     "armour": 1
+    },
+    {
+     "power": 7,
+     "guile": 5,
+     "armour": 5
+    },
+    {
+     "power": 7,
+     "guile": 5,
+     "armour": 4
+    },
+    {
+     "power": 8,
+     "guile": 4,
+     "armour": 6
+    },
+    {
+     "power": 8,
+     "guile": 8,
+     "armour": 1
+    }
+   ]
+  },
+  {
+   "name": "round-29",
+   "mine": [
+    {
+     "power": 4,
+     "guile": 1,
+     "armour": 3
+    },
+    {
+     "power": 1,
+     "guile": 6,
+     "armour": 6
+    },
+    {
+     "power": 5,
+     "guile": 9,
+     "armour": 3
+    },
+    {
+     "power": 1,
+     "guile": 5,
+     "armour": 1
+    },
+    {
+     "power": 6,
+     "guile": 4,
+     "armour": 2
+    },
+    {
+     "power": 8,
+     "guile": 7,
+     "armour": 6
+    }
+   ],
+   "rivals": [
+    {
+     "power": 4,
+     "guile": 9,
+     "armour": 5
+    },
+    {
+     "power": 3,
+     "guile": 6,
+     "armour": 6
+    },
+    {
+     "power": 8,
+     "guile": 1,
+     "armour": 6
+    },
+    {
+     "power": 1,
+     "guile": 6,
+     "armour": 4
+    },
+    {
+     "power": 1,
+     "guile": 4,
+     "armour": 6
+    },
+    {
+     "power": 4,
+     "guile": 3,
+     "armour": 2
+    }
+   ]
+  },
+  {
+   "name": "round-30",
+   "mine": [
+    {
+     "power": 6,
+     "guile": 3,
+     "armour": 4
+    },
+    {
+     "power": 7,
+     "guile": 6,
+     "armour": 2
+    },
+    {
+     "power": 1,
+     "guile": 5,
+     "armour": 6
+    },
+    {
+     "power": 9,
+     "guile": 2,
+     "armour": 2
+    },
+    {
+     "power": 5,
+     "guile": 4,
+     "armour": 1
+    },
+    {
+     "power": 1,
+     "guile": 6,
+     "armour": 4
+    }
+   ],
+   "rivals": [
+    {
+     "power": 5,
+     "guile": 2,
+     "armour": 1
+    },
+    {
+     "power": 1,
+     "guile": 5,
+     "armour": 6
+    },
+    {
+     "power": 1,
+     "guile": 3,
+     "armour": 5
+    },
+    {
+     "power": 1,
+     "guile": 3,
+     "armour": 3
+    },
+    {
+     "power": 5,
+     "guile": 6,
+     "armour": 4
+    },
+    {
+     "power": 3,
+     "guile": 2,
+     "armour": 3
+    }
+   ]
+  }
+ ]
+}

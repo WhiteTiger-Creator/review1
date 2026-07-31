@@ -1,32 +1,26 @@
 FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm@sha256:01f42367a0a94ad4bc17111776fd66e3500c1d87c15bbd6055b7371d39c124fb
 
+# Base image justification (non-canonical for the task language by design):
+# The verifier harness is pytest (tests/test.sh -> python -m pytest), so Python must be
+# the image's primary runtime that orchestrates grading. The agent deliverable is a small
+# pure-JavaScript file run through a thin Node CLI, so Node.js is added on top via apt.
+# Starting from a Node base would still require installing Python + pytest, producing a
+# larger image for the same result; the canonical, digest-pinned Python base plus apt
+# Node.js is the minimal single-container image covering both runtimes. allow_internet =
+# false at run time, so every verifier dependency is installed here with pinned versions.
+# Node.js is the Debian bookworm package; the build is reproducible from the pinned base.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      g++=4:12.2.0-3 \
-      curl=7.88.1-10+deb12u15 \
-      ca-certificates=20230311+deb12u1 \
-      procps=2:4.0.2-3 \
-      tmux=3.3a-3 \
-      asciinema=2.2.0-1 \
- && rm -rf /var/lib/apt/lists/*
-# Single stage on purpose. g++ has to stay in the runtime image because the
-# agent compiles the tool inside the container and the verifier re-runs that
-# same binary against journals it generates at verify time, so there is no
-# build artefact a builder stage could hand over.
+    && apt-get install -y --no-install-recommends \
+        asciinema \
+        tmux \
+        nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf "$(command -v nodejs)" /usr/local/bin/node
 
-# Generic verifier tooling only, pytest plus a CTRF reporter. It reveals nothing
-# about grading: the test logic lives under /tests and is mounted at verify time.
-COPY requirements.lock /tmp/requirements.lock
-RUN python -m venv /opt/verifier-venv \
- && /opt/verifier-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock \
- && rm -f /tmp/requirements.lock
+RUN python -m pip install --no-cache-dir \
+    pytest==8.4.1 \
+    pytest-json-ctrf==0.3.5
 
 WORKDIR /app
 
-COPY hypersomnia /app/hypersomnia
-COPY docs /app/docs
-COPY journal /app/journal
-COPY banlist /app/banlist
-COPY msconfig.json /app/msconfig.json
-
-CMD ["/bin/bash"]
+COPY app/ /app/
