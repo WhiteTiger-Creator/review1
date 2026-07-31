@@ -2,34 +2,26 @@ version = "2.0"
 
 [metadata]
 author_name = "anonymous"
-author_email = "anonymous"
-category = "scientific-computing"
+author_email = "anonymous@example.com"
+difficulty = "hard"
+category = "machine-learning"
 subcategories = []
-difficulty = "medium"
 codebase_size = "minimal"
 number_of_milestones = 0
-languages = ["cypher"]
-tags = [
-    "abstract-argumentation",
-    "dung-frameworks",
-    "recursive-attack",
-    "extension-semantics",
-    "defeasible-reasoning",
-    "subset-maximality",
-]
-expert_time_estimate_min = 70
-junior_time_estimate_min = 220
+languages = ["cpp"]
+tags = ["supervised-learning", "regression", "robust-loss", "cpp"]
+expert_time_estimate_min = 45.0
+junior_time_estimate_min = 150.0
 
 [verifier]
-timeout_sec = 1800.0
+timeout_sec = 900.0
 
 [agent]
 timeout_sec = 1800.0
 
 [environment]
-build_timeout_sec = 900.0
-cpus = 2
-memory_mb = 4096
-storage_mb = 8192
 allow_internet = false
-workdir = "/app"
+build_timeout_sec = 600.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 10240
