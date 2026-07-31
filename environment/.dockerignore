@@ -1,4 +1,6 @@
-.git
+tests/
+solution/
+.git/
 .gitignore
 **/__pycache__/
 **/*.pyc
@@ -6,11 +8,5 @@
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-**/dist/
-**/build/
-**/.venv/
-**/venv/
-.env
-*.log
-solution/
-tests/
+bin/
+output/

@@ -1,27 +1,31 @@
+name = "systemd-maintenance-window-planner"
 version = "2.0"
+allow_internet = false
 
 [metadata]
 author_name = "Anonymous"
 author_email = "anonymous@example.com"
+category = "system-administration"
+subcategories = ["tool_specific"]
 difficulty = "hard"
-category = "games"
-subcategories = []
+codebase_size = "minimal"
 number_of_milestones = 0
-codebase_size = "small"
-languages = ["javascript"]
-tags = ["moonrail", "solo-board-game", "match-referee", "scoring-rules", "route-cards"]
-expert_time_estimate_min = 90
-junior_time_estimate_min = 180
+languages = ["go"]
+tags = ["system-administration", "systemd", "maintenance-window", "service-orchestration", "unit-overrides"]
+expert_time_estimate_min = 420
+junior_time_estimate_min = 1800
 
 [verifier]
-timeout_sec = 450.0
+timeout_sec = 900
 
 [agent]
-timeout_sec = 900.0
+timeout_sec = 1500
 
 [environment]
-build_timeout_sec = 600.0
+dockerfile = "environment/Dockerfile"
+build_timeout_sec = 600
 cpus = 2
 memory_mb = 4096
 storage_mb = 10240
+gpus = 0
 allow_internet = false

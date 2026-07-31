@@ -9,7 +9,7 @@ if [ "$PWD" = "/" ]; then
     exit 0
 fi
 
-/opt/verifier-venv/bin/python -m pytest -p no:cacheprovider --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+/opt/verifier-venv/bin/python -m pytest --ctrf /logs/verifier/ctrf.json -o cache_dir=/tmp/pytest-cache /tests/test_outputs.py -rA
 rc=$?
 
 if [ "$rc" -eq 0 ]; then
