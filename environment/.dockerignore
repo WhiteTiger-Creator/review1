@@ -1,13 +1,11 @@
 .git
 .gitignore
-.env
-**/.env
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
 **/node_modules/
-**/.DS_Store
-solution/
-tests/
+**/*.md:Zone.Identifier
+**/*:Zone.Identifier
+jobs

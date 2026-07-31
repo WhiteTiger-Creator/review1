@@ -1,183 +1,307 @@
-"""Checks the sedgemere level book.
+"""Verifier for edgekiln-tcpfeat-anvil — run agent binary, compare goldens/invariants.
 
-There is no answer key to copy here. The book is handed readings drawn fresh
-from the same process the training set came from, on seeds taken from
-os.urandom, and is scored on how close its levels come. Nothing memorised from
-the shipped files helps, because the readings graded on do not exist until
-this file runs.
+Probe lattice tokens retained here only: ingest, export.
 """
-import math
+
+from __future__ import annotations
+
+import json
 import os
-import random
+import shutil
 import subprocess
-import time
+import tempfile
 from pathlib import Path
 
-import pytest
+import cdnqual_refs
 
-BOOK = os.environ.get("SEDGEMERE_BOOK", "/app/build/sedgemere")
-SOURCES = Path(os.environ.get("SEDGEMERE_SOURCES", "/app/src"))
-DATA = Path(os.environ.get("SEDGEMERE_DATA", "/app/data"))
-TRAIN = DATA / "train.csv"
-
-BAR = 1.35
-DRAWS = 3
-ROWS_PER_DRAW = 40000
-PATIENCE = 300.0
-COLUMNS = ["reed", "silt", "brack", "fen", "moss", "gale", "sluice", "weir"]
+OUT = Path("/app/qualitycast")
+WIRE = Path("/app/polbay/run_manifest.json")
+POLICY = Path("/app/polbay/cdn_policy.json")
+VF_CANDIDATES = (
+    Path("/opt/verifier-fixtures"),
+    Path(__file__).resolve().parent / "verifier-fixtures",
+)
 
 
-def _one(rng):
-    """One survey of the beck and the level it turned out to hold."""
-    reed, silt, brack, fen = (rng.gauss(0, 1) for _ in range(4))
-    moss, gale = rng.gauss(0, 1), rng.gauss(0, 1)
-    sluice = rng.randint(0, 1)
-    weir = rng.randint(0, 1)
-    pair = brack * moss if weir else reed * silt
-    core = (1.30 * reed - 0.90 * silt + 0.60 * brack
-            + 1.40 * pair
-            + 2.20 * math.tanh(1.5 * (fen - 0.3))
-            + 0.80 * (1 if sluice else -1) * moss)
-    spike = rng.random() < 0.17
-    slip = math.exp(rng.gauss(1.4, 0.8)) if spike else rng.gauss(0, 0.45)
-    return ([reed, silt, brack, fen, moss, gale, sluice, weir], core + slip)
+def locate_vf(name: str) -> Path:
+    for root in VF_CANDIDATES:
+        p = root / name
+        if p.is_file() or p.is_dir():
+            return p
+    raise FileNotFoundError(name)
 
 
-def _draw(n, seed):
-    rng = random.Random(seed)
-    return [_one(rng) for _ in range(n)]
+def run_forge(*, env: dict[str, str] | None = None, wire: Path = WIRE) -> None:
+    if OUT.exists():
+        shutil.rmtree(OUT)
+    OUT.mkdir(parents=True, exist_ok=True)
+    cmd = ["/app/bin/cdnqual", "run-forge", "--wire", str(wire)]
+    merged = os.environ.copy()
+    if env:
+        merged.update(env)
+    proc = subprocess.run(cmd, check=False, capture_output=True, text=True, env=merged)
+    assert proc.returncode == 0, f"run-forge failed: {proc.stderr}\n{proc.stdout}"
 
 
-def _write_readings(path, rows):
-    with Path(path).open("w", encoding="ascii") as handle:
-        handle.write(",".join(COLUMNS) + "\n")
-        handle.writelines(
-            ",".join(f"{v:.6f}" if isinstance(v, float) else str(v)
-                     for v in xs) + "\n"
-            for xs, _level in rows)
+def read_json(path: Path) -> object:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _run_book(rows, tag):
-    """Hand the book a fresh draw and read back the levels it gives."""
-    work = Path(os.environ.get("SEDGEMERE_WORK", "/tmp")) / f"sedgemere_{tag}"
-    work.mkdir(parents=True, exist_ok=True)
-    readings = work / "readings.csv"
-    levels = work / "levels.txt"
-    _write_readings(readings, rows)
-    if levels.exists():
-        levels.unlink()
-    began = time.time()
-    trouble = None
-    try:
-        done = subprocess.run([BOOK, str(readings), str(levels)], check=False,
-                              capture_output=True, text=True,
-                              timeout=PATIENCE + 60)
-        if done.returncode != 0:
-            trouble = f"the book exited {done.returncode}: {done.stderr[-800:]}"
-    except subprocess.TimeoutExpired:
-        trouble = "the book did not finish"
-    elapsed = time.time() - began
-    said = []
-    if levels.exists():
-        for raw in levels.read_text().splitlines():
-            line = raw.strip()
-            if line:
-                try:
-                    said.append(float(line))
-                except ValueError:
-                    said.append(None)
-    return said, elapsed, trouble
+def test_netyard_bout_tensors_match_sealed_jsonl() -> None:
+    """Public yard bout tensors must match the sealed session_features.jsonl golden."""
+    run_forge()
+    got = (OUT / "session_features.jsonl").read_bytes()
+    exp = locate_vf("public_session_features.jsonl").read_bytes()
+    assert got == exp
 
 
-def _miss(said, rows):
-    """The average distance between a level given and the level held."""
-    return sum(abs(s - level) for s, (_xs, level) in zip(said, rows)) \
-        / len(rows)
+def test_milliwight_vector_matches_sealed_bank() -> None:
+    """Intercept-aware L2 milliwights on the public yard must match the weights golden."""
+    run_forge()
+    got = (OUT / "ridge_weights.json").read_bytes()
+    exp = locate_vf("public_ridge_weights.json").read_bytes()
+    assert got == exp
 
 
-# Every draw is made here, once, on seeds that did not exist before now.
-_SEEDS = [int.from_bytes(os.urandom(4), "big") for _ in range(DRAWS)]
-_DRAWN = [_draw(ROWS_PER_DRAW, seed) for seed in _SEEDS]
-_RESULTS = [_run_book(rows, f"draw{i}") for i, rows in enumerate(_DRAWN)]
+def test_quality_ledger_and_tensor_digest_seal() -> None:
+    """Quality ledger and tensor digest for the public yard must be byte-stable goldens."""
+    run_forge()
+    ledger = read_json(OUT / "eval_ledger.json")
+    digest = read_json(OUT / "feature_digest.json")
+    exp_ledger = read_json(locate_vf("public_eval_ledger.json"))
+    exp_digest = read_json(locate_vf("public_feature_digest.json"))
+    assert ledger == exp_ledger
+    assert digest == exp_digest
+    assert digest["features_sha256"] == cdnqual_refs.reference_public_features_sha256()
+    assert digest["weights_sha256"] == cdnqual_refs.reference_public_weights_sha256()
+    assert digest["ledger_sha256"] == cdnqual_refs.reference_public_ledger_sha256()
 
 
-def test_the_book_was_written_and_built():
-    """The sources have to be there, and to have been built."""
-    assert SOURCES.is_dir(), f"no sources at {SOURCES}"
-    assert list(SOURCES.glob("*.cpp")), "no sources to build"
-    assert Path(BOOK).is_file(), "nothing was built"
+def test_qualitycast_rerun_stable_bytes() -> None:
+    """Identical absolute --wire invocations must reprint matching qualitycast bytes."""
+    run_forge()
+    snap = {p.name: p.read_bytes() for p in OUT.iterdir() if p.is_file()}
+    run_forge()
+    for name, data in snap.items():
+        assert (OUT / name).read_bytes() == data
 
 
-def test_the_book_is_present_and_was_replaced():
-    """The book that ships gives every reading the same level. Leaving it as
-    it stands is not a solution."""
-    text = " ".join(p.read_text() for p in SOURCES.glob("*.cpp"))
-    assert "Nothing here learns anything yet" not in text
+def test_duplex_stitch_counters_on_netyard() -> None:
+    """Duplex-stitch contract: rexmit/OOO/overlap counters and gap trim must hold."""
+    run_forge()
+    rows = [
+        json.loads(line)
+        for line in (OUT / "session_features.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    by = {r["bout_id"]: r["x"] for r in rows}
+    assert by["bout_rexmit"][2] >= 1
+    assert by["bout_ooo"][3] >= 1
+    assert by["bout_overlap"][4] >= 1
+    assert by["bout_gap"][0] == 4
+    assert by["bout_clean"][8] == 1
 
 
-def test_the_training_data_was_left_alone():
-    """The training set is read, never rewritten."""
-    rows = [ln for ln in TRAIN.read_text().splitlines() if ln.strip()]
-    assert len(rows) == 4001, f"train.csv holds {len(rows) - 1} surveys"
+def test_ridge_lambda_seven_flips_w_milli() -> None:
+    """Changing ridge_lambda in cdn_policy must change weights_sha256 (perturbation)."""
+    run_forge()
+    base = (OUT / "ridge_weights.json").read_bytes()
+    refs = read_json(locate_vf("perturbation_refs.json"))
+    assert base == locate_vf("public_ridge_weights.json").read_bytes()
+
+    pol = json.loads(POLICY.read_text())
+    pol["ridge_lambda"] = 7
+    with tempfile.TemporaryDirectory() as td:
+        tmp_root = Path(td)
+        tmp_pol = tmp_root / "cdn_policy.json"
+        tmp_wire = tmp_root / "run_manifest.json"
+        tmp_out = tmp_root / "qualitycast"
+        tmp_pol.write_text(json.dumps(pol))
+        wire = json.loads(WIRE.read_text())
+        wire["policy"] = str(tmp_pol)
+        wire["out_dir"] = str(tmp_out)
+        tmp_wire.write_text(json.dumps(wire))
+        tmp_out.mkdir(parents=True)
+        proc = subprocess.run(
+            ["/app/bin/cdnqual", "run-forge", "--wire", str(tmp_wire)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        new_bytes = (tmp_out / "ridge_weights.json").read_bytes()
+        assert new_bytes != base
+        assert cdnqual_refs.reference_lambda7_weights_sha256() == refs["lambda7_weights_sha256"]
+        assert new_bytes != locate_vf("public_ridge_weights.json").read_bytes()
 
 
-@pytest.mark.parametrize("draw", range(DRAWS))
-def test_the_book_answers_in_the_right_shape(draw):
-    """One level a line, in the order the readings came, all of them numbers."""
-    said, _elapsed, trouble = _RESULTS[draw]
-    assert trouble is None, trouble
-    assert len(said) == ROWS_PER_DRAW, (
-        f"got {len(said)} levels for {ROWS_PER_DRAW} readings")
-    assert all(s is not None for s in said), "some levels were not numbers"
+def test_hz_bank_matches_sealed_goldens() -> None:
+    """Sealed holdout yard via CDNQUAL_CAPTURE_ROOT must match hidden goldens and floors."""
+    hidden_root = locate_vf("hidden")
+    labels = locate_vf("hidden_labels.jsonl")
+    # Explicit verifier-fixtures path for trap coverage.
+    assert "verifier-fixtures" in str(hidden_root) or hidden_root.is_dir()
+    run_forge(
+        env={
+            "CDNQUAL_CAPTURE_ROOT": str(hidden_root),
+            "CDNQUAL_LABELS": str(labels),
+        }
+    )
+    floors = read_json(locate_vf("holdout_floors.json"))
+    got_feat = (OUT / "session_features.jsonl").read_bytes()
+    exp_feat = locate_vf("hidden_session_features.jsonl").read_bytes()
+    assert got_feat == exp_feat
+    got_w = (OUT / "ridge_weights.json").read_bytes()
+    exp_w = locate_vf("hidden_ridge_weights.json").read_bytes()
+    assert got_w == exp_w
+    ledger = read_json(OUT / "eval_ledger.json")
+    exp_ledger = read_json(locate_vf("hidden_eval_ledger.json"))
+    assert ledger == exp_ledger
+    assert ledger["bout_count"] >= floors["min_bout_count"]
+    assert ledger["accuracy_milli"] >= floors["min_accuracy_milli"]
+    assert [p["bout_id"] for p in ledger["predictions"]] == floors["expected_bout_ids"]
+    digest = read_json(OUT / "feature_digest.json")
+    assert digest == read_json(locate_vf("hidden_feature_digest.json"))
 
 
-@pytest.mark.parametrize("draw", range(DRAWS))
-def test_the_book_finishes_inside_the_time_it_is_given(draw):
-    _said, elapsed, _trouble = _RESULTS[draw]
-    assert elapsed < PATIENCE, (
-        f"took {elapsed:.0f}s of the {PATIENCE:.0f}s allowed")
+def test_hz_digest_matches_cdnqual_refs() -> None:
+    """Hidden bank feature digest must match sealed reference under /opt/verifier-fixtures."""
+    hidden_root = Path("/opt/verifier-fixtures/hidden")
+    labels = Path("/opt/verifier-fixtures/hidden_labels.jsonl")
+    run_forge(
+        env={
+            "CDNQUAL_CAPTURE_ROOT": str(hidden_root),
+            "CDNQUAL_LABELS": str(labels),
+        }
+    )
+    digest = read_json(OUT / "feature_digest.json")
+    assert digest["features_sha256"] == cdnqual_refs.reference_hidden_features_sha256()
+    assert digest["bout_ids"] == cdnqual_refs.reference_hidden_bout_ids()
 
 
-@pytest.mark.parametrize("draw", range(DRAWS))
-def test_the_book_clears_the_bar_on_this_fresh_draw(draw):
-    """The whole of it: the levels have to come close on readings the book
-    has never seen."""
-    said, _elapsed, trouble = _RESULTS[draw]
-    assert trouble is None, trouble
-    got = _miss(said, _DRAWN[draw])
-    assert got <= BAR, f"average miss {got:.4f}, and {BAR} is the bar"
+def test_forge_packages_omit_specter_graph() -> None:
+    """Specter lure under /app/decoy must stay off the forge import graph."""
+    roots = [
+        Path("/app/cmd"),
+        Path("/app/framestream"),
+        Path("/app/duplexstitch"),
+        Path("/app/tensorloom"),
+        Path("/app/entropymilli"),
+        Path("/app/l2anvil"),
+        Path("/app/kilnemit"),
+        Path("/app/captureload"),
+        Path("/app/qualityemit"),
+    ]
+    for root in roots:
+        for path in root.rglob("*.go"):
+            text = path.read_text(encoding="utf-8")
+            assert "cdnqual/decoy" not in text, f"decoy import in {path}"
 
 
-def test_the_book_holds_up_across_draws():
-    """A book tuned to one particular sample will not do."""
-    misses = [_miss(said, _DRAWN[i])
-              for i, (said, _e, trouble) in enumerate(_RESULTS)
-              if trouble is None and len(said) == ROWS_PER_DRAW]
-    assert len(misses) == DRAWS, "some draws were not answered"
-    assert sum(misses) / len(misses) <= BAR, (
-        f"the average miss across draws was {sum(misses) / len(misses):.4f}")
+def test_cdn_policy_lambda_echoed_in_artifacts() -> None:
+    """Config-driven: ledger and weights lambda must mirror cdn_policy.json."""
+    pol = json.loads(POLICY.read_text())
+    run_forge()
+    ledger = read_json(OUT / "eval_ledger.json")
+    assert ledger["policy_lambda"] == pol["ridge_lambda"]
+    weights = read_json(OUT / "ridge_weights.json")
+    assert weights["lambda"] == pol["ridge_lambda"]
 
 
-def test_the_book_beats_reading_the_same_level_every_time():
-    """Giving every reading the middle of the training levels is no book at
-    all, and has to be beaten by a wide margin."""
-    levels = [float(ln.split(",")[-1])
-              for ln in TRAIN.read_text().splitlines()[1:] if ln.strip()]
-    levels.sort()
-    lazy_level = levels[len(levels) // 2]
-    said, _elapsed, trouble = _RESULTS[0]
-    assert trouble is None, trouble
-    lazy = _miss([lazy_level] * len(_DRAWN[0]), _DRAWN[0])
-    got = _miss(said, _DRAWN[0])
-    assert got <= lazy - 1.0, (
-        f"the book missed by {got:.4f} and the same level every time misses "
-        f"by {lazy:.4f}")
+def test_ledger_checkpoint_snap_mirrors_emit() -> None:
+    """Staging checkpoint snapshot must be byte-identical to the eval_ledger export."""
+    run_forge()
+    ledger = (OUT / "eval_ledger.json").read_bytes()
+    snapshot = (OUT / "checkpoint" / "eval_ledger.snap.json").read_bytes()
+    assert snapshot == ledger
 
 
-def test_the_book_actually_reads_the_readings():
-    """A book that gives the same level whatever it is handed has learned
-    nothing, however close that level happens to sit."""
-    said, _elapsed, trouble = _RESULTS[0]
-    assert trouble is None, trouble
-    assert len(set(said)) > ROWS_PER_DRAW // 100, (
-        "nearly every reading came back with the same level")
+def test_public_digest_equals_cdnqual_refs() -> None:
+    """Public digest shas must equal sealed reference_* helpers (not recomputed solvers)."""
+    run_forge()
+    digest = read_json(OUT / "feature_digest.json")
+    assert digest["features_sha256"] == cdnqual_refs.reference_public_features_sha256()
+    assert digest["weights_sha256"] == cdnqual_refs.reference_public_weights_sha256()
+    assert digest["ledger_sha256"] == cdnqual_refs.reference_public_ledger_sha256()
+
+
+def test_public_payload_hash_equals_cdnqual_refs() -> None:
+    """Public payload_hash must match the sealed reference hash."""
+    run_forge()
+    ledger = read_json(OUT / "eval_ledger.json")
+    assert ledger["payload_hash"] == cdnqual_refs.reference_public_payload_hash()
+
+
+def test_hz_payload_hash_equals_cdnqual_refs() -> None:
+    """Hidden payload_hash must match the sealed reference under verifier-fixtures."""
+    run_forge(
+        env={
+            "CDNQUAL_CAPTURE_ROOT": "/opt/verifier-fixtures/hidden",
+            "CDNQUAL_LABELS": "/opt/verifier-fixtures/hidden_labels.jsonl",
+        }
+    )
+    ledger = read_json(OUT / "eval_ledger.json")
+    assert ledger["payload_hash"] == cdnqual_refs.reference_hidden_payload_hash()
+
+
+def test_bout_tensor_width_is_twelve() -> None:
+    """Every bout tensor must be length 12 per bout-tensor contract."""
+    run_forge()
+    for line in (OUT / "session_features.jsonl").read_text().splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        assert len(row["x"]) == 12
+
+
+def test_milliwight_width_includes_intercept() -> None:
+    """Ridge weights must include intercept column (dim 13)."""
+    run_forge()
+    weights = read_json(OUT / "ridge_weights.json")
+    assert weights["dim"] == 13
+    assert len(weights["w_milli"]) == 13
+
+
+def test_bout_id_order_is_lexicographic() -> None:
+    """Feature rows and predictions must be bout_id ascending."""
+    run_forge()
+    ids = [
+        json.loads(line)["bout_id"]
+        for line in (OUT / "session_features.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert ids == sorted(ids)
+    ledger = read_json(OUT / "eval_ledger.json")
+    pred_ids = [p["bout_id"] for p in ledger["predictions"]]
+    assert pred_ids == sorted(pred_ids)
+
+
+def test_prefer_newest_overlap_byte_count() -> None:
+    """bout_overlap must show overlap_byte_count >= 1 under prefer-newest."""
+    run_forge()
+    rows = {
+        json.loads(line)["bout_id"]: json.loads(line)["x"]
+        for line in (OUT / "session_features.jsonl").read_text().splitlines()
+        if line.strip()
+    }
+    assert rows["bout_overlap"][4] >= 1
+    assert rows["bout_overlap"][0] == 6
+
+
+def test_cdnqual_schema_identifiers() -> None:
+    """Ledger and digest must carry cdnqual schema identifiers."""
+    run_forge()
+    assert read_json(OUT / "eval_ledger.json")["schema"] == "cdnqual.ledger.v1"
+    assert read_json(OUT / "feature_digest.json")["schema"] == "cdnqual.digest.v1"
+
+
+def test_rebuild_cdnqual_emits_executable() -> None:
+    """Rebuild script must leave an executable /app/bin/cdnqual."""
+    proc = subprocess.run(
+        ["bash", "/app/scripts/rebuild-cdnqual.sh"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert Path("/app/bin/cdnqual").is_file()
