@@ -1,0 +1,11 @@
+[package]
+name = "skew_core"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "skew_probe"
+path = "tools/skew_probe/main.rs"
+
+[lib]
+path = "src/lib.rs"

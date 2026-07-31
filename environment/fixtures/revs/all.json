@@ -1,0 +1,9 @@
+{
+  "revs": [
+    "rev_base",
+    "rev_rename",
+    "rev_add",
+    "rev_drop",
+    "rev_twice"
+  ]
+}

@@ -1,0 +1,27 @@
+seed = 42
+forbid_drop = ["u_c"]
+
+[[schema_revs]]
+id = "rev_base"
+gen = 0
+case = "fixtures/revs/base.json"
+
+[[schema_revs]]
+id = "rev_rename"
+gen = 1
+case = "fixtures/revs/rename.json"
+
+[[schema_revs]]
+id = "rev_add"
+gen = 2
+case = "fixtures/revs/add.json"
+
+[[schema_revs]]
+id = "rev_drop"
+gen = 3
+case = "fixtures/revs/drop.json"
+
+[[schema_revs]]
+id = "rev_twice"
+gen = 0
+case = "fixtures/revs/twice.json"

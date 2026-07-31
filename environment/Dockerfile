@@ -1,42 +1,28 @@
-# Canonical Terminal-Bench Rust runtime base (the rust:1.85-slim family).
-# The agent writes Rust in /app and the verifier rebuilds the crate from that source
-# before exercising the CLI, so the Rust toolchain deliberately stays in the runtime
-# image instead of a builder stage. The crate resolves only the standard library.
 FROM public.ecr.aws/docker/library/rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36
-
-ENV CARGO_TERM_COLOR=never \
-    CARGO_NET_OFFLINE=true \
-    PYTHONDONTWRITEBYTECODE=1 \
-    RUST_BACKTRACE=0
-
-# System packages: the agent runtime needs tmux and asciinema, the verifier drives the
-# binary from pytest under python3, and the crate is built through make.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        asciinema \
-        make \
-        python3 \
-        python3-pip \
-        tmux \
-    && rm -rf /var/lib/apt/lists/*
-
-# Verifier dependencies, hash-pinned and baked in so nothing is fetched at run time.
-COPY requirements.lock /tmp/requirements.lock
-RUN pip install --no-cache-dir --break-system-packages \
-        --require-hashes --no-deps -r /tmp/requirements.lock \
-    && rm /tmp/requirements.lock
 
 WORKDIR /app
 
-# Manifests before sources so editing a source file does not disturb earlier layers. The
-# crate has no registry dependencies, so the offline build below resolves nothing but std.
-COPY app/Cargo.toml app/Cargo.lock app/Makefile /app/
-COPY app/docs/ /app/docs/
-COPY app/samples/ /app/samples/
-COPY app/bin/kxtool /app/bin/kxtool
-RUN chmod 0755 /app/bin/kxtool
-COPY app/src/ /app/src/
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3=3.11.2-1+b1 \
+    python3-venv=3.11.2-1+b1 \
+    tmux=3.3a-3 \
+    asciinema=2.2.0-1 \
+    ca-certificates=20230311+deb12u1 \
+    patch=2.7.6-7 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Warm the build directory and prove the crate compiles as shipped, so the agent starts
-# from a project that builds rather than from a broken tree.
-RUN make build
+RUN python3 -m venv /opt/verifier \
+    && /opt/verifier/bin/pip install --no-cache-dir \
+        pytest==8.4.1 \
+        pytest-json-ctrf==0.3.5 \
+        pytest-randomly==3.16.0
+ENV PATH="/opt/verifier/bin:${PATH}"
+
+COPY . /app/environment
+
+RUN chmod +x /app/environment/scripts/refresh_join.sh \
+    && mkdir -p /app/output/local_chk \
+    && /app/environment/scripts/refresh_join.sh \
+    && rm -rf /app/environment/target
+
+WORKDIR /app
