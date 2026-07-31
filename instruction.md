@@ -1,11 +1,21 @@
-We need an offline planner for a Linux systemd maintenance window. Given unit fragments, drop-ins, a live `systemctl`-style state snapshot, changed unit files, path and mount state, and a short maintenance budget, produce the exact restart/reload/start/stop plan that should be run.
+One of the LP-series access controllers came back from a site with nobody left who remembers
+its unlock code, and the vendor folded years ago. What we have is the flash image, the core
+datasheet at /app/docs/kx8-datasheet.md, and the notes we keep on our own workbench tool at
+/app/docs/kxtool-contract.md. Nothing off the shelf makes sense of this core, so the Rust
+project in /app is where the work goes: `make` there builds it and leaves the binary at
+/app/bin/kxtool. Two boards' images, plus one that came off the programmer damaged, are in
+/app/samples.
 
-Complete the Go utility at `/workspace/cmd/systemd-window-plan/main.go` and build `/workspace/bin/systemd-window-plan`. Invoke it as:
+Four things have to work. Disassemble a window of an image. Run an image against a key
+stream and report what the board did with it. Describe an image and what running it changes.
+And recover the unlock code the image accepts. Boards differ — code, constants, layout — so
+this has to hold for any image that fits the container, not only for the two samples, and an
+image that does not check out gets refused rather than executed.
 
-`/workspace/bin/systemd-window-plan INPUT_JSON OUTPUT_JSON`
-
-Both positional arguments are required. Read `INPUT_JSON`, create or replace `OUTPUT_JSON`, and create the output parent directory if needed. The public input is `/workspace/task_file/window_request.json`; the public output path is `/workspace/output/window_plan.json`.
-
-The input schema, systemd fragment/drop-in precedence, action state transitions, dependency and conflict rules, mount/path rules, budget constraints, objective order, tie-breaks, output schema, reason strings, warning strings, ordering rules, and empty-output behavior are specified in `/workspace/task_file/docs/SPEC.md`. Follow that file exactly. Grading uses exact JSON equality after parsing, so field names, lowercase enum strings, array contents, sorting, 1-based operation steps, empty arrays, and reason order all matter.
-
-The verifier reruns your utility on compatible hidden host snapshots. Those snapshots vary unit-file precedence, active versus inactive units, protected units, dependency closure, `PartOf=`, `PropagatesReloadTo=`, `RequiresMountsFor=`, path conditions, symmetric conflicts, weak wants, ordering cycles, and tight maintenance budgets.
+The contract fixes what the tool prints, down to the text of a disassembly line. Read the
+datasheet closely but do not take it on faith — it is a revision behind the parts we
+actually have, and /app/samples/conformance holds a bench capture off one of those parts
+along with the ROMs it was taken from. Your model of the core has to reproduce that capture
+exactly, cycle counts and all, before anything it tells you about a board is worth
+believing. Standard library only, no new dependencies, no network, and leave the images in
+/app/samples as you found them.

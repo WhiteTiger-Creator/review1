@@ -1,1128 +1,507 @@
-import copy
+"""Behavioural tests for the KX8 workbench: decoding, execution, mapping and recovery.
+
+Everything here drives /app/bin/kxtool as a black box. Board-specific expectations are
+either derived from the tool's own output (round trips, invariants) or checked against a
+hash, so nothing in this file spells out an unlock code.
+"""
+
 import hashlib
+import itertools
 import json
-import os
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
-BINARY = Path("/workspace/bin/systemd-window-plan")
-SOURCE_DIR = Path("/workspace/cmd/systemd-window-plan")
-SOURCE = SOURCE_DIR / "main.go"
-PUBLIC_INPUT = Path("/workspace/task_file/window_request.json")
-PUBLIC_OUTPUT = Path("/workspace/output/window_plan.json")
-PUBLIC_SHA256 = "78c37f5bc18de9110fc00f2f2cf0d15f8b7d25b6f2fda07025dd0898a3a43040"
+BIN = "/app/bin/kxtool"
+SAMPLES = Path("/app/samples")
 
-REASON_ORDER = [
-    "changed_restart",
-    "changed_reload",
-    "reload_escalated",
-    "requested_start",
-    "part_of",
-    "propagated_reload",
-    "required_dependency",
-    "wanted_dependency",
-    "requires_mounts_for",
-    "conflict_stop",
-    "inactive_changed",
-    "protected",
-    "not_selected",
-]
+LINE = re.compile(r"^([0-9a-f]{4}): ((?:[0-9a-f]{2})(?: [0-9a-f]{2})*) *(\S+)(?: (.*))?$")
 
+# Two boards ship in /app/samples; two more are held back here so a recovery that only
+# works on the shipped pair cannot pass. Bodies are stored raw; the container around them
+# is built below exactly as the datasheet describes it.
+HELD_BACK = {
+    "unit-3e52": {
+        "body": (
+            "0006000000002874002273238030400015423140007001441c00710182517225ed4903e8ff4774000100000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "00000000000000000000000000000000000000005b88574827fc8ce6f970ea698e77eaffae581002d54d4e978b40151b"
+            "d73edbf413c5fd20c7632274683374072f044d5ed0fcdda8bfecab6dd9e12718dcda096eb3dd2f2620a4e3073fa1f6ba"
+            "9ca41caa96cb0f7677f665a3d884e5201c71aad123697b4389c00304bb62716a15c8a9dcce38ffb7e42e017989021fc9"
+            "3d04866c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000f2a749f3ead7458b1eda0000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "00000000000000000000000000000000"
+        ),
+        "length": 10,
+        "code_sha": "c83024650930dc0f175ec5d599002aea1f2bde07e890eee967edb1e2f80ffc3e",
+        "entry": "0x0006",
+        "patched": ("0x0074", "0x00f4"),
+    },
+    "unit-d160": {
+        "body": (
+            "000400002888002218238430400015423140007001441a007101828d72d0ed4903e8ff47880001000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000003008408258c895d8"
+            "ba88c70bd9dbdb291d09d5987a4907d9b888c82950c4bae618e5088a58375bea8babf92dd9c8f86818081ca86b4c3890"
+            "b088c0037cc9da3c3b9308e8585d3a6c7b91fd39fcd9db584b082dfc4d1b4aecd8f0ac6debccb8109b0d4bb728490ee9"
+            "1638fae2d8fafc28608438ea5d495a4dab8aa8d7daeaa25b1a18c7aa0000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000bad246e96ab9587f2a386a6e"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        ),
+        "length": 12,
+        "code_sha": "89be124e8096f14c9ad938bca2cf79a9b44c3cc9f1b6faf4e59f026ec064996d",
+        "entry": "0x0004",
+        "patched": ("0x0088", "0x010c"),
+    },
+}
 
-def ordered_reasons(reasons):
-    return [reason for reason in REASON_ORDER if reason in reasons]
+SHIPPED = {
+    "unit-4c17": {
+        "length": 10,
+        "code_sha": "43a543fe9fc1611288628dbeecac801479c512c715b63fa826a0070e0dd271db",
+        "entry": "0x0004",
+        "patched": ("0x0060", "0x00df"),
+        "body_len": 512,
+        "checksum": "0x4c62",
+    },
+    "unit-9a83": {
+        "length": 11,
+        "code_sha": "394eee9e827c156116612c079949dc921be3285a7715aa61230b39e3d23de4bc",
+        "entry": "0x0004",
+        "patched": ("0x0050", "0x00d2"),
+        "body_len": 448,
+        "checksum": "0x54b5",
+    },
+}
 
-
-def source_rank(source):
-    return {"vendor": 1, "runtime": 2, "admin": 3}.get(source, 0)
-
-
-def default_directives():
-    return {
-        "requires": [],
-        "wants": [],
-        "after": [],
-        "before": [],
-        "conflicts": [],
-        "part_of": [],
-        "propagates_reload_to": [],
-        "requires_mounts_for": [],
-        "condition_paths": [],
-        "reloadable": False,
-        "refuse_manual_start": False,
-        "start_sec": 1,
-        "stop_sec": 1,
-        "reload_sec": 1,
-    }
-
-
-LIST_DIRECTIVES = {
-    "requires",
-    "wants",
-    "after",
-    "before",
-    "conflicts",
-    "part_of",
-    "propagates_reload_to",
-    "requires_mounts_for",
-    "condition_paths",
+# Small hand-written programs that push their results to the result latch. They exercise
+# corners of the core on their own, without any of the board firmware around them.
+PROBES = {
+    "endian": "00040000283412330010ff330110ff3500000132020001330210ff32030101330310ff34010001330210ff01",
+    "alu": (
+        "0004000020811801330010ff210043130021ee330110ff22308206330210ff230043260023ee330310ff"
+        "245cf4330410ff1943330410ff252026401656270043440027ee330710ff330510ff01"
+    ),
+    "stack": "0004000025aa26bb55565f330710ff5f330710ff2b00802077ed3103107f472200012099330010ff02",
+    "loop": "00040000200371054900fb330110ff01",
+    "ram_store": "0004000020013300000101",
+    "io_store": "000400002001330010ff01",
+    "fault": "0004000000c301",
+    "wide_misuse": "00040000ed0001",
 }
 
 
-class Reference:
-    def __init__(self, raw):
-        self.raw = copy.deepcopy(raw)
-        self.defs, self.active_paths = self.materialize(raw["fragments"])
-        self.runtime = {row["unit"]: row for row in raw["runtime"]}
-        self.paths = {row["path"]: row for row in raw["paths"]}
-        self.protected = set(raw["maintenance"]["protected_units"])
-        self.requested = set(raw["maintenance"]["request_units"])
-        self.conflicts = {}
-        self.part_of_reverse = {}
-        self.roots = []
-        self.root_by_unit = {}
-        self.inactive_changed = set()
-        self.warnings = []
-        self.daemon_reloaded = False
-        self.build_relations()
-        self.build_changes()
+def container(body: bytes) -> bytes:
+    """Wrap a body in a valid KXF1 container."""
+    head = bytearray(16)
+    head[0:4] = b"KXF1"
+    head[4] = 1
+    head[5] = 0
+    head[6:8] = (0).to_bytes(2, "big")
+    head[8:10] = len(body).to_bytes(2, "big")
+    head[10:12] = (sum(body) & 0xFFFF).to_bytes(2, "big")
+    return bytes(head) + body
 
-    def materialize(self, fragments):
-        bases = {}
-        dropins = {}
-        for frag in fragments:
-            if frag["kind"] == "base":
-                old = bases.get(frag["unit"])
-                if old is None or self.better_fragment(frag, old):
-                    bases[frag["unit"]] = frag
-            if frag["kind"] == "dropin":
-                key = (frag["unit"], frag["dropin"])
-                old = dropins.get(key)
-                if old is None or self.better_fragment(frag, old):
-                    dropins[key] = frag
 
-        by_unit = {}
-        for frag in dropins.values():
-            by_unit.setdefault(frag["unit"], []).append(frag)
-        for rows in by_unit.values():
-            rows.sort(key=lambda item: (item["dropin"], item["path"]))
+def tool(*args):
+    """Invoke the workbench binary and hand back the completed process."""
+    return subprocess.run([BIN, *args], capture_output=True, text=True, check=False, timeout=600)
 
-        defs = {}
-        active_paths = set()
-        for unit, base_frag in bases.items():
-            directives = default_directives()
-            self.apply_directives(directives, base_frag)
-            active_paths.add(base_frag["path"])
-            for dropin in by_unit.get(unit, []):
-                self.apply_directives(directives, dropin)
-                active_paths.add(dropin["path"])
-            for name in LIST_DIRECTIVES:
-                directives[name] = sorted({value for value in directives[name] if value})
-            defs[unit] = {
-                "name": unit,
-                "base_path": base_frag["path"],
-                "directives": directives,
+
+def ok_json(*args):
+    """Invoke the binary, insist it succeeded, and parse its single JSON object."""
+    proc = tool(*args)
+    assert proc.returncode == 0, f"{args} failed: {proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+@pytest.fixture(scope="session")
+def workdir(tmp_path_factory):
+    """Materialise the held-back boards and the probe programs as real image files."""
+    d = tmp_path_factory.mktemp("kx8")
+    for name, spec in HELD_BACK.items():
+        (d / f"{name}.fw").write_bytes(container(bytes.fromhex(spec["body"])))
+    for name, body in PROBES.items():
+        (d / f"probe-{name}.fw").write_bytes(container(bytes.fromhex(body)))
+    return d
+
+
+def board_path(workdir, name):
+    if name in SHIPPED:
+        return str(SAMPLES / f"{name}.fw")
+    return str(workdir / f"{name}.fw")
+
+
+ALL_BOARDS = {**SHIPPED, **HELD_BACK}
+
+
+def disasm_lines(*args):
+    proc = tool("disasm", *args)
+    assert proc.returncode == 0, proc.stderr
+    out = []
+    for raw in proc.stdout.splitlines():
+        m = LINE.match(raw)
+        assert m, f"line does not follow the contract: {raw!r}"
+        out.append(
+            {
+                "addr": int(m.group(1), 16),
+                "bytes": [int(b, 16) for b in m.group(2).split()],
+                "mnemonic": m.group(3),
+                "operands": (m.group(4) or "").strip(),
             }
-        return defs, active_paths
-
-    @staticmethod
-    def better_fragment(left, right):
-        if source_rank(left["source"]) != source_rank(right["source"]):
-            return source_rank(left["source"]) > source_rank(right["source"])
-        return left["path"] < right["path"]
-
-    @staticmethod
-    def apply_directives(current, frag):
-        for name in sorted(frag.get("reset", [])):
-            if name in LIST_DIRECTIVES:
-                current[name] = []
-        directives = frag.get("directives") or {}
-        for name in LIST_DIRECTIVES:
-            current[name].extend(directives.get(name, []))
-        for name in (
-            "reloadable",
-            "refuse_manual_start",
-            "start_sec",
-            "stop_sec",
-            "reload_sec",
-        ):
-            if name in directives:
-                current[name] = directives[name]
-
-    def build_relations(self):
-        for unit, definition in self.defs.items():
-            for other in definition["directives"]["conflicts"]:
-                self.conflicts.setdefault(unit, set()).add(other)
-                self.conflicts.setdefault(other, set()).add(unit)
-            for parent in definition["directives"]["part_of"]:
-                self.part_of_reverse.setdefault(parent, []).append(unit)
-        for children in self.part_of_reverse.values():
-            children.sort()
-
-    def build_changes(self):
-        groups = {}
-        for chg in self.raw["changes"]:
-            if chg["path"] not in self.active_paths:
-                self.warnings.append(
-                    {"code": "shadowed_change", "unit": chg["unit"], "path": chg["path"]}
-                )
-                continue
-            self.daemon_reloaded = True
-            if chg["impact"] == "none":
-                continue
-            group = groups.setdefault(
-                chg["unit"],
-                {"unit": chg["unit"], "priority": 0, "restart": False, "reload": False},
-            )
-            group["priority"] += chg["priority"]
-            if chg["impact"] == "restart":
-                group["restart"] = True
-            if chg["impact"] == "reload":
-                group["reload"] = True
-        self.warnings.sort(key=lambda row: (row["unit"], row["path"], row["code"]))
-
-        for unit in sorted(groups):
-            group = groups[unit]
-            reasons = []
-            if group["restart"]:
-                reasons.append("changed_restart")
-            if group["reload"]:
-                reasons.append("changed_reload")
-            action = "restart" if group["restart"] else "reload"
-            if not self.initial_active(unit):
-                if unit in self.requested:
-                    action = "start"
-                    reasons.append("requested_start")
-                else:
-                    self.inactive_changed.add(unit)
-                    continue
-            blocked = False
-            if unit in self.protected and action in {"restart", "start"}:
-                blocked = True
-            if unit in self.protected and action == "reload":
-                definition = self.defs.get(unit)
-                if definition is not None and not definition["directives"]["reloadable"]:
-                    blocked = True
-            root = {
-                "unit": unit,
-                "action": action,
-                "priority": group["priority"],
-                "reasons": ordered_reasons(set(reasons)),
-                "blocked": blocked,
-            }
-            self.root_by_unit[unit] = root
-            self.roots.append(root)
-
-    def solve(self):
-        best = None
-
-        def visit(idx, actions):
-            nonlocal best
-            if idx == len(self.roots):
-                for plan in self.expand_wants(actions, set()):
-                    candidate = self.evaluate(plan)
-                    if candidate is None:
-                        continue
-                    if best is None or self.better(candidate, best):
-                        best = candidate
-                return
-            visit(idx + 1, self.clone_actions(actions))
-            root = self.roots[idx]
-            if root["blocked"]:
-                return
-            included = self.clone_actions(actions)
-            if self.add_action(included, root["unit"], root["action"], root["reasons"]):
-                visit(idx + 1, included)
-
-        visit(0, {})
-        if best is None:
-            best = self.evaluate({})
-        return best["report"]
-
-    @staticmethod
-    def better(left, right):
-        lo = left["report"]["objective"]
-        ro = right["report"]["objective"]
-        key_left = (
-            -lo["applied_priority"],
-            -lo["applied_units"],
-            -lo["final_active_units"],
-            lo["elapsed_sec"],
-            lo["stopped_active_units"],
-            left["signature"],
         )
-        key_right = (
-            -ro["applied_priority"],
-            -ro["applied_units"],
-            -ro["final_active_units"],
-            ro["elapsed_sec"],
-            ro["stopped_active_units"],
-            right["signature"],
-        )
-        return key_left < key_right
-
-    @staticmethod
-    def clone_actions(actions):
-        return {
-            unit: {"kind": row["kind"], "reasons": set(row["reasons"])}
-            for unit, row in actions.items()
-        }
-
-    def expand_wants(self, seed, excluded):
-        closed = self.close_mandatory(self.clone_actions(seed))
-        if closed is None:
-            return []
-        wants = self.want_candidates(closed, excluded)
-        if not wants:
-            return [closed]
-        want = wants[0]
-        skip_excluded = set(excluded)
-        skip_excluded.add(want)
-        out = self.expand_wants(closed, skip_excluded)
-
-        included = self.clone_actions(closed)
-        if self.add_action(included, want, "start", ["wanted_dependency"]):
-            out.extend(self.expand_wants(included, excluded))
-        return out
-
-    def want_candidates(self, actions, excluded):
-        candidates = set()
-        for unit in sorted(actions):
-            if actions[unit]["kind"] == "stop":
-                continue
-            definition = self.defs.get(unit)
-            if not definition:
-                continue
-            for wanted in definition["directives"]["wants"]:
-                if wanted in excluded or wanted in actions or self.is_active_after(wanted, actions):
-                    continue
-                if not self.startable(wanted) or wanted in self.protected:
-                    continue
-                candidates.add(wanted)
-        return sorted(candidates)
-
-    def close_mandatory(self, seed):
-        actions = self.clone_actions(seed)
-        changed = True
-        while changed:
-            changed = False
-            for unit in sorted(actions):
-                if actions[unit]["kind"] != "reload":
-                    continue
-                definition = self.defs.get(unit)
-                if definition is None:
-                    return None
-                if not definition["directives"]["reloadable"]:
-                    if unit in self.protected:
-                        return None
-                    if self.add_action(actions, unit, "restart", ["reload_escalated"]):
-                        changed = True
-                    else:
-                        return None
-            for unit in sorted(actions):
-                kind = actions[unit]["kind"]
-                if kind == "restart":
-                    for child in self.part_of_reverse.get(unit, []):
-                        if self.initial_active(child) and self.add_action(
-                            actions, child, "restart", ["part_of"]
-                        ):
-                            changed = True
-                if kind == "reload":
-                    definition = self.defs.get(unit)
-                    if definition is None:
-                        return None
-                    for target in definition["directives"]["propagates_reload_to"]:
-                        if self.initial_active(target) and self.add_action(
-                            actions, target, "reload", ["propagated_reload"]
-                        ):
-                            changed = True
-            for unit in sorted(actions):
-                if actions[unit]["kind"] not in {"start", "restart"}:
-                    continue
-                definition = self.defs.get(unit)
-                if definition is None:
-                    return None
-                for path in definition["directives"]["requires_mounts_for"]:
-                    if self.path_exists_after(path, actions):
-                        continue
-                    info = self.paths.get(path)
-                    if not info or not info["mount_unit"]:
-                        return None
-                    mount = info["mount_unit"]
-                    if not self.is_active_after(mount, actions):
-                        if not self.startable(mount) or mount in self.protected:
-                            return None
-                        if self.add_action(actions, mount, "start", ["requires_mounts_for"]):
-                            changed = True
-                for required in definition["directives"]["requires"]:
-                    if self.is_active_after(required, actions):
-                        continue
-                    if not self.startable(required) or required in self.protected:
-                        return None
-                    if self.add_action(actions, required, "start", ["required_dependency"]):
-                        changed = True
-            for unit in sorted(actions):
-                if actions[unit]["kind"] not in {"start", "restart"}:
-                    continue
-                for conflict in sorted(self.conflicts.get(unit, set())):
-                    if not self.initial_active(conflict):
-                        continue
-                    existing = actions.get(conflict)
-                    if existing is not None:
-                        if existing["kind"] == "stop":
-                            continue
-                        return None
-                    if conflict in self.protected:
-                        return None
-                    if self.add_action(actions, conflict, "stop", ["conflict_stop"]):
-                        changed = True
-        for unit in sorted(actions):
-            if actions[unit]["kind"] not in {"start", "restart"}:
-                continue
-            for path in self.defs[unit]["directives"]["condition_paths"]:
-                if not self.path_exists_after(path, actions):
-                    return None
-        return actions
-
-    def add_action(self, actions, unit, kind, reasons):
-        if kind in {"start", "restart"} and (
-            unit in self.protected or not self.startable(unit)
-        ):
-            return False
-        if kind == "reload" and unit not in self.defs:
-            return False
-        existing = actions.get(unit)
-        if existing is None:
-            actions[unit] = {"kind": kind, "reasons": set(reasons)}
-            return True
-        if existing["kind"] == "stop" and kind != "stop":
-            return False
-        if existing["kind"] != "stop" and kind == "stop":
-            return False
-        changed = False
-        if kind != "stop" and self.action_rank(kind) > self.action_rank(existing["kind"]):
-            existing["kind"] = kind
-            changed = True
-        before = len(existing["reasons"])
-        existing["reasons"].update(reasons)
-        return changed or len(existing["reasons"]) != before
-
-    @staticmethod
-    def action_rank(kind):
-        return {"start": 1, "reload": 2, "restart": 3}.get(kind, 0)
-
-    def evaluate(self, raw_actions):
-        actions = self.close_mandatory(self.clone_actions(raw_actions))
-        if actions is None:
-            return None
-        applied_roots = set()
-        applied_priority = 0
-        applied_units = 0
-        for unit, root in self.root_by_unit.items():
-            action = actions.get(unit)
-            if action and self.root_satisfied(root["action"], action["kind"]):
-                applied_roots.add(unit)
-                applied_priority += root["priority"]
-                applied_units += 1
-                action["reasons"].update(root["reasons"])
-
-        operations_and_signature = self.operations(actions)
-        if operations_and_signature is None:
-            return None
-        operations, signature = operations_and_signature
-        elapsed = sum(op["duration_sec"] for op in operations)
-        stopped_active = sum(
-            1 for op in operations if op["action"] == "stop" and self.initial_active(op["unit"])
-        )
-        mount_starts = sum(
-            1
-            for op in operations
-            if op["action"] in {"start", "restart"} and op["unit"].endswith(".mount")
-        )
-        maintenance = self.raw["maintenance"]
-        if elapsed > maintenance["deadline_sec"]:
-            return None
-        if stopped_active > maintenance["max_stopped_active"]:
-            return None
-        if mount_starts > maintenance["mount_start_limit"]:
-            return None
-
-        report = {
-            "daemon_reloaded": self.daemon_reloaded,
-            "objective": {
-                "applied_priority": applied_priority,
-                "applied_units": applied_units,
-                "final_active_units": self.final_active_count(actions),
-                "elapsed_sec": elapsed,
-                "stopped_active_units": stopped_active,
-            },
-            "operations": operations,
-            "units": self.unit_rows(actions, applied_roots),
-            "warnings": copy.deepcopy(self.warnings),
-        }
-        return {"report": report, "signature": signature}
-
-    @staticmethod
-    def root_satisfied(root_action, actual):
-        if root_action == "restart":
-            return actual == "restart"
-        if root_action == "reload":
-            return actual in {"reload", "restart"}
-        if root_action == "start":
-            return actual in {"start", "restart"}
-        return False
-
-    def operations(self, actions):
-        operations = []
-        signature = []
-        step = 1
-        if self.daemon_reloaded:
-            operations.append(
-                {
-                    "step": step,
-                    "action": "daemon-reload",
-                    "unit": "",
-                    "duration_sec": self.raw["maintenance"]["daemon_reload_sec"],
-                    "reasons": ["active_change"],
-                }
-            )
-            signature.append("daemon-reload:")
-            step += 1
-
-        for unit in sorted(unit for unit, row in actions.items() if row["kind"] == "stop"):
-            operations.append(
-                {
-                    "step": step,
-                    "action": "stop",
-                    "unit": unit,
-                    "duration_sec": self.duration(unit, "stop"),
-                    "reasons": ordered_reasons(actions[unit]["reasons"]),
-                }
-            )
-            signature.append(f"stop:{unit}")
-            step += 1
-
-        ordered = self.topological_actions(actions)
-        if ordered is None:
-            return None
-        for unit in ordered:
-            kind = actions[unit]["kind"]
-            operations.append(
-                {
-                    "step": step,
-                    "action": kind,
-                    "unit": unit,
-                    "duration_sec": self.duration(unit, kind),
-                    "reasons": ordered_reasons(actions[unit]["reasons"]),
-                }
-            )
-            signature.append(f"{kind}:{unit}")
-            step += 1
-        return operations, signature
-
-    def topological_actions(self, actions):
-        nodes = {unit for unit, row in actions.items() if row["kind"] != "stop"}
-        edges = {unit: set() for unit in nodes}
-        indegree = dict.fromkeys(nodes, 0)
-
-        def add_edge(before, after):
-            if before not in nodes or after not in nodes or before == after:
-                return
-            if after not in edges[before]:
-                edges[before].add(after)
-                indegree[after] += 1
-
-        for unit in nodes:
-            definition = self.defs.get(unit)
-            if definition is None:
-                return None
-            directives = definition["directives"]
-            for after in directives["after"]:
-                add_edge(after, unit)
-            for before in directives["before"]:
-                add_edge(unit, before)
-            for required in directives["requires"]:
-                add_edge(required, unit)
-            for path in directives["requires_mounts_for"]:
-                info = self.paths.get(path)
-                if info and info["mount_unit"]:
-                    add_edge(info["mount_unit"], unit)
-            for target in directives["propagates_reload_to"]:
-                add_edge(unit, target)
-
-        ready = sorted(unit for unit, degree in indegree.items() if degree == 0)
-        out = []
-        while ready:
-            unit = ready.pop(0)
-            out.append(unit)
-            for nxt in sorted(edges[unit]):
-                indegree[nxt] -= 1
-                if indegree[nxt] == 0:
-                    ready.append(nxt)
-                    ready.sort()
-        if len(out) != len(nodes):
-            return None
-        return out
-
-    def duration(self, unit, kind):
-        if kind == "daemon-reload":
-            return self.raw["maintenance"]["daemon_reload_sec"]
-        directives = self.defs[unit]["directives"]
-        if kind == "start":
-            return directives["start_sec"]
-        if kind == "stop":
-            return directives["stop_sec"]
-        if kind == "reload":
-            return directives["reload_sec"]
-        if kind == "restart":
-            return directives["stop_sec"] + directives["start_sec"]
-        return 0
-
-    def unit_rows(self, actions, applied_roots):
-        names = set(actions) | set(self.root_by_unit) | set(self.inactive_changed)
-        rows = []
-        for unit in sorted(names):
-            action = actions.get(unit)
-            if action is not None:
-                reasons = set(action["reasons"])
-                root = self.root_by_unit.get(unit)
-                if root and unit not in applied_roots and not root["blocked"]:
-                    reasons.add("not_selected")
-                rows.append(
-                    {
-                        "name": unit,
-                        "planned_action": action["kind"],
-                        "applied_change": unit in applied_roots,
-                        "final_state": self.final_state(unit, actions),
-                        "reasons": ordered_reasons(reasons),
-                    }
-                )
-                continue
-            root = self.root_by_unit.get(unit)
-            if root:
-                if root["blocked"]:
-                    rows.append(
-                        {
-                            "name": unit,
-                            "planned_action": "unchanged",
-                            "applied_change": False,
-                            "final_state": self.initial_final_state(unit),
-                            "reasons": ["protected"],
-                        }
-                    )
-                else:
-                    rows.append(
-                        {
-                            "name": unit,
-                            "planned_action": "deferred",
-                            "applied_change": False,
-                            "final_state": self.initial_final_state(unit),
-                            "reasons": ["not_selected"],
-                        }
-                    )
-                continue
-            rows.append(
-                {
-                    "name": unit,
-                    "planned_action": "unchanged",
-                    "applied_change": False,
-                    "final_state": self.initial_final_state(unit),
-                    "reasons": ["inactive_changed"],
-                }
-            )
-        return rows
-
-    def final_active_count(self, actions):
-        units = set(self.defs) | set(self.runtime)
-        return sum(1 for unit in units if self.final_state(unit, actions) == "active")
-
-    def final_state(self, unit, actions):
-        action = actions.get(unit)
-        if action:
-            if action["kind"] == "stop":
-                return "inactive"
-            if action["kind"] in {"start", "reload", "restart"}:
-                return "active"
-        return self.initial_final_state(unit)
-
-    def initial_final_state(self, unit):
-        row = self.runtime.get(unit)
-        if row is None:
-            return "inactive"
-        if row["load_state"] in {"masked", "not-found"}:
-            return row["load_state"]
-        return row.get("active_state") or "inactive"
-
-    def initial_active(self, unit):
-        row = self.runtime.get(unit)
-        return row is not None and row["load_state"] == "loaded" and row["active_state"] == "active"
-
-    def startable(self, unit):
-        definition = self.defs.get(unit)
-        if definition is None:
-            return False
-        if definition["directives"]["refuse_manual_start"]:
-            return False
-        row = self.runtime.get(unit)
-        return row is None or row.get("load_state", "loaded") in {"", "loaded"}
-
-    def is_active_after(self, unit, actions):
-        action = actions.get(unit)
-        if action:
-            if action["kind"] == "stop":
-                return False
-            if action["kind"] in {"start", "reload", "restart"}:
-                return True
-        return self.initial_active(unit)
-
-    def path_exists_after(self, path, actions):
-        info = self.paths.get(path)
-        if not info:
-            return False
-        if info["exists"]:
-            return True
-        return bool(info["mount_unit"]) and self.is_active_after(info["mount_unit"], actions)
+    return out
 
 
-def validate_schema(report):
-    assert type(report) is dict
-    assert set(report) == {"daemon_reloaded", "objective", "operations", "units", "warnings"}
-    assert type(report["daemon_reloaded"]) is bool
-    assert set(report["objective"]) == {
-        "applied_priority",
-        "applied_units",
-        "final_active_units",
-        "elapsed_sec",
-        "stopped_active_units",
-    }
-    assert all(type(value) is int for value in report["objective"].values())
-    assert type(report["operations"]) is list
-    for idx, op in enumerate(report["operations"], start=1):
-        assert set(op) == {"step", "action", "unit", "duration_sec", "reasons"}
-        assert op["step"] == idx
-        assert op["action"] in {"daemon-reload", "stop", "start", "reload", "restart"}
-        assert type(op["unit"]) is str
-        assert type(op["duration_sec"]) is int
-        assert type(op["reasons"]) is list
-        if op["action"] == "daemon-reload":
-            assert op["unit"] == ""
-            assert op["reasons"] == ["active_change"]
-        else:
-            assert op["reasons"] == ordered_reasons(set(op["reasons"]))
-            assert len(op["reasons"]) == len(set(op["reasons"]))
-    assert type(report["units"]) is list
-    unit_names = [row["name"] for row in report["units"]]
-    assert unit_names == sorted(unit_names)
-    assert len(unit_names) == len(set(unit_names))
-    for row in report["units"]:
-        assert set(row) == {"name", "planned_action", "applied_change", "final_state", "reasons"}
-        assert type(row["name"]) is str
-        assert row["planned_action"] in {
-            "stop",
-            "start",
-            "reload",
-            "restart",
-            "unchanged",
-            "deferred",
-        }
-        assert type(row["applied_change"]) is bool
-        assert row["final_state"] in {"active", "inactive", "failed", "masked", "not-found"}
-        assert row["reasons"] == ordered_reasons(set(row["reasons"]))
-        assert len(row["reasons"]) == len(set(row["reasons"]))
-    assert type(report["warnings"]) is list
-    warnings = [(row["unit"], row["path"], row["code"]) for row in report["warnings"]]
-    assert warnings == sorted(warnings)
-    for row in report["warnings"]:
-        assert set(row) == {"code", "unit", "path"}
-        assert row["code"] == "shadowed_change"
-        assert type(row["unit"]) is str
-        assert type(row["path"]) is str
+# What the bench capture in /app/samples/conformance records for each shipped ROM.
+CAPTURE = {
+    "rotate-left": (109, ["0x06", "0x00", "0xb4", "0x00", "0xc3", "0x00", "0xd3"]),
+    "rotate-right": (109, ["0x60", "0x00", "0x2d", "0x00", "0xc3", "0x00", "0x7a"]),
+    "add-paths": (106, ["0x31", "0x32", "0x31", "0x10", "0x01"]),
+    "flag-rules": (143, ["0x20", "0x01", "0x1e", "0x00", "0x00", "0x00", "0x01", "0x01"]),
+    "bus-timing": (40, ["0x11", "0x22"]),
+    "transfers": (86, ["0xbb", "0xaa", "0x12", "0x99"]),
+}
 
 
-def build_binary():
-    assert SOURCE.exists(), "missing Go source at /workspace/cmd/systemd-window-plan/main.go"
-    source_text = SOURCE.read_text(encoding="utf-8")
-    forbidden = ["os/exec", "exec.Command", "syscall.Exec"]
-    assert not any(token in source_text for token in forbidden)
-    result = subprocess.run(
-        ["go", "build", "-o", str(BINARY), "."],
-        cwd=SOURCE_DIR,
-        env={**os.environ, "GO111MODULE": "off"},
+@pytest.mark.parametrize("rom", sorted(CAPTURE))
+def test_core_reproduces_the_bench_capture(rom):
+    """Running each shipped ROM gives back exactly what the part on the jig produced."""
+    cycles, latch = CAPTURE[rom]
+    out = ok_json("run", "--image", str(SAMPLES / "conformance" / f"{rom}.fw"))
+    assert out["latch"] == latch, f"{rom} latched something else"
+    assert out["cycles"] == cycles, f"{rom} cost a different number of cycles"
+
+
+def test_the_work_is_done_by_the_compiled_crate():
+    """The launcher is a thin front for a real binary that answers on its own."""
+    artifact = Path("/app/target/release/kxtool")
+    assert artifact.exists(), "the crate produced no binary"
+    assert artifact.read_bytes()[:4] == b"\x7fELF", "the built artefact is not a native binary"
+    assert Path(BIN).stat().st_size < 2048, "the entry point is carrying an implementation"
+
+    args = ["map", "--image", str(SAMPLES / "unit-4c17.fw")]
+    # An empty PATH: a program built from the standard library needs nothing else on disk.
+    direct = subprocess.run(
+        [str(artifact), *args],
         capture_output=True,
         text=True,
-        timeout=30,
         check=False,
+        timeout=600,
+        env={"PATH": "/nonexistent"},
     )
-    assert result.returncode == 0, result.stderr
-    assert BINARY.exists()
+    assert direct.returncode == 0, f"the binary cannot answer by itself: {direct.stderr}"
+    assert direct.stdout == tool(*args).stdout
 
 
-@pytest.fixture(scope="session", autouse=True)
-def compiled_binary():
-    build_binary()
+def test_unknown_subcommand_is_refused():
+    """An unrecognised subcommand fails with a contract error object and no stdout."""
+    proc = tool("frobnicate", "--image", str(SAMPLES / "unit-4c17.fw"))
+    assert proc.returncode == 2
+    assert proc.stdout.strip() == ""
+    assert json.loads(proc.stderr)["error"] == "bad_argument"
 
 
-def run_tool(tmp_path, data, name):
-    input_path = tmp_path / f"{name}.json"
-    output_path = tmp_path / "nested" / f"{name}.plan.json"
-    input_path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("stale output must be replaced", encoding="utf-8")
-    result = subprocess.run(
-        [str(BINARY), str(input_path), str(output_path)],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    report = json.loads(output_path.read_text(encoding="utf-8"))
-    validate_schema(report)
-    return report
+def test_odd_length_key_is_refused():
+    """A key stream that is not whole bytes of hexadecimal is rejected before execution."""
+    proc = tool("run", "--image", str(SAMPLES / "unit-4c17.fw"), "--key", "abc")
+    assert proc.returncode == 2
+    assert proc.stdout.strip() == ""
+    assert json.loads(proc.stderr)["error"] == "bad_argument"
 
 
-def base(unit, directives=None, source="vendor", path=None):
-    return {
-        "path": path or f"/usr/lib/systemd/system/{unit}",
-        "unit": unit,
-        "kind": "base",
-        "source": source,
-        "dropin": "",
-        "reset": [],
-        "directives": directives or {},
-    }
+def test_damaged_container_is_refused():
+    """The sample whose stored checksum no longer matches its body is not executed."""
+    proc = tool("map", "--image", str(SAMPLES / "unit-corrupt.fw"))
+    assert proc.returncode == 2
+    assert proc.stdout.strip() == ""
+    assert json.loads(proc.stderr)["error"] == "bad_checksum"
 
 
-def dropin(unit, name, directives=None, source="admin", reset=None, path=None):
-    root = {"admin": "/etc", "runtime": "/run", "vendor": "/usr/lib"}[source]
-    return {
-        "path": path or f"{root}/systemd/system/{unit}.d/{name}",
-        "unit": unit,
-        "kind": "dropin",
-        "source": source,
-        "dropin": name,
-        "reset": reset or [],
-        "directives": directives or {},
-    }
+@pytest.mark.parametrize(
+    ("damage", "expected"),
+    [
+        ("magic", "bad_magic"),
+        ("version", "bad_version"),
+        ("flags", "bad_flags"),
+        ("load", "bad_load_address"),
+        ("length", "bad_length"),
+        ("reserved", "bad_reserved"),
+    ],
+)
+def test_header_fields_are_validated(workdir, damage, expected):
+    """Each header field the container defines is checked before the body is trusted."""
+    raw = bytearray(container(bytes.fromhex(PROBES["loop"])))
+    if damage == "magic":
+        raw[3] = ord("2")
+    elif damage == "version":
+        raw[4] = 2
+    elif damage == "flags":
+        raw[5] = 0x01
+    elif damage == "load":
+        raw[6] = 0x01
+    elif damage == "length":
+        raw[9] = (raw[9] + 1) & 0xFF
+    else:
+        raw[14] = 0x09
+    path = workdir / f"damaged-{damage}.fw"
+    path.write_bytes(bytes(raw))
+    proc = tool("run", "--image", str(path))
+    assert proc.returncode == 2
+    assert proc.stdout.strip() == ""
+    assert json.loads(proc.stderr)["error"] == expected
 
 
-def rt(unit, active="active", load="loaded"):
-    return {"unit": unit, "load_state": load, "active_state": active}
+def test_disasm_emits_one_line_per_requested_instruction():
+    """disasm prints exactly --count lines and advances by each instruction's length."""
+    lines = disasm_lines("--image", str(SAMPLES / "unit-4c17.fw"), "--addr", "0x0004", "--count", "13")
+    assert len(lines) == 13
+    for cur, nxt in itertools.pairwise(lines):
+        assert nxt["addr"] == cur["addr"] + len(cur["bytes"])
 
 
-def pth(path, exists=True, mount=""):
-    return {"path": path, "exists": exists, "mount_unit": mount}
+def test_disasm_window_defaults_to_sixteen_instructions():
+    """With no --count the disassembler prints the contract's default window."""
+    lines = disasm_lines("--image", str(SAMPLES / "unit-4c17.fw"), "--addr", "0x0004")
+    assert len(lines) == 16
 
 
-def chg(unit, impact="restart", priority=1, path=None):
-    return {
-        "path": path or f"/usr/lib/systemd/system/{unit}",
-        "unit": unit,
-        "impact": impact,
-        "priority": priority,
-    }
+def test_reset_code_decodes_to_the_documented_forms():
+    """The plain part of a sample board decodes to the mnemonics its bytes encode."""
+    lines = disasm_lines("--image", str(SAMPLES / "unit-4c17.fw"), "--addr", "0x0004", "--count", "13")
+    got = [line["mnemonic"] for line in lines]
+    assert got == [
+        "LDPI", "LDI", "LDI", "LDB", "XOR", "STB", "ADDI",
+        "JNC", "ADDI", "MULI", "ADDI", "DJNZ", "CALL",
+    ]
+    assert lines[3]["operands"] == "R4, [P0+0x00]"
 
 
-def manifest(fragments, runtime, changes, maintenance=None, paths=None):
-    return {
-        "maintenance": {
-            "deadline_sec": 20,
-            "max_stopped_active": 2,
-            "mount_start_limit": 2,
-            "daemon_reload_sec": 1,
-            "request_units": [],
-            "protected_units": [],
-            **(maintenance or {}),
-        },
-        "fragments": fragments,
-        "runtime": runtime,
-        "paths": paths or [],
-        "changes": changes,
-    }
+def test_instruction_immediates_are_little_endian():
+    """A 16-bit immediate reads back low byte first, unlike the reset vector."""
+    lines = disasm_lines("--image", str(SAMPLES / "unit-4c17.fw"), "--addr", "0x0004", "--count", "1")
+    assert lines[0]["bytes"] == [0x28, 0x60, 0x00]
+    assert lines[0]["operands"] == "P0, #0x0060"
 
 
-def hidden_cases():
-    cases = []
-    cases.append(
-        (
-            "admin_base_shadows_vendor_change",
-            manifest(
-                [
-                    base("alpha.service", {"reloadable": True, "reload_sec": 2}),
-                    base(
-                        "alpha.service",
-                        {"reloadable": True, "reload_sec": 1, "wants": ["sidecar.service"]},
-                        source="admin",
-                        path="/etc/systemd/system/alpha.service",
-                    ),
-                    base("sidecar.service", {"start_sec": 2}),
-                ],
-                [rt("alpha.service"), rt("sidecar.service", "inactive")],
-                [
-                    chg("alpha.service", "restart", 9),
-                    chg(
-                        "alpha.service",
-                        "reload",
-                        4,
-                        path="/etc/systemd/system/alpha.service",
-                    ),
-                ],
-                {"deadline_sec": 5},
-            ),
-        )
-    )
-    cases.append(
-        (
-            "protected_reload_and_protected_escalation",
-            manifest(
-                [
-                    base("safe.service", {"reloadable": True, "reload_sec": 1}),
-                    base("kernel-agent.service", {"reloadable": False, "start_sec": 2, "stop_sec": 2}),
-                ],
-                [rt("safe.service"), rt("kernel-agent.service")],
-                [
-                    chg("safe.service", "reload", 5),
-                    chg("kernel-agent.service", "reload", 50),
-                ],
-                {
-                    "deadline_sec": 10,
-                    "protected_units": ["safe.service", "kernel-agent.service"],
-                },
-            ),
-        )
-    )
-    cases.append(
-        (
-            "mount_condition_rechecked_after_start",
-            manifest(
-                [
-                    base(
-                        "app.service",
-                        {
-                            "requires_mounts_for": ["/srv/app"],
-                            "condition_paths": ["/srv/app"],
-                            "start_sec": 3,
-                            "stop_sec": 2,
-                        },
-                    ),
-                    base("srv-app.mount", {"start_sec": 4}),
-                ],
-                [rt("app.service", "inactive"), rt("srv-app.mount", "inactive")],
-                [chg("app.service", "restart", 8)],
-                {"deadline_sec": 9, "request_units": ["app.service"], "mount_start_limit": 1},
-                [pth("/srv/app", False, "srv-app.mount")],
-            ),
-        )
-    )
-    cases.append(
-        (
-            "mount_limit_forces_global_choice",
-            manifest(
-                [
-                    base("a.service", {"requires_mounts_for": ["/srv/a"], "condition_paths": ["/srv/a"], "start_sec": 2, "stop_sec": 2}),
-                    base("b.service", {"requires_mounts_for": ["/srv/b"], "condition_paths": ["/srv/b"], "start_sec": 2, "stop_sec": 2}),
-                    base("srv-a.mount", {"start_sec": 3}),
-                    base("srv-b.mount", {"start_sec": 3}),
-                ],
-                [rt("a.service"), rt("b.service"), rt("srv-a.mount", "inactive"), rt("srv-b.mount", "inactive")],
-                [chg("a.service", "restart", 6), chg("b.service", "restart", 7)],
-                {"deadline_sec": 20, "mount_start_limit": 1},
-                [pth("/srv/a", False, "srv-a.mount"), pth("/srv/b", False, "srv-b.mount")],
-            ),
-        )
-    )
-    cases.append(
-        (
-            "conflict_priority_trap",
-            manifest(
-                [
-                    base("front.service", {"conflicts": ["legacy.service"], "start_sec": 4, "stop_sec": 4}),
-                    base("legacy.service", {"reloadable": True, "reload_sec": 1, "conflicts": ["front.service"], "stop_sec": 2}),
-                    base("batch.service", {"reloadable": True, "reload_sec": 2}),
-                    base("audit.service", {"reloadable": True, "reload_sec": 2}),
-                ],
-                [rt("front.service"), rt("legacy.service"), rt("batch.service"), rt("audit.service")],
-                [
-                    chg("front.service", "restart", 10),
-                    chg("legacy.service", "reload", 8),
-                    chg("batch.service", "reload", 6),
-                    chg("audit.service", "reload", 6),
-                ],
-                {"deadline_sec": 8, "max_stopped_active": 1},
-            ),
-        )
-    )
-    cases.append(
-        (
-            "partof_restart_exceeds_budget",
-            manifest(
-                [
-                    base("parent.service", {"start_sec": 5, "stop_sec": 5}),
-                    base("child.service", {"part_of": ["parent.service"], "after": ["parent.service"], "start_sec": 4, "stop_sec": 4}),
-                    base("small.service", {"reloadable": True, "reload_sec": 2}),
-                ],
-                [rt("parent.service"), rt("child.service"), rt("small.service")],
-                [chg("parent.service", "restart", 9), chg("small.service", "reload", 7)],
-                {"deadline_sec": 12},
-            ),
-        )
-    )
-    cases.append(
-        (
-            "propagated_reload_escalates_child",
-            manifest(
-                [
-                    base("cfg.service", {"reloadable": True, "reload_sec": 1, "propagates_reload_to": ["agent.service"]}),
-                    base("agent.service", {"reloadable": False, "start_sec": 3, "stop_sec": 2}),
-                ],
-                [rt("cfg.service"), rt("agent.service")],
-                [chg("cfg.service", "reload", 5)],
-                {"deadline_sec": 8},
-            ),
-        )
-    )
-    cases.append(
-        (
-            "weak_want_included_only_when_free_enough",
-            manifest(
-                [
-                    base("web.service", {"reloadable": True, "reload_sec": 1, "wants": ["warm-cache.service"]}),
-                    base("warm-cache.service", {"start_sec": 2}),
-                ],
-                [rt("web.service"), rt("warm-cache.service", "inactive")],
-                [chg("web.service", "reload", 4)],
-                {"deadline_sec": 4},
-            ),
-        )
-    )
-    cases.append(
-        (
-            "weak_want_skipped_when_it_would_stop_active_peer",
-            manifest(
-                [
-                    base("api.service", {"reloadable": True, "reload_sec": 1, "wants": ["debug.service"]}),
-                    base("debug.service", {"conflicts": ["monitor.service"], "start_sec": 1}),
-                    base("monitor.service", {"conflicts": ["debug.service"], "stop_sec": 1}),
-                ],
-                [rt("api.service"), rt("debug.service", "inactive"), rt("monitor.service")],
-                [chg("api.service", "reload", 4)],
-                {"deadline_sec": 5, "max_stopped_active": 1},
-            ),
-        )
-    )
-    cases.append(
-        (
-            "ordering_cycle_makes_combined_plan_invalid",
-            manifest(
-                [
-                    base("left.service", {"after": ["right.service"], "reloadable": True, "reload_sec": 1}),
-                    base("right.service", {"after": ["left.service"], "reloadable": True, "reload_sec": 1}),
-                    base("plain.service", {"reloadable": True, "reload_sec": 1}),
-                ],
-                [rt("left.service"), rt("right.service"), rt("plain.service")],
-                [
-                    chg("left.service", "reload", 5),
-                    chg("right.service", "reload", 5),
-                    chg("plain.service", "reload", 4),
-                ],
-                {"deadline_sec": 5},
-            ),
-        )
-    )
-    cases.append(
-        (
-            "dropin_reset_removes_conflict",
-            manifest(
-                [
-                    base("new.service", {"conflicts": ["old.service"], "start_sec": 3, "stop_sec": 3}),
-                    dropin("new.service", "10-reset.conf", {}, reset=["conflicts"]),
-                    base("old.service", {"reloadable": True, "reload_sec": 1}),
-                ],
-                [rt("new.service"), rt("old.service")],
-                [chg("new.service", "restart", 7), chg("old.service", "reload", 5)],
-                {"deadline_sec": 12, "max_stopped_active": 0},
-            ),
-        )
-    )
-    cases.append(
-        (
-            "duplicate_changes_restart_dominates_reload",
-            manifest(
-                [base("combo.service", {"reloadable": True, "start_sec": 2, "stop_sec": 2, "reload_sec": 1})],
-                [rt("combo.service")],
-                [
-                    chg("combo.service", "reload", 3),
-                    chg("combo.service", "restart", 4),
-                    chg("combo.service", "none", 100),
-                ],
-                {"deadline_sec": 5},
-            ),
-        )
-    )
-    cases.append(
-        (
-            "inactive_unrequested_change_and_daemon_reload",
-            manifest(
-                [
-                    base("sleeping.service", {"start_sec": 2}),
-                    base("live.service", {"reloadable": True, "reload_sec": 1}),
-                ],
-                [rt("sleeping.service", "inactive"), rt("live.service")],
-                [
-                    chg("sleeping.service", "restart", 8),
-                    chg("live.service", "none", 0),
-                ],
-                {"deadline_sec": 4},
-            ),
-        )
-    )
-    cases.append(
-        (
-            "complete_plan_signature_tiebreak",
-            manifest(
-                [
-                    base("a.service", {"reloadable": True, "reload_sec": 1}),
-                    base("b.service", {"reloadable": True, "reload_sec": 1}),
-                ],
-                [rt("a.service"), rt("b.service")],
-                [chg("a.service", "reload", 5), chg("b.service", "reload", 5)],
-                {"deadline_sec": 2},
-            ),
-        )
-    )
-    return cases
+def test_wide_prefix_extends_the_instruction():
+    """A prefixed instruction is one byte longer and resolves its 16-bit displacement."""
+    lines = disasm_lines("--image", str(SAMPLES / "unit-4c17.fw"), "--addr", "0x0004", "--count", "12")
+    wide = lines[-1]
+    assert wide["mnemonic"] == "DJNZ"
+    assert len(wide["bytes"]) == 5
+    assert wide["bytes"][0] == 0xED
+    assert wide["operands"] == "R3, 0x000b"
 
 
-def test_public_input_integrity():
-    digest = hashlib.sha256(PUBLIC_INPUT.read_bytes()).hexdigest()
-    assert digest == PUBLIC_SHA256
+def test_shipped_bytes_of_the_rewritten_region_do_not_decode():
+    """Disassembling the region as shipped runs into bytes that are not instructions."""
+    start = SHIPPED["unit-4c17"]["patched"][0]
+    lines = disasm_lines("--image", str(SAMPLES / "unit-4c17.fw"), "--addr", start, "--count", "12")
+    assert len(lines) == 12
+    assert any(line["mnemonic"] == ".byte" for line in lines)
 
 
-def test_public_case_exact(tmp_path):
-    data = json.loads(PUBLIC_INPUT.read_text(encoding="utf-8"))
-    expected = Reference(data).solve()
-    actual = run_tool(tmp_path, data, "public")
-    assert actual == expected
+def test_live_view_of_the_rewritten_region_decodes_cleanly():
+    """After the board has run, the same region holds real instructions."""
+    start = SHIPPED["unit-4c17"]["patched"][0]
+    shipped = disasm_lines("--image", str(SAMPLES / "unit-4c17.fw"), "--addr", start, "--count", "12")
+    live = disasm_lines("--image", str(SAMPLES / "unit-4c17.fw"), "--addr", start, "--count", "12", "--live")
+    assert len(live) == 12
+    assert all(line["mnemonic"] != ".byte" for line in live)
+    assert [line["bytes"] for line in live] != [line["bytes"] for line in shipped]
 
 
-def test_public_default_output_is_replaced(compiled_binary):
-    result = subprocess.run(
-        [str(BINARY), str(PUBLIC_INPUT), str(PUBLIC_OUTPUT)],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    report = json.loads(PUBLIC_OUTPUT.read_text(encoding="utf-8"))
-    validate_schema(report)
-    assert report == Reference(json.loads(PUBLIC_INPUT.read_text(encoding="utf-8"))).solve()
+@pytest.mark.parametrize("name", sorted(ALL_BOARDS))
+def test_map_reports_entry_and_the_rewritten_range(workdir, name):
+    """map names the reset target and the stretch of body the board rewrites."""
+    spec = ALL_BOARDS[name]
+    out = ok_json("map", "--image", board_path(workdir, name))
+    assert out["entry"] == spec["entry"]
+    assert out["load"] == "0x0000"
+    assert out["patched"] == [{"start": spec["patched"][0], "end": spec["patched"][1]}]
+    assert out["io_reads"] == ["0xff00"]
+    assert out["io_writes"] == ["0xff10"]
 
 
-@pytest.mark.parametrize(("name", "data"), hidden_cases())
-def test_hidden_generated_cases(tmp_path, name, data):
-    expected = Reference(data).solve()
-    actual = run_tool(tmp_path, data, name)
-    assert actual == expected
+def test_map_repeats_the_header_fields():
+    """map reports the body length and stored checksum taken from the container."""
+    out = ok_json("map", "--image", str(SAMPLES / "unit-4c17.fw"))
+    assert out["body_len"] == SHIPPED["unit-4c17"]["body_len"]
+    assert out["checksum"] == SHIPPED["unit-4c17"]["checksum"]
+
+
+def test_board_with_no_key_refuses():
+    """A board released with nothing at the key port denies and takes no key bytes."""
+    out = ok_json("run", "--image", str(SAMPLES / "unit-4c17.fw"))
+    assert out["status"] == "denied"
+    assert out["latch"] == ["0x5a"]
+    assert out["key_reads"] == 0
+    assert out["fault"] is None
+
+
+def test_empty_key_run_costs_the_documented_number_of_cycles():
+    """Cycle accounting over a whole board run matches what the part charges."""
+    out = ok_json("run", "--image", str(SAMPLES / "unit-4c17.fw"))
+    assert out["instructions"] == 1030
+    assert out["cycles"] == 4762
+
+
+def test_peripheral_access_stalls_the_bus(workdir):
+    """The same store costs more when it lands in the peripheral window than in memory."""
+    ram = ok_json("run", "--image", str(workdir / "probe-ram_store.fw"))
+    io = ok_json("run", "--image", str(workdir / "probe-io_store.fw"))
+    assert ram["cycles"] == 11
+    assert io["cycles"] == 13
+    assert io["latch"] == ["0x01"]
+
+
+def test_taken_conditional_transfers_cost_more(workdir):
+    """A counted loop pays the taken-transfer penalty only on the iterations that loop."""
+    out = ok_json("run", "--image", str(workdir / "probe-loop.fw"))
+    assert out["latch"] == ["0x0f"]
+    assert out["cycles"] == 38
+
+
+def test_immediates_and_memory_words_use_opposite_byte_orders(workdir):
+    """A pair loaded from an immediate and stored to memory comes back with halves swapped."""
+    out = ok_json("run", "--image", str(workdir / "probe-endian.fw"))
+    assert out["latch"] == ["0x34", "0x12", "0x12", "0x34", "0x34"]
+
+
+def test_arithmetic_and_rotate_results_match_the_part(workdir):
+    """Rotate, multiply, swap and compare leave the registers and flags the part leaves."""
+    out = ok_json("run", "--image", str(workdir / "probe-alu.fw"))
+    assert out["latch"] == ["0x06", "0xee", "0x20", "0x00", "0xc5", "0x5c", "0x00", "0x20"]
+
+
+def test_stack_and_call_ordering(workdir):
+    """Pushes pop back in reverse and a call returns to the instruction after it."""
+    out = ok_json("run", "--image", str(workdir / "probe-stack.fw"))
+    assert out["latch"] == ["0xbb", "0xaa", "0x77", "0x99"]
+
+
+def test_undefined_opcode_faults_where_it_stands(workdir):
+    """An undefined opcode stops the core at its own address without completing."""
+    out = ok_json("run", "--image", str(workdir / "probe-fault.fw"))
+    assert out["status"] == "fault"
+    assert out["fault"] == "illegal_instruction"
+    assert out["halt_pc"] == "0x0005"
+    assert out["instructions"] == 1
+
+
+def test_misplaced_wide_prefix_faults(workdir):
+    """The wide prefix in front of an instruction that has no displacement is illegal."""
+    out = ok_json("run", "--image", str(workdir / "probe-wide_misuse.fw"))
+    assert out["status"] == "fault"
+    assert out["halt_pc"] == "0x0004"
+    assert out["instructions"] == 0
+
+
+@pytest.mark.parametrize("name", sorted(SHIPPED))
+def test_recovered_code_unlocks_the_shipped_boards(workdir, name):
+    """The recovered stream is the one the sample board accepts."""
+    spec = SHIPPED[name]
+    path = board_path(workdir, name)
+    out = ok_json("recover", "--image", path)
+    assert out["length"] == spec["length"]
+    assert len(out["code_hex"]) == 2 * spec["length"]
+    assert hashlib.sha256(out["code_hex"].strip().lower().encode()).hexdigest() == spec["code_sha"]
+    assert ok_json("run", "--image", path, "--key", out["code_hex"])["status"] == "granted"
+
+
+@pytest.mark.parametrize("name", sorted(HELD_BACK))
+def test_recovery_generalises_to_unseen_boards(workdir, name):
+    """Recovery works on boards with different codes, constants and layout."""
+    spec = HELD_BACK[name]
+    path = board_path(workdir, name)
+    out = ok_json("recover", "--image", path)
+    assert out["length"] == spec["length"]
+    assert hashlib.sha256(out["code_hex"].strip().lower().encode()).hexdigest() == spec["code_sha"]
+    assert ok_json("run", "--image", path, "--key", out["code_hex"])["status"] == "granted"
+
+
+def test_recovered_text_matches_the_recovered_bytes():
+    """code_text renders exactly the bytes of code_hex when they are all printable."""
+    out = ok_json("recover", "--image", str(SAMPLES / "unit-4c17.fw"))
+    assert out["code_text"] is not None
+    assert bytes.fromhex(out["code_hex"]).decode("ascii") == out["code_text"]
+
+
+def test_every_single_byte_change_is_refused():
+    """Changing any one byte of the accepted stream turns the verdict to denied."""
+    path = str(SAMPLES / "unit-4c17.fw")
+    code = bytearray(bytes.fromhex(ok_json("recover", "--image", path)["code_hex"]))
+    for i in range(len(code)):
+        spoiled = bytearray(code)
+        spoiled[i] ^= 0x2A
+        out = ok_json("run", "--image", path, "--key", spoiled.hex())
+        assert out["status"] == "denied", f"byte {i} was not checked"
+
+
+def test_rejected_attempts_of_equal_length_cost_the_same():
+    """The board spends the same work on every stream of its length, whatever it contains."""
+    path = str(SAMPLES / "unit-4c17.fw")
+    code = bytearray(bytes.fromhex(ok_json("recover", "--image", path)["code_hex"]))
+    costs = set()
+    for i in range(len(code)):
+        spoiled = bytearray(code)
+        spoiled[i] ^= 0x11
+        out = ok_json("run", "--image", path, "--key", spoiled.hex())
+        assert out["status"] == "denied"
+        costs.add((out["instructions"], out["cycles"]))
+    blank = ok_json("run", "--image", path, "--key", "00" * len(code))
+    costs.add((blank["instructions"], blank["cycles"]))
+    assert len(costs) == 1, f"the cost of a rejected attempt varies with its content: {costs}"
+
+
+def test_short_and_long_key_streams_are_refused():
+    """A truncated stream and an over-long stream are both rejected by the board."""
+    path = str(SAMPLES / "unit-4c17.fw")
+    code = bytes.fromhex(ok_json("recover", "--image", path)["code_hex"])
+    short = ok_json("run", "--image", path, "--key", code[:-1].hex())
+    assert short["status"] == "denied"
+    assert short["key_reads"] == len(code) - 1
+    long = ok_json("run", "--image", path, "--key", (code + b"\x41").hex())
+    assert long["status"] == "denied"
+    assert long["key_reads"] == len(code)
+
+
+def test_key_port_stops_at_the_stream_the_board_wants():
+    """An over-long stream is read only as far as the board's key length."""
+    path = str(SAMPLES / "unit-4c17.fw")
+    length = ok_json("recover", "--image", path)["length"]
+    out = ok_json("run", "--image", path, "--key", "00" * 64)
+    assert out["key_reads"] == length
+
+
+@pytest.mark.parametrize("name", sorted(ALL_BOARDS))
+def test_output_is_reproducible(workdir, name):
+    """Two identical invocations produce identical output."""
+    path = board_path(workdir, name)
+    for args in (("map", "--image", path), ("recover", "--image", path)):
+        first = tool(*args)
+        second = tool(*args)
+        assert first.returncode == second.returncode == 0
+        assert first.stdout == second.stdout
+
+
+def test_images_are_left_untouched(workdir):
+    """None of the subcommands writes back to the image it was given."""
+    path = SAMPLES / "unit-4c17.fw"
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    ok_json("map", "--image", str(path))
+    ok_json("recover", "--image", str(path))
+    ok_json("run", "--image", str(path), "--key", "4142")
+    tool("disasm", "--image", str(path), "--addr", "0x0000", "--count", "40", "--live")
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before

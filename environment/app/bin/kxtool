@@ -1,0 +1,12 @@
+#!/bin/sh
+# Launcher for the workbench binary. `make build` in /app populates target/release/kxtool.
+set -e
+
+BIN=/app/target/release/kxtool
+
+if [ ! -x "$BIN" ]; then
+    echo "kxtool: $BIN is missing; run 'make build' in /app" >&2
+    exit 70
+fi
+
+exec "$BIN" "$@"
